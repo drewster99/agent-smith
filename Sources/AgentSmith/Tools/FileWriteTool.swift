@@ -50,8 +50,8 @@ public struct FileWriteTool: AgentTool {
 
     /// Returns an error message if the path is restricted, or nil if allowed.
     static func checkPathRestriction(_ path: String) -> String? {
-        // Resolve relative paths to absolute via CWD so "../../../etc" can't bypass checks
-        let resolved = URL(fileURLWithPath: path).standardized.path
+        // Resolve relative paths AND symlinks so neither "../../../etc" nor symlink indirection can bypass checks
+        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         let home = NSHomeDirectory()
 
         // Block system directories

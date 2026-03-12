@@ -75,6 +75,11 @@ public struct ShellTool: AgentTool {
         "ruby -e ",
     ]
 
+    /// Sensitive paths that should not be accessible via shell commands.
+    /// Mirrors the restrictions in FileReadTool and FileWriteTool.
+    private static let sensitiveHomeDirs = [".ssh", ".gnupg", ".aws", ".kube", ".config/gcloud", ".docker"]
+    private static let sensitiveSystemPaths = ["/etc/shadow", "/etc/master.passwd", "/private/etc/master.passwd"]
+
     public init() {}
 
     /// Strips ALL whitespace and lowercases. This ensures that no amount of
@@ -83,9 +88,47 @@ public struct ShellTool: AgentTool {
         String(input.lowercased().filter { !$0.isWhitespace })
     }
 
+    /// Returns a rejection message if the command references sensitive credential paths, nil otherwise.
+    /// Uses case-insensitive matching because macOS APFS is case-insensitive by default.
+    private static func checkSensitivePaths(_ command: String) -> String? {
+        let home = NSHomeDirectory()
+        let lowered = command.lowercased()
+        let homeLower = home.lowercased()
+
+        // Expand common home-directory shorthands so absolute-path patterns match
+        let expanded = lowered
+            .replacingOccurrences(of: "~", with: homeLower)
+            .replacingOccurrences(of: "$home", with: homeLower)
+            .replacingOccurrences(of: "${home}", with: homeLower)
+
+        for dir in sensitiveHomeDirs {
+            let dirLower = dir.lowercased()
+            let dirPath = (homeLower as NSString).appendingPathComponent(dirLower)
+            let patterns = [dirPath, "~/\(dirLower)", "$home/\(dirLower)", "${home}/\(dirLower)"]
+            for pattern in patterns where expanded.contains(pattern) || lowered.contains(pattern) {
+                return "BLOCKED: Command references sensitive credential path '\(dir)'"
+            }
+        }
+
+        for path in sensitiveSystemPaths where lowered.contains(path.lowercased()) {
+            return "BLOCKED: Command references sensitive system credential file '\(path)'"
+        }
+
+        return nil
+    }
+
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
         guard case .string(let command) = arguments["command"] else {
             throw ToolCallError.missingRequiredArgument("command")
+        }
+
+        // Block commands that reference sensitive credential paths
+        if let rejection = Self.checkSensitivePaths(command) {
+            await context.channel.post(ChannelMessage(
+                sender: .system,
+                content: "\u{26A0}\u{FE0F} \(rejection)"
+            ))
+            return rejection
         }
 
         // Hard blocklist check — belt portion of belt-and-suspenders.
@@ -104,16 +147,13 @@ public struct ShellTool: AgentTool {
             }
         }
 
-        // Check raw command for indirection patterns (eval, bash -c, etc.)
+        // Block ALL indirection patterns (eval, bash -c, etc.) unconditionally.
+        // These can be used to obfuscate arbitrary commands, making denylist
+        // inspection unreliable.
         let lowered = command.lowercased()
         for pattern in Self.rawBlockedPatterns {
-            guard let matchRange = lowered.range(of: pattern) else { continue }
-            // Allow if the inner content seems safe (e.g., `bash -c "echo hi"`)
-            // Block if it contains any destructive keyword
-            let destructiveKeywords = ["rm ", "mkfs", "dd if", "chmod", "chown", "del ", "format"]
-            let afterPattern = String(lowered[matchRange.upperBound...])
-            if destructiveKeywords.contains(where: { afterPattern.contains($0) }) {
-                let rejection = "BLOCKED: Command uses indirection '\(pattern.trimmingCharacters(in: .whitespaces))' with destructive content"
+            if lowered.contains(pattern) {
+                let rejection = "BLOCKED: Command uses indirection '\(pattern.trimmingCharacters(in: .whitespaces))' — execute the inner command directly instead"
                 await context.channel.post(ChannelMessage(
                     sender: .system,
                     content: "\u{26A0}\u{FE0F} \(rejection)"

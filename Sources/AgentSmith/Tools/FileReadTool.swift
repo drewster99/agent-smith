@@ -42,8 +42,8 @@ public struct FileReadTool: AgentTool {
 
     /// Returns an error message if the path is restricted, or nil if allowed.
     static func checkPathRestriction(_ path: String) -> String? {
-        // Resolve relative paths to absolute via CWD so "../../../.ssh" can't bypass checks
-        let resolved = URL(fileURLWithPath: path).standardized.path
+        // Resolve relative paths AND symlinks so neither "../../../.ssh" nor symlink indirection can bypass checks
+        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         let home = NSHomeDirectory()
 
         // Block sensitive credential directories
