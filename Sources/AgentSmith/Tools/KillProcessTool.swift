@@ -99,8 +99,8 @@ public struct KillProcessTool: AgentTool {
 
         let trimmed = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        // Return nil for empty output (process not found) so callers fall through
-        // to the actual kill() call, which will return the real OS error.
+        // Nil return (empty output = process not found, or ps failure) causes the
+        // caller to refuse the kill rather than proceed with unverified ownership.
         guard let trimmed, !trimmed.isEmpty else { return nil }
         return trimmed
     }

@@ -176,26 +176,27 @@ public actor AgentActor {
             return
         }
 
-        // Record the assistant message including tool calls so that
-        // subsequent tool results have a matching request in history.
-        if let text = response.text, !text.isEmpty {
-            conversationHistory.append(LLMMessage(
-                role: .assistant,
-                content: .mixed(text: text, toolCalls: toolCalls)
-            ))
-        } else {
-            conversationHistory.append(LLMMessage(
-                role: .assistant,
-                content: .toolCalls(toolCalls)
-            ))
-        }
-
-        // Execute each tool call (capped to prevent runaway tool-call chains)
+        // Cap tool calls before recording to history — every recorded tool call must have
+        // a matching tool result, or the LLM API will error on the next request.
         let callsToExecute = Array(toolCalls.prefix(Self.maxToolCallsPerIteration))
         if callsToExecute.count < toolCalls.count {
             await toolContext.channel.post(ChannelMessage(
                 sender: .system,
                 content: "Rate limit: dropped \(toolCalls.count - callsToExecute.count) tool calls (max \(Self.maxToolCallsPerIteration) per iteration)."
+            ))
+        }
+
+        // Record the assistant message with only the calls we will execute, so that
+        // subsequent tool results have a matching request in history.
+        if let text = response.text, !text.isEmpty {
+            conversationHistory.append(LLMMessage(
+                role: .assistant,
+                content: .mixed(text: text, toolCalls: callsToExecute)
+            ))
+        } else {
+            conversationHistory.append(LLMMessage(
+                role: .assistant,
+                content: .toolCalls(callsToExecute)
             ))
         }
 
