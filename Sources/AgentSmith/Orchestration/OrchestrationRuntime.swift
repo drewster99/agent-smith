@@ -311,8 +311,42 @@ public actor OrchestrationRuntime {
             agentRoleForID: { [weak self] id in
                 guard let self else { return nil }
                 return await self.roleForAgent(id: id)
+            },
+            onSelfTerminate: { [weak self] in
+                guard let self else { return }
+                await self.handleAgentSelfTerminate(id: agentID)
             }
         )
+    }
+
+    /// Cleans up registry entries and channel subscriptions when an agent's run loop exits on its own.
+    /// Guarded by agents[id] presence to be idempotent with terminateAgent().
+    private func handleAgentSelfTerminate(id: UUID) async {
+        guard agents[id] != nil else { return }
+
+        agents.removeValue(forKey: id)
+        agentRoles.removeValue(forKey: id)
+        await unsubscribeAgent(id: id)
+
+        // If this was a Brown, also stop its paired Jones.
+        if let jonesID = brownToJones[id] {
+            if let jones = agents[jonesID] {
+                await jones.stop()
+                agents.removeValue(forKey: jonesID)
+                agentRoles.removeValue(forKey: jonesID)
+            }
+            await unsubscribeAgent(id: jonesID)
+            brownToJones.removeValue(forKey: id)
+        }
+
+        if currentBrownID == id {
+            currentBrownID = nil
+        }
+
+        if smithID == id {
+            smith = nil
+            smithID = nil
+        }
     }
 
     private func defaultConfig() -> LLMConfiguration {

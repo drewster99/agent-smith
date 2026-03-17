@@ -54,13 +54,14 @@ public struct FileWriteTool: AgentTool {
         let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         let home = NSHomeDirectory()
 
-        // Block system directories
+        // Block system directories.
+        // Lowercase both sides: APFS is case-insensitive so /SYSTEM/... bypasses a case-sensitive check.
         let systemPrefixes = [
             "/etc", "/System", "/Library", "/usr/", "/bin/", "/sbin/",
             "/var/", "/private/etc", "/private/var", "/dev/"
         ]
         for prefix in systemPrefixes {
-            if resolved.hasPrefix(prefix) {
+            if resolved.lowercased().hasPrefix(prefix.lowercased()) {
                 return "BLOCKED: Cannot write to system path '\(path)'"
             }
         }
@@ -69,7 +70,7 @@ public struct FileWriteTool: AgentTool {
         let sensitiveDirs = [".ssh", ".gnupg", ".aws", ".config/gcloud", ".kube", ".docker"]
         for dir in sensitiveDirs {
             let dirPath = (home as NSString).appendingPathComponent(dir)
-            if resolved.hasPrefix(dirPath) {
+            if resolved.lowercased().hasPrefix(dirPath.lowercased()) {
                 return "BLOCKED: Cannot write to sensitive directory '\(path)'"
             }
         }
@@ -81,7 +82,7 @@ public struct FileWriteTool: AgentTool {
         ]
         for config in shellConfigs {
             let configPath = (home as NSString).appendingPathComponent(config)
-            if resolved == configPath {
+            if resolved.lowercased() == configPath.lowercased() {
                 return "BLOCKED: Cannot write to shell configuration file '\(path)'"
             }
         }

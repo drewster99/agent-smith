@@ -5,6 +5,8 @@ import AgentSmithKit
 struct ChannelLogView: View {
     var messages: [ChannelMessage]
 
+    @State private var isAtBottom = true
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -17,11 +19,16 @@ struct ChannelLogView: View {
                 .padding(8)
             }
             .background(AppColors.channelBackground)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                // Within 20pts of the bottom counts as "at bottom" to account for padding
+                geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 20
+            } action: { _, newValue in
+                isAtBottom = newValue
+            }
             .onChange(of: messages.count) {
-                if let lastID = messages.last?.id {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo(lastID, anchor: .bottom)
-                    }
+                guard isAtBottom, let lastID = messages.last?.id else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(lastID, anchor: .bottom)
                 }
             }
         }

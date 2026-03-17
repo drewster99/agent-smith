@@ -19,6 +19,11 @@ public struct AbortTool: AgentTool {
     public init() {}
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+        /// Abort is Jones-only. Any other role having this tool is a misconfiguration.
+        guard context.agentRole == .jones else {
+            return "BLOCKED: only the Jones safety monitor may trigger an emergency abort."
+        }
+
         guard case .string(let reason) = arguments["reason"] else {
             throw ToolCallError.missingRequiredArgument("reason")
         }

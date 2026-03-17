@@ -24,6 +24,7 @@ public actor AgentActor {
     private var consecutiveErrors = 0
     private static let maxConsecutiveErrors = 10
     private static let maxBackoffSeconds: Double = 60
+    private static let maxToolCallsPerIteration = 10
 
     public init(
         id: UUID = UUID(),
@@ -151,6 +152,7 @@ public actor AgentActor {
                 try? await Task.sleep(for: .seconds(backoff))
             }
         }
+        await toolContext.onSelfTerminate()
     }
 
     private func handleResponse(_ response: LLMResponse) async throws {
@@ -188,8 +190,16 @@ public actor AgentActor {
             ))
         }
 
-        // Execute each tool call
-        for call in toolCalls {
+        // Execute each tool call (capped to prevent runaway tool-call chains)
+        let callsToExecute = Array(toolCalls.prefix(Self.maxToolCallsPerIteration))
+        if callsToExecute.count < toolCalls.count {
+            await toolContext.channel.post(ChannelMessage(
+                sender: .system,
+                content: "Rate limit: dropped \(toolCalls.count - callsToExecute.count) tool calls (max \(Self.maxToolCallsPerIteration) per iteration)."
+            ))
+        }
+
+        for call in callsToExecute {
             guard isRunning else { break }
 
             let result: String
@@ -278,9 +288,22 @@ public actor AgentActor {
             keepFromIndex = conversationHistory.count - 1
         }
 
+        // If all messages appeared to fit (zero/underestimated token counts), force-prune
+        // the oldest half to prevent unbounded growth despite the token threshold being exceeded.
+        if keepFromIndex == 1 {
+            keepFromIndex = max(2, conversationHistory.count / 2)
+        }
+
         // Don't split tool call/result pairs — back up past any orphaned tool results
         while keepFromIndex > 1, conversationHistory[keepFromIndex].role == .tool {
             keepFromIndex -= 1
+        }
+
+        // If the tool walk-back collapsed to index 1, force a minimal prune from index 2
+        // so we always make forward progress against the context limit.
+        if keepFromIndex <= 1 {
+            guard conversationHistory.count > 2 else { return }
+            keepFromIndex = 2
         }
 
         let prunedCount = keepFromIndex - 1

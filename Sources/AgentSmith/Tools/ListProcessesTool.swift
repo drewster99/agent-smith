@@ -19,17 +19,17 @@ public struct ListProcessesTool: AgentTool {
     public init() {}
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
-        let process = Process()
-        let pipe = Pipe()
-
-        if case .string(let filter) = arguments["filter"], !filter.isEmpty {
-            process.executableURL = URL(fileURLWithPath: "/bin/bash")
-            process.arguments = ["-c", "ps aux | head -1; ps aux | grep -i \(shellEscape(filter)) | grep -v grep"]
+        let filter: String?
+        if case .string(let f) = arguments["filter"], !f.isEmpty {
+            filter = f
         } else {
-            process.executableURL = URL(fileURLWithPath: "/bin/ps")
-            process.arguments = ["aux"]
+            filter = nil
         }
 
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["aux"]
         process.standardOutput = pipe
         process.standardError = pipe
 
@@ -42,15 +42,21 @@ public struct ListProcessesTool: AgentTool {
         process.waitUntilExit()
         let output = String(data: data, encoding: .utf8) ?? ""
 
-        // Truncate to avoid overwhelming context
-        let lines = output.components(separatedBy: "\n")
+        let allLines = output.components(separatedBy: "\n")
+        let lines: [String]
+        if let filter {
+            // Filter in Swift to avoid shell injection — keep header + matching lines
+            let loweredFilter = filter.lowercased()
+            let header = allLines.first ?? ""
+            let matching = allLines.dropFirst().filter { $0.lowercased().contains(loweredFilter) }
+            lines = [header] + matching
+        } else {
+            lines = allLines
+        }
+
         if lines.count > 100 {
             return lines.prefix(100).joined(separator: "\n") + "\n... (\(lines.count - 100) more lines truncated)"
         }
-        return output
-    }
-
-    private func shellEscape(_ s: String) -> String {
-        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return lines.joined(separator: "\n")
     }
 }

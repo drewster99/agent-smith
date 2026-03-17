@@ -46,10 +46,13 @@ public struct KillProcessTool: AgentTool {
             return "Error: refusing to kill own process."
         }
 
-        // Verify the process is owned by the current user
-        let ownerCheckResult = Self.processOwner(pid: pid)
+        // Verify the process is owned by the current user.
+        // Fail closed: if ownership cannot be determined, refuse to kill.
         let currentUser = ProcessInfo.processInfo.userName
-        if let owner = ownerCheckResult, owner != currentUser {
+        guard let owner = Self.processOwner(pid: pid) else {
+            return "Error: cannot verify ownership of process \(pid) — refusing to kill."
+        }
+        guard owner == currentUser else {
             return "Error: refusing to kill process \(pid) — owned by '\(owner)', not current user '\(currentUser)'."
         }
 

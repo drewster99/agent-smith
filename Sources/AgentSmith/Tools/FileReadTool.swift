@@ -46,11 +46,12 @@ public struct FileReadTool: AgentTool {
         let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         let home = NSHomeDirectory()
 
-        // Block sensitive credential directories
+        // Block sensitive credential directories.
+        // Lowercase both sides: APFS is case-insensitive so /Users/FOO/.SSH bypasses a case-sensitive check.
         let sensitiveDirs = [".ssh", ".gnupg", ".aws", ".kube"]
         for dir in sensitiveDirs {
             let dirPath = (home as NSString).appendingPathComponent(dir)
-            if resolved.hasPrefix(dirPath) {
+            if resolved.lowercased().hasPrefix(dirPath.lowercased()) {
                 return "BLOCKED: Cannot read sensitive credential path '\(path)'"
             }
         }
@@ -58,7 +59,7 @@ public struct FileReadTool: AgentTool {
         // Block system credential files
         let systemCredentials = ["/etc/shadow", "/etc/master.passwd", "/private/etc/master.passwd"]
         for cred in systemCredentials {
-            if resolved == cred || resolved.hasPrefix(cred) {
+            if resolved.lowercased() == cred.lowercased() || resolved.lowercased().hasPrefix(cred.lowercased()) {
                 return "BLOCKED: Cannot read system credential file '\(path)'"
             }
         }

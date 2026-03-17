@@ -40,6 +40,9 @@ public struct ToolContext: Sendable {
     public let abort: @Sendable (String) async -> Void
     /// Resolves an agent ID to its role, used for access-control checks.
     public let agentRoleForID: @Sendable (UUID) async -> AgentRole?
+    /// Called when the agent's run loop exits naturally (errors or self-termination).
+    /// Allows the runtime to clean up subscriptions and registry entries.
+    public let onSelfTerminate: @Sendable () async -> Void
 
     public init(
         agentID: UUID,
@@ -49,7 +52,8 @@ public struct ToolContext: Sendable {
         spawnBrown: @escaping @Sendable () async -> UUID?,
         terminateAgent: @escaping @Sendable (UUID) async -> Bool,
         abort: @escaping @Sendable (String) async -> Void,
-        agentRoleForID: @escaping @Sendable (UUID) async -> AgentRole?
+        agentRoleForID: @escaping @Sendable (UUID) async -> AgentRole?,
+        onSelfTerminate: @escaping @Sendable () async -> Void = {}
     ) {
         self.agentID = agentID
         self.agentRole = agentRole
@@ -59,5 +63,6 @@ public struct ToolContext: Sendable {
         self.terminateAgent = terminateAgent
         self.abort = abort
         self.agentRoleForID = agentRoleForID
+        self.onSelfTerminate = onSelfTerminate
     }
 }

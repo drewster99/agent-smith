@@ -21,6 +21,7 @@ final class AppViewModel {
 
     private var runtime: OrchestrationRuntime?
     private var channelStreamTask: Task<Void, Never>?
+    private var persistDebounceTask: Task<Void, Never>?
     private var persistenceManager = PersistenceManager()
 
     // MARK: - Lifecycle
@@ -86,7 +87,7 @@ final class AppViewModel {
 
         // Subscribe to channel messages
         let channel = await newRuntime.channel
-        channelStreamTask = Task { [weak self] in
+        channelStreamTask = Task { @MainActor [weak self] in
             for await message in await channel.stream() {
                 guard let self else { break }
                 self.messages.append(message)
@@ -193,8 +194,14 @@ final class AppViewModel {
     // MARK: - Private
 
     private func persistMessages() {
+        persistDebounceTask?.cancel()
         let messagesToSave = messages
-        Task.detached { [persistenceManager] in
+        persistDebounceTask = Task.detached { [persistenceManager] in
+            do {
+                try await Task.sleep(for: .milliseconds(500))
+            } catch {
+                return // Cancelled by a newer call — the newer call will persist
+            }
             do {
                 try await persistenceManager.saveChannelLog(messagesToSave)
             } catch {
