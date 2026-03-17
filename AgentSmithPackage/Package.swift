@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "AgentSmith",
+    name: "AgentSmithPackage",
     platforms: [
         .macOS(.v15)
     ],
@@ -18,7 +18,7 @@ let package = Package(
         ),
         .target(
             name: "AgentSmithKit",
-            path: "Sources/AgentSmith"
+            path: "Sources/AgentSmithKit"
         ),
         .testTarget(
             name: "AgentSmithTests",

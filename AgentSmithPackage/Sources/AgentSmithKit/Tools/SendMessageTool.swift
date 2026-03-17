@@ -28,16 +28,19 @@ public struct SendMessageTool: AgentTool {
         }
 
         var recipientID: UUID?
+        var recipientRole: AgentRole?
         if case .string(let idString) = arguments["recipient_id"] {
             guard let parsed = UUID(uuidString: idString) else {
                 return "Invalid recipient_id format: \(idString)"
             }
             recipientID = parsed
+            recipientRole = await context.agentRoleForID(parsed)
         }
 
         let channelMessage = ChannelMessage(
             sender: .agent(context.agentRole),
             recipientID: recipientID,
+            recipientRole: recipientRole,
             content: message
         )
         await context.channel.post(channelMessage)

@@ -8,6 +8,7 @@ enum AppColors {
     static let jonesAgent = Color.red
     static let userMessage = Color.blue
     static let systemMessage = Color.gray
+    static let errorBackground = Color.red.opacity(0.12)
     static let background = Color(.windowBackgroundColor)
     static let secondaryBackground = Color(.controlBackgroundColor)
     static let channelBackground = Color(.textBackgroundColor)
@@ -29,10 +30,15 @@ enum AppFonts {
     static let channelSender = Font.system(.caption, design: .monospaced, weight: .bold)
     static let channelBody = Font.system(.body, design: .monospaced)
     static let channelTimestamp = Font.system(.caption2, design: .monospaced)
+    static let markdownH1 = Font.system(.title2, design: .monospaced, weight: .bold)
+    static let markdownH2 = Font.system(.title3, design: .monospaced, weight: .bold)
+    static let markdownH3 = Font.system(.headline, design: .monospaced, weight: .bold)
     static let taskTitle = Font.headline
     static let taskDescription = Font.subheadline
     static let sectionHeader = Font.title3.bold()
     static let inputField = Font.system(.body, design: .monospaced)
+    static let inspectorLabel = Font.system(.caption, design: .monospaced)
+    static let inspectorBody = Font.system(.caption2, design: .monospaced)
 }
 
 /// Task status badge styling.

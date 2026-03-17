@@ -19,6 +19,7 @@ struct AgentSmithApp: App {
                 .keyboardShortcut("k", modifiers: [.command, .shift])
                 .disabled(!viewModel.isRunning)
             }
+
         }
 
         Settings {

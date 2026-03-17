@@ -51,6 +51,13 @@ struct MainView: View {
                 )
             }
         }
+        .inspector(isPresented: $viewModel.showInspector) {
+            InspectorView(
+                messages: viewModel.messages,
+                processingRoles: viewModel.processingRoles,
+                agentToolNames: viewModel.agentToolNames
+            )
+        }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 if viewModel.isRunning {
@@ -71,13 +78,17 @@ struct MainView: View {
                     }
                     .foregroundStyle(.green)
                 }
-            }
 
-            ToolbarItem(placement: .automatic) {
                 Button("Clear Log", systemImage: "trash") {
                     viewModel.clearLog()
                 }
                 .disabled(viewModel.messages.isEmpty)
+
+                Button(viewModel.showInspector ? "Hide Inspector" : "Show Inspector",
+                       systemImage: viewModel.showInspector ? "sidebar.right.fill" : "sidebar.right") {
+                    viewModel.showInspector.toggle()
+                }
+                .keyboardShortcut("i", modifiers: [.command, .option])
             }
         }
         .navigationTitle("Agent Smith")

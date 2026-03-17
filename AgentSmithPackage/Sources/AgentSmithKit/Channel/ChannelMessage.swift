@@ -7,6 +7,8 @@ public struct ChannelMessage: Identifiable, Codable, Sendable {
     public var sender: Sender
     /// The intended recipient. `nil` means the message is public (visible to all agents).
     public var recipientID: UUID?
+    /// The role of the intended recipient, stored for display purposes.
+    public var recipientRole: AgentRole?
     public var content: String
     /// File attachments (images, documents, any media).
     public var attachments: [Attachment]
@@ -17,7 +19,7 @@ public struct ChannelMessage: Identifiable, Codable, Sendable {
     public var isPrivate: Bool { recipientID != nil }
 
     private enum CodingKeys: String, CodingKey {
-        case id, timestamp, sender, recipientID, content, attachments, metadata
+        case id, timestamp, sender, recipientID, recipientRole, content, attachments, metadata
     }
 
     /// Backward-compatible decoding: old JSON without newer fields defaults gracefully.
@@ -27,6 +29,7 @@ public struct ChannelMessage: Identifiable, Codable, Sendable {
         timestamp = try container.decode(Date.self, forKey: .timestamp)
         sender = try container.decode(Sender.self, forKey: .sender)
         recipientID = try container.decodeIfPresent(UUID.self, forKey: .recipientID)
+        recipientRole = try container.decodeIfPresent(AgentRole.self, forKey: .recipientRole)
         content = try container.decode(String.self, forKey: .content)
         attachments = try container.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
         metadata = try container.decodeIfPresent([String: AnyCodable].self, forKey: .metadata)
@@ -52,6 +55,7 @@ public struct ChannelMessage: Identifiable, Codable, Sendable {
         timestamp: Date = Date(),
         sender: Sender,
         recipientID: UUID? = nil,
+        recipientRole: AgentRole? = nil,
         content: String,
         attachments: [Attachment] = [],
         metadata: [String: AnyCodable]? = nil
@@ -60,6 +64,7 @@ public struct ChannelMessage: Identifiable, Codable, Sendable {
         self.timestamp = timestamp
         self.sender = sender
         self.recipientID = recipientID
+        self.recipientRole = recipientRole
         self.content = content
         self.attachments = attachments
         self.metadata = metadata

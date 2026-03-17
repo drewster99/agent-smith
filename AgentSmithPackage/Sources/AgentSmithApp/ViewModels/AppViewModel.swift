@@ -13,6 +13,12 @@ final class AppViewModel {
     var abortReason = ""
     var inputText = ""
     var pendingAttachments: [Attachment] = []
+    /// Roles of agents that are currently waiting for an LLM response.
+    var processingRoles: Set<AgentRole> = []
+    /// Tools available to each agent role, populated when agents come online.
+    var agentToolNames: [AgentRole: [String]] = [:]
+    /// Whether the Inspector panel is visible.
+    var showInspector = false
 
     /// Per-role LLM configurations, editable from settings.
     var smithConfig = LLMConfiguration.ollamaDefault
@@ -81,7 +87,28 @@ final class AppViewModel {
                 self.isAborted = true
                 self.abortReason = reason
                 self.isRunning = false
+                self.processingRoles.removeAll()
+                self.agentToolNames.removeAll()
                 self.runtime = nil
+            }
+        }
+
+        // Track which agents are actively waiting for an LLM response
+        await newRuntime.setOnProcessingStateChange { [weak self] role, isProcessing in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if isProcessing {
+                    self.processingRoles.insert(role)
+                } else {
+                    self.processingRoles.remove(role)
+                }
+            }
+        }
+
+        // Capture tool names from each agent when it comes online
+        await newRuntime.setOnAgentStarted { [weak self] role, toolNames in
+            Task { @MainActor [weak self] in
+                self?.agentToolNames[role] = toolNames
             }
         }
 
@@ -138,6 +165,8 @@ final class AppViewModel {
         guard let runtime else { return }
         await runtime.stopAll()
         isRunning = false
+        processingRoles.removeAll()
+        agentToolNames.removeAll()
         channelStreamTask?.cancel()
         channelStreamTask = nil
         self.runtime = nil

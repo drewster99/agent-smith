@@ -6,13 +6,31 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		49453AE12F6A119B00695CE3 /* AgentSmithKit in Frameworks */ = {isa = PBXBuildFile; productRef = 49453AE02F6A119B00695CE3 /* AgentSmithKit */; };
+		49453AFF2F6A12AF00695CE3 /* AgentSmithKit in Frameworks */ = {isa = PBXBuildFile; productRef = 49453AFE2F6A12AF00695CE3 /* AgentSmithKit */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		49BC83A12F6230E0000DD756 /* AgentSmith.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgentSmith.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		49453B002F6A131400695CE3 /* Exceptions for "AgentSmith" folder in "AgentSmith" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 49BC83A02F6230E0000DD756 /* AgentSmith */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		49BC83A32F6230E0000DD756 /* AgentSmith */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				49453B002F6A131400695CE3 /* Exceptions for "AgentSmith" folder in "AgentSmith" target */,
+			);
 			path = AgentSmith;
 			sourceTree = "<group>";
 		};
@@ -23,6 +41,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				49453AE12F6A119B00695CE3 /* AgentSmithKit in Frameworks */,
+				49453AFF2F6A12AF00695CE3 /* AgentSmithKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,7 +85,8 @@
 			);
 			name = AgentSmith;
 			packageProductDependencies = (
-				49BC83B22F6230E2000DD756 /* AgentSmithKit */,
+				49453AE02F6A119B00695CE3 /* AgentSmithKit */,
+				49453AFE2F6A12AF00695CE3 /* AgentSmithKit */,
 			);
 			productName = AgentSmith;
 			productReference = 49BC83A12F6230E0000DD756 /* AgentSmith.app */;
@@ -96,7 +117,7 @@
 			mainGroup = 49BC83982F6230E0000DD756;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				49BC83B12F6230E2000DD756 /* XCLocalSwiftPackageReference ".." */,
+				49453AFD2F6A12AF00695CE3 /* XCLocalSwiftPackageReference "../AgentSmithPackage" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 49BC83A22F6230E0000DD756 /* Products */;
@@ -260,9 +281,12 @@
 				DEVELOPMENT_TEAM = P8MA38JTXY;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AgentSmith/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -293,9 +317,12 @@
 				DEVELOPMENT_TEAM = P8MA38JTXY;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AgentSmith/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -339,14 +366,18 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		49BC83B12F6230E2000DD756 /* XCLocalSwiftPackageReference ".." */ = {
+		49453AFD2F6A12AF00695CE3 /* XCLocalSwiftPackageReference "../AgentSmithPackage" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = ..;
+			relativePath = ../AgentSmithPackage;
 		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		49BC83B22F6230E2000DD756 /* AgentSmithKit */ = {
+		49453AE02F6A119B00695CE3 /* AgentSmithKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AgentSmithKit;
+		};
+		49453AFE2F6A12AF00695CE3 /* AgentSmithKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AgentSmithKit;
 		};

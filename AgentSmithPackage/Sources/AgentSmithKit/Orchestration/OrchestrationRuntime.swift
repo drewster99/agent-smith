@@ -25,6 +25,10 @@ public actor OrchestrationRuntime {
     private var aborted = false
     /// Callback to notify the app layer when abort is triggered.
     private var onAbort: (@Sendable (String) -> Void)?
+    /// Callback to notify the app layer when an agent starts or stops an LLM call.
+    private var onProcessingStateChange: (@Sendable (AgentRole, Bool) -> Void)?
+    /// Callback fired when an agent comes online, passing its role and configured tool names.
+    private var onAgentStarted: (@Sendable (AgentRole, [String]) -> Void)?
 
     public init(llmConfigs: [AgentRole: LLMConfiguration]) {
         self.channel = MessageChannel()
@@ -40,6 +44,16 @@ public actor OrchestrationRuntime {
     /// Registers a callback fired when Jones triggers an abort.
     public func setOnAbort(_ handler: @escaping @Sendable (String) -> Void) {
         onAbort = handler
+    }
+
+    /// Registers a callback fired when an agent starts or stops an LLM API call.
+    public func setOnProcessingStateChange(_ handler: @escaping @Sendable (AgentRole, Bool) -> Void) {
+        onProcessingStateChange = handler
+    }
+
+    /// Registers a callback fired when an agent comes online, with its role and tool names.
+    public func setOnAgentStarted(_ handler: @escaping @Sendable (AgentRole, [String]) -> Void) {
+        onAgentStarted = handler
     }
 
     /// Whether the system has been aborted by Jones.
@@ -105,6 +119,7 @@ public actor OrchestrationRuntime {
         }
 
         await smithAgent.start(initialInstruction: initialInstruction)
+        onAgentStarted?(.smith, smithAgent.toolNames)
 
         await channel.post(ChannelMessage(
             sender: .system,
@@ -124,6 +139,7 @@ public actor OrchestrationRuntime {
         await channel.post(ChannelMessage(
             sender: .user,
             recipientID: smithID,
+            recipientRole: .smith,
             content: text,
             attachments: attachments
         ))
@@ -235,7 +251,9 @@ public actor OrchestrationRuntime {
 
         // Start both agents — they will auto-announce on the channel.
         await jonesAgent.start()
+        onAgentStarted?(.jones, jonesAgent.toolNames)
         await brownAgent.start()
+        onAgentStarted?(.brown, brownAgent.toolNames)
 
         return brownID
     }
@@ -315,8 +333,16 @@ public actor OrchestrationRuntime {
             onSelfTerminate: { [weak self] in
                 guard let self else { return }
                 await self.handleAgentSelfTerminate(id: agentID)
+            },
+            onProcessingStateChange: { [weak self] isProcessing in
+                guard let self else { return }
+                Task { await self.notifyProcessingStateChange(role: role, isProcessing: isProcessing) }
             }
         )
+    }
+
+    private func notifyProcessingStateChange(role: AgentRole, isProcessing: Bool) {
+        onProcessingStateChange?(role, isProcessing)
     }
 
     /// Cleans up registry entries and channel subscriptions when an agent's run loop exits on its own.

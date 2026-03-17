@@ -46,12 +46,27 @@ private struct MessageRow: View {
         message.metadata?["tool"] != nil
     }
 
+    private var isErrorMessage: Bool {
+        if case .bool(let value) = message.metadata?["isError"] { return value }
+        return false
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
+            // Sender header: name, timestamp, and private indicator if applicable
             HStack(spacing: 6) {
                 Text(message.sender.displayName)
                     .font(AppFonts.channelSender)
                     .foregroundStyle(senderColor)
+
+                if message.isPrivate {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    Text("→ \(message.recipientRole?.displayName ?? "private")")
+                        .font(AppFonts.channelTimestamp)
+                        .foregroundStyle(.secondary)
+                }
 
                 Text(message.timestamp, style: .time)
                     .font(AppFonts.channelTimestamp)
@@ -60,23 +75,18 @@ private struct MessageRow: View {
 
             if isToolMessage {
                 DisclosureGroup {
-                    Text(message.content)
-                        .font(AppFonts.channelBody)
-                        .foregroundStyle(.primary)
-                        .textSelection(.enabled)
+                    MarkdownText(content: message.content, baseFont: AppFonts.channelBody)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 } label: {
                     Text(toolSummary)
                         .font(AppFonts.channelBody)
                         .foregroundStyle(.secondary)
                 }
             } else {
-                Text(message.content)
-                    .font(AppFonts.channelBody)
-                    .foregroundStyle(.primary)
-                    .textSelection(.enabled)
+                MarkdownText(content: message.content, baseFont: AppFonts.channelBody)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            // Display attachments
             if !message.attachments.isEmpty {
                 ForEach(message.attachments) { attachment in
                     AttachmentView(attachment: attachment)
@@ -86,6 +96,8 @@ private struct MessageRow: View {
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isErrorMessage ? AppColors.errorBackground : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 
     private var toolSummary: String {

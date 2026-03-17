@@ -11,6 +11,7 @@ enum AppColors {
     static let background = Color(.windowBackgroundColor)
     static let secondaryBackground = Color(.controlBackgroundColor)
     static let channelBackground = Color(.textBackgroundColor)
+    static let errorBackground = Color.red.opacity(0.12)
 
     /// Returns the color for a given channel message sender.
     static func color(for sender: ChannelMessage.Sender) -> Color {
@@ -33,6 +34,11 @@ enum AppFonts {
     static let taskDescription = Font.subheadline
     static let sectionHeader = Font.title3.bold()
     static let inputField = Font.system(.body, design: .monospaced)
+    static let markdownH1 = Font.system(.title2, design: .default, weight: .bold)
+    static let markdownH2 = Font.system(.title3, design: .default, weight: .bold)
+    static let markdownH3 = Font.system(.headline, design: .default, weight: .bold)
+    static let inspectorLabel = Font.system(.caption, design: .monospaced)
+    static let inspectorBody = Font.system(.caption2, design: .monospaced)
 }
 
 /// Task status badge styling.

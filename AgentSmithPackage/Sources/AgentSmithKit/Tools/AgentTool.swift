@@ -43,6 +43,8 @@ public struct ToolContext: Sendable {
     /// Called when the agent's run loop exits naturally (errors or self-termination).
     /// Allows the runtime to clean up subscriptions and registry entries.
     public let onSelfTerminate: @Sendable () async -> Void
+    /// Called with `true` when the agent begins an LLM API call, and `false` when it completes.
+    public let onProcessingStateChange: @Sendable (Bool) -> Void
 
     public init(
         agentID: UUID,
@@ -53,7 +55,8 @@ public struct ToolContext: Sendable {
         terminateAgent: @escaping @Sendable (UUID) async -> Bool,
         abort: @escaping @Sendable (String) async -> Void,
         agentRoleForID: @escaping @Sendable (UUID) async -> AgentRole?,
-        onSelfTerminate: @escaping @Sendable () async -> Void = {}
+        onSelfTerminate: @escaping @Sendable () async -> Void = {},
+        onProcessingStateChange: @escaping @Sendable (Bool) -> Void = { _ in }
     ) {
         self.agentID = agentID
         self.agentRole = agentRole
@@ -64,5 +67,6 @@ public struct ToolContext: Sendable {
         self.abort = abort
         self.agentRoleForID = agentRoleForID
         self.onSelfTerminate = onSelfTerminate
+        self.onProcessingStateChange = onProcessingStateChange
     }
 }

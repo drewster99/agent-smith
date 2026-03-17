@@ -104,6 +104,11 @@ public actor AgentActor {
         isRunning
     }
 
+    /// The names of tools available to this agent. Nonisolated because `configuration` is a let.
+    public nonisolated var toolNames: [String] {
+        configuration.toolNames
+    }
+
     // MARK: - Private
 
     private func runLoop() async {
@@ -118,6 +123,8 @@ public actor AgentActor {
 
             do {
                 let toolDefinitions = tools.map(\.definition)
+                toolContext.onProcessingStateChange(true)
+                defer { toolContext.onProcessingStateChange(false) }
                 let response = try await provider.send(
                     messages: conversationHistory,
                     tools: toolDefinitions
@@ -137,13 +144,15 @@ public actor AgentActor {
 
                 await toolContext.channel.post(ChannelMessage(
                     sender: .system,
-                    content: "Agent \(configuration.role.displayName) error (\(consecutiveErrors)/\(Self.maxConsecutiveErrors)): \(error.localizedDescription)"
+                    content: "Agent \(configuration.role.displayName) error (\(consecutiveErrors)/\(Self.maxConsecutiveErrors)): \(error.localizedDescription)",
+                    metadata: ["isError": .bool(true)]
                 ))
 
                 if consecutiveErrors >= Self.maxConsecutiveErrors {
                     await toolContext.channel.post(ChannelMessage(
                         sender: .system,
-                        content: "Agent \(configuration.role.displayName) stopped after \(Self.maxConsecutiveErrors) consecutive errors."
+                        content: "Agent \(configuration.role.displayName) stopped after \(Self.maxConsecutiveErrors) consecutive errors.",
+                        metadata: ["isError": .bool(true)]
                     ))
                     isRunning = false
                     break
