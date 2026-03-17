@@ -54,7 +54,16 @@ public actor AgentActor {
             hasUnprocessedInput = true
         }
 
+        let role = configuration.role
+        let channel = toolContext.channel
+        let agentID = id
         runTask = Task { [weak self] in
+            // Announce on the public channel so all agents and the UI know we're alive.
+            await channel.post(ChannelMessage(
+                sender: .agent(role),
+                content: "\(role.displayName) agent \(agentID) is online."
+            ))
+
             guard let self else { return }
             await self.runLoop()
         }
@@ -68,15 +77,24 @@ public actor AgentActor {
     }
 
     /// Injects a channel message into the agent's pending queue.
+    ///
+    /// Delivery rules:
+    /// - Private messages (recipientID != nil) are only delivered to the named recipient.
+    /// - Public messages are delivered to everyone except the sender's own role.
+    /// - System messages are always delivered.
     public func receiveChannelMessage(_ message: ChannelMessage) {
         guard isRunning else { return }
-        // Ignore messages from our own role to avoid echo loops.
-        // NOTE: This filters by role, not by individual agent ID. Works correctly
-        // with the current single-agent-per-role design but would need revision
-        // if multiple agents of the same role were supported.
-        if case .agent(let role) = message.sender, role == configuration.role {
-            return
+
+        if let recipientID = message.recipientID {
+            // Private message — only the intended recipient receives it.
+            guard recipientID == id else { return }
+        } else {
+            // Public message — ignore our own role to avoid echo loops.
+            if case .agent(let role) = message.sender, role == configuration.role {
+                return
+            }
         }
+
         pendingChannelMessages.append(message)
     }
 

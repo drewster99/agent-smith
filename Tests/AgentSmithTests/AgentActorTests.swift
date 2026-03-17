@@ -13,9 +13,10 @@ struct AgentActorTests {
             agentRole: .brown,
             channel: channel,
             taskStore: taskStore,
-            spawnBrown: { _, _ in nil },
+            spawnBrown: { nil },
             terminateAgent: { _ in false },
-            abort: { _ in }
+            abort: { _ in },
+            agentRoleForID: { _ in nil }
         )
     }
 
@@ -103,9 +104,10 @@ struct AgentActorTests {
             agentRole: .smith,
             channel: MessageChannel(),
             taskStore: taskStore,
-            spawnBrown: { _, _ in nil },
+            spawnBrown: { nil },
             terminateAgent: { _ in false },
-            abort: { _ in }
+            abort: { _ in },
+            agentRoleForID: { _ in nil }
         )
         let tool = CreateTaskTool()
 
@@ -133,9 +135,10 @@ struct AgentActorTests {
             agentRole: .smith,
             channel: channel,
             taskStore: TaskStore(),
-            spawnBrown: { _, _ in nil },
+            spawnBrown: { nil },
             terminateAgent: { _ in false },
-            abort: { _ in }
+            abort: { _ in },
+            agentRoleForID: { _ in nil }
         )
         let tool = SendMessageTool()
 

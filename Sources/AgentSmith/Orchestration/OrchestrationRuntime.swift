@@ -6,12 +6,15 @@ public actor OrchestrationRuntime {
     public let taskStore: TaskStore
 
     private var smith: AgentActor?
+    private var smithID: UUID?
     private var agents: [UUID: AgentActor] = [:]
 
     /// Current Brown agent ID (only one active at a time).
     private var currentBrownID: UUID?
     /// Maps Brown agent IDs to their paired Jones agent IDs.
     private var brownToJones: [UUID: UUID] = [:]
+    /// Maps agent IDs to their roles for access-control lookups.
+    private var agentRoles: [UUID: AgentRole] = [:]
 
     private var llmConfigs: [AgentRole: LLMConfiguration]
     private var monitoringTimer: MonitoringTimer?
@@ -47,6 +50,11 @@ public actor OrchestrationRuntime {
         aborted = false
     }
 
+    /// Returns the role of the agent with the given ID, if it exists.
+    public func roleForAgent(id: UUID) -> AgentRole? {
+        agentRoles[id]
+    }
+
     /// Starts the Smith agent and the monitoring timer.
     public func start() async {
         guard smith == nil else { return }
@@ -55,11 +63,12 @@ public actor OrchestrationRuntime {
         let smithConfig = llmConfigs[.smith] ?? .ollamaDefault
         let provider = makeProvider(config: smithConfig)
 
-        let smithID = UUID()
-        let context = makeToolContext(agentID: smithID, role: .smith)
+        let id = UUID()
+        smithID = id
+        let context = makeToolContext(agentID: id, role: .smith)
 
         let smithAgent = AgentActor(
-            id: smithID,
+            id: id,
             configuration: AgentConfiguration(
                 role: .smith,
                 llmConfig: smithConfig,
@@ -72,13 +81,14 @@ public actor OrchestrationRuntime {
         )
 
         smith = smithAgent
-        agents[smithID] = smithAgent
+        agents[id] = smithAgent
+        agentRoles[id] = .smith
 
         let subID = await channel.subscribe { [weak smithAgent] message in
             guard let smithAgent else { return }
             Task { await smithAgent.receiveChannelMessage(message) }
         }
-        agentSubscriptions[smithID] = [subID]
+        agentSubscriptions[id] = [subID]
 
         // Reset stalled tasks from prior sessions — no Brown is running them anymore
         let allTasks = await taskStore.allTasks()
@@ -109,10 +119,11 @@ public actor OrchestrationRuntime {
         await monitoringTimer?.start()
     }
 
-    /// Sends a user message (with optional attachments) to the channel.
+    /// Sends a user message (with optional attachments) privately to Smith.
     public func sendUserMessage(_ text: String, attachments: [Attachment] = []) async {
         await channel.post(ChannelMessage(
             sender: .user,
+            recipientID: smithID,
             content: text,
             attachments: attachments
         ))
@@ -135,9 +146,11 @@ public actor OrchestrationRuntime {
         agentSubscriptions.removeAll()
 
         agents.removeAll()
+        agentRoles.removeAll()
         brownToJones.removeAll()
         currentBrownID = nil
         smith = nil
+        smithID = nil
 
         await channel.post(ChannelMessage(
             sender: .system,
@@ -160,7 +173,7 @@ public actor OrchestrationRuntime {
     }
 
     /// Spawns a Brown+Jones pair. Terminates any existing Brown first (single Brown policy).
-    public func spawnBrown(taskID: String, instructions: String) async -> UUID? {
+    public func spawnBrown() async -> UUID? {
         guard !aborted else { return nil }
 
         // Enforce single Brown — terminate existing one if present
@@ -204,6 +217,8 @@ public actor OrchestrationRuntime {
 
         agents[brownID] = brownAgent
         agents[jonesID] = jonesAgent
+        agentRoles[brownID] = .brown
+        agentRoles[jonesID] = .jones
         brownToJones[brownID] = jonesID
         currentBrownID = brownID
 
@@ -218,16 +233,9 @@ public actor OrchestrationRuntime {
         agentSubscriptions[brownID] = [brownSubID]
         agentSubscriptions[jonesID] = [jonesSubID]
 
-        let taskInstruction = "Task ID: \(taskID)\nInstructions: \(instructions)"
-        await jonesAgent.start(
-            initialInstruction: "Monitor the following task execution for safety.\n\(taskInstruction)"
-        )
-        await brownAgent.start(initialInstruction: taskInstruction)
-
-        await channel.post(ChannelMessage(
-            sender: .system,
-            content: "Brown agent \(brownID) spawned with Jones monitor \(jonesID)."
-        ))
+        // Start both agents — they will auto-announce on the channel.
+        await jonesAgent.start()
+        await brownAgent.start()
 
         return brownID
     }
@@ -238,12 +246,14 @@ public actor OrchestrationRuntime {
 
         await agent.stop()
         agents.removeValue(forKey: id)
+        agentRoles.removeValue(forKey: id)
         await unsubscribeAgent(id: id)
 
         if let jonesID = brownToJones[id] {
             if let jones = agents[jonesID] {
                 await jones.stop()
                 agents.removeValue(forKey: jonesID)
+                agentRoles.removeValue(forKey: jonesID)
             }
             await unsubscribeAgent(id: jonesID)
             brownToJones.removeValue(forKey: id)
@@ -286,9 +296,9 @@ public actor OrchestrationRuntime {
             agentRole: role,
             channel: channel,
             taskStore: taskStore,
-            spawnBrown: { [weak self] taskID, instructions in
+            spawnBrown: { [weak self] in
                 guard let self else { return nil }
-                return await self.spawnBrown(taskID: taskID, instructions: instructions)
+                return await self.spawnBrown()
             },
             terminateAgent: { [weak self] id in
                 guard let self else { return false }
@@ -297,6 +307,10 @@ public actor OrchestrationRuntime {
             abort: { [weak self] reason in
                 guard let self else { return }
                 await self.abort(reason: reason)
+            },
+            agentRoleForID: { [weak self] id in
+                guard let self else { return nil }
+                return await self.roleForAgent(id: id)
             }
         )
     }

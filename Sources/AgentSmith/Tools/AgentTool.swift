@@ -32,21 +32,24 @@ public struct ToolContext: Sendable {
     public let agentRole: AgentRole
     public let channel: MessageChannel
     public let taskStore: TaskStore
-    /// Callback to request spawning a new Brown+Jones pair.
-    public let spawnBrown: @Sendable (String, String) async -> UUID?
+    /// Callback to request spawning a new Brown+Jones pair. Returns the Brown agent's ID.
+    public let spawnBrown: @Sendable () async -> UUID?
     /// Callback to terminate an agent by ID.
     public let terminateAgent: @Sendable (UUID) async -> Bool
     /// Emergency abort: stops all agents. Requires user interaction to restart.
     public let abort: @Sendable (String) async -> Void
+    /// Resolves an agent ID to its role, used for access-control checks.
+    public let agentRoleForID: @Sendable (UUID) async -> AgentRole?
 
     public init(
         agentID: UUID,
         agentRole: AgentRole,
         channel: MessageChannel,
         taskStore: TaskStore,
-        spawnBrown: @escaping @Sendable (String, String) async -> UUID?,
+        spawnBrown: @escaping @Sendable () async -> UUID?,
         terminateAgent: @escaping @Sendable (UUID) async -> Bool,
-        abort: @escaping @Sendable (String) async -> Void
+        abort: @escaping @Sendable (String) async -> Void,
+        agentRoleForID: @escaping @Sendable (UUID) async -> AgentRole?
     ) {
         self.agentID = agentID
         self.agentRole = agentRole
@@ -55,5 +58,6 @@ public struct ToolContext: Sendable {
         self.spawnBrown = spawnBrown
         self.terminateAgent = terminateAgent
         self.abort = abort
+        self.agentRoleForID = agentRoleForID
     }
 }
