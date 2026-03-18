@@ -89,7 +89,8 @@ public actor OrchestrationRuntime {
 
         let id = UUID()
         smithID = id
-        let context = makeToolContext(agentID: id, role: .smith)
+        let followUpScheduler = FollowUpScheduler()
+        let context = makeToolContext(agentID: id, role: .smith, followUpScheduler: followUpScheduler)
 
         let smithAgent = AgentActor(
             id: id,
@@ -104,6 +105,7 @@ public actor OrchestrationRuntime {
             tools: SmithBehavior.tools(),
             toolContext: context
         )
+        await followUpScheduler.set(agent: smithAgent)
 
         smith = smithAgent
         agents[id] = smithAgent
@@ -416,7 +418,11 @@ public actor OrchestrationRuntime {
         }
     }
 
-    private func makeToolContext(agentID: UUID, role: AgentRole) -> ToolContext {
+    private func makeToolContext(
+        agentID: UUID,
+        role: AgentRole,
+        followUpScheduler: FollowUpScheduler? = nil
+    ) -> ToolContext {
         ToolContext(
             agentID: agentID,
             agentRole: role,
@@ -449,6 +455,9 @@ public actor OrchestrationRuntime {
             onProcessingStateChange: { [weak self] isProcessing in
                 guard let self else { return }
                 Task { await self.notifyProcessingStateChange(role: role, isProcessing: isProcessing) }
+            },
+            scheduleFollowUp: { [followUpScheduler] delay in
+                await followUpScheduler?.schedule(after: delay)
             }
         )
     }

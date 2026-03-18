@@ -3,11 +3,16 @@ import Foundation
 /// Allows Smith to spawn a new Brown+Jones agent pair.
 public struct SpawnBrownTool: AgentTool {
     public let name = "spawn_brown"
-    public let toolDescription = "Spawn a new Brown agent (a Jones data archival agent starts alongside it automatically). Returns the Brown agent's ID. Send task instructions separately via send_message."
+    public let toolDescription = "Spawn a new Brown agent (a Jones data archival agent starts alongside it automatically). Returns the Brown agent's ID. Send task instructions separately via send_message. Optionally provide a task_id to associate the spawned agent with a task."
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
-        "properties": .dictionary([:]),
+        "properties": .dictionary([
+            "task_id": .dictionary([
+                "type": .string("string"),
+                "description": .string("Optional UUID of the task to assign this Brown agent to.")
+            ])
+        ]),
         "required": .array([])
     ]
 
@@ -16,6 +21,11 @@ public struct SpawnBrownTool: AgentTool {
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
         guard let brownID = await context.spawnBrown() else {
             return "Failed to spawn Brown agent."
+        }
+
+        if case .string(let taskIDString) = arguments["task_id"],
+           let taskID = UUID(uuidString: taskIDString) {
+            await context.taskStore.assignAgent(taskID: taskID, agentID: brownID)
         }
 
         return "Brown agent spawned: \(brownID). Send it task instructions via send_message with recipient_id."

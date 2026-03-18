@@ -73,6 +73,9 @@ public enum BrownBehavior {
         - If you encounter an error or a denial, try to resolve it. If stuck, report the blocker to Smith clearly.
         - Always verify your work before reporting completion.
         - Be concise in messages to Smith — report what matters.
+        
+        ## Final Note
+        - Be patient. Be terse but complete. Include all relevant info, but nothing additional (including extra wordiness). Don't spastically re-send messages.
         """
     }
 }

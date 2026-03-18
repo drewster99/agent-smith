@@ -38,6 +38,8 @@ struct ChannelLogView: View {
 private struct MessageRow: View {
     let message: ChannelMessage
 
+    @State private var isExpanded = false
+
     private var senderColor: Color {
         AppColors.color(for: message.sender)
     }
@@ -52,6 +54,13 @@ private struct MessageRow: View {
 
     private var isToolMessage: Bool {
         message.metadata?["tool"] != nil
+    }
+
+    private var isToolRequest: Bool {
+        if case .string(let kind) = message.metadata?["messageKind"] {
+            return kind == "tool_request"
+        }
+        return false
     }
 
     private var isErrorMessage: Bool {
@@ -82,13 +91,18 @@ private struct MessageRow: View {
             }
 
             if isToolMessage {
-                DisclosureGroup {
+                DisclosureGroup(isExpanded: $isExpanded) {
                     MarkdownText(content: message.content, baseFont: AppFonts.channelBody)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } label: {
                     Text(toolSummary)
                         .font(AppFonts.channelBody)
                         .foregroundStyle(.secondary)
+                }
+                .onAppear {
+                    if isToolRequest {
+                        isExpanded = true
+                    }
                 }
             } else {
                 MarkdownText(content: message.content, baseFont: AppFonts.channelBody)
@@ -110,9 +124,9 @@ private struct MessageRow: View {
 
     private var toolSummary: String {
         if case .string(let toolName) = message.metadata?["tool"] {
-            return "Tool call: \(toolName)"
+            return isToolRequest ? "Tool call requested: \(toolName)" : "Executing: \(toolName)"
         }
-        return "Tool call"
+        return isToolRequest ? "Tool call requested" : "Tool call"
     }
 }
 

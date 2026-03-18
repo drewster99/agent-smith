@@ -59,6 +59,8 @@ public struct ToolContext: Sendable {
     public let onSelfTerminate: @Sendable () async -> Void
     /// Called with `true` when the agent begins an LLM API call, and `false` when it completes.
     public let onProcessingStateChange: @Sendable (Bool) -> Void
+    /// Schedules a deferred wake-up for the agent after the given number of seconds.
+    public let scheduleFollowUp: @Sendable (TimeInterval) async -> Void
 
     public init(
         agentID: UUID,
@@ -71,7 +73,8 @@ public struct ToolContext: Sendable {
         agentRoleForID: @escaping @Sendable (UUID) async -> AgentRole?,
         agentIDForRole: @escaping @Sendable (AgentRole) async -> UUID? = { _ in nil },
         onSelfTerminate: @escaping @Sendable () async -> Void = {},
-        onProcessingStateChange: @escaping @Sendable (Bool) -> Void = { _ in }
+        onProcessingStateChange: @escaping @Sendable (Bool) -> Void = { _ in },
+        scheduleFollowUp: @escaping @Sendable (TimeInterval) async -> Void = { _ in }
     ) {
         self.agentID = agentID
         self.agentRole = agentRole
@@ -84,5 +87,6 @@ public struct ToolContext: Sendable {
         self.agentIDForRole = agentIDForRole
         self.onSelfTerminate = onSelfTerminate
         self.onProcessingStateChange = onProcessingStateChange
+        self.scheduleFollowUp = scheduleFollowUp
     }
 }

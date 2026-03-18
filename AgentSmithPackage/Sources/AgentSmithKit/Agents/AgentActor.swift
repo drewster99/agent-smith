@@ -26,6 +26,20 @@ public actor AgentActor {
     /// Prevents re-querying the LLM with identical context after a text-only response.
     private var hasUnprocessedInput = false
 
+    /// Timestamp of the most recently received channel message. Used for debounce.
+    private var lastChannelMessageAt: Date?
+    /// True only when the agent was idle and new channel messages arrived, triggering
+    /// the debounce window. Cleared once we commit to an LLM call. Stays false during
+    /// an active tool loop so tool results are processed without unnecessary delay.
+    private var debouncingForMessages = false
+    /// When non-nil, the agent wakes at this time even without new messages.
+    private var scheduledWakeAt: Date?
+    /// The currently sleeping idle task. Cancelling it wakes the agent early.
+    private var idleSleepTask: Task<Void, Never>?
+
+    /// Seconds of channel silence required before processing new messages.
+    private static let messageDebounceInterval: TimeInterval = 10
+
     /// Tracks consecutive LLM errors for exponential backoff.
     private var consecutiveErrors = 0
     private static let maxConsecutiveErrors = 10
@@ -71,6 +85,17 @@ public actor AgentActor {
     /// Updates the idle poll interval for this agent.
     public func updatePollInterval(_ interval: TimeInterval) {
         pollInterval = interval
+    }
+
+    /// Schedules a follow-up wake after the given delay.
+    /// If a sooner wake is already scheduled, this call is ignored.
+    public func scheduleFollowUp(after delay: TimeInterval) {
+        let newWakeAt = Date().addingTimeInterval(delay)
+        if let existing = scheduledWakeAt, existing <= newWakeAt {
+            return
+        }
+        scheduledWakeAt = newWakeAt
+        interruptIdleSleep()
     }
 
     /// Starts the agent's run loop.
@@ -135,6 +160,13 @@ public actor AgentActor {
         }
 
         pendingChannelMessages.append(message)
+        lastChannelMessageAt = Date()
+        // Only start debouncing if the agent was idle — during an active tool loop
+        // we want tool results processed immediately without the debounce delay.
+        if !hasUnprocessedInput {
+            debouncingForMessages = true
+        }
+        interruptIdleSleep()
     }
 
     /// Whether the agent is currently running.
@@ -152,11 +184,24 @@ public actor AgentActor {
     private func runLoop() async {
         while isRunning, !Task.isCancelled {
             drainPendingMessages()
+            checkScheduledWake()
             pruneHistoryIfNeeded()
 
             guard hasUnprocessedInput else {
-                try? await Task.sleep(for: .seconds(pollInterval))
+                await idleWait()
                 continue
+            }
+
+            // If the agent transitioned from idle due to new channel messages,
+            // wait for the burst to settle before querying the LLM. This flag
+            // is false during an active tool loop, so tool results aren't delayed.
+            if debouncingForMessages {
+                let debounce = debounceTimeRemaining()
+                if debounce > 0 {
+                    await idleWait(maxDuration: debounce)
+                    continue
+                }
+                debouncingForMessages = false
             }
 
             do {
@@ -196,7 +241,7 @@ public actor AgentActor {
                     break
                 }
 
-                try? await Task.sleep(for: .seconds(backoff))
+                await idleWait(maxDuration: backoff)
             }
         }
         await toolContext.onSelfTerminate()
@@ -324,6 +369,56 @@ public actor AgentActor {
         } catch {
             return "Tool error: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Wake / sleep helpers
+
+    /// Cancels the current idle sleep, causing the run loop to re-evaluate immediately.
+    private func interruptIdleSleep() {
+        idleSleepTask?.cancel()
+    }
+
+    /// Sleeps for up to `maxDuration` seconds, or until interrupted by a new message
+    /// or a scheduled follow-up that becomes due sooner.
+    private func idleWait(maxDuration: TimeInterval? = nil) async {
+        var duration = maxDuration ?? pollInterval
+        if let wakeAt = scheduledWakeAt {
+            let untilWake = max(0, wakeAt.timeIntervalSinceNow)
+            duration = min(duration, untilWake)
+        }
+        duration = max(0.1, duration)
+
+        let task = Task<Void, Never> {
+            do { try await Task.sleep(for: .seconds(duration)) } catch { }
+        }
+        idleSleepTask = task
+        // withTaskCancellationHandler ensures that if the run loop task itself is
+        // cancelled (e.g., via stop()), we immediately cancel the inner sleep rather
+        // than waiting for the full duration.
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        idleSleepTask = nil
+    }
+
+    /// Returns how many seconds remain in the post-message debounce window, or 0 if settled.
+    private func debounceTimeRemaining() -> TimeInterval {
+        guard let last = lastChannelMessageAt else { return 0 }
+        return max(0, Self.messageDebounceInterval - Date().timeIntervalSince(last))
+    }
+
+    /// Fires a scheduled follow-up if its deadline has arrived, injecting a reminder
+    /// into the conversation so the LLM knows to review the current state.
+    private func checkScheduledWake() {
+        guard let wakeAt = scheduledWakeAt, Date() >= wakeAt else { return }
+        scheduledWakeAt = nil
+        conversationHistory.append(LLMMessage(
+            role: .user,
+            text: "[System: Your scheduled follow-up timer has elapsed. Review the current state and continue as appropriate.]"
+        ))
+        hasUnprocessedInput = true
     }
 
     private func drainPendingMessages() {

@@ -11,13 +11,14 @@ public enum SmithBehavior {
             ListTasksTool(),
             SpawnBrownTool(),
             TerminateAgentTool(),
-            AbortTool()
+            AbortTool(),
+            ScheduleFollowUpTool()
         ]
     }
 
     /// Tool names for configuration.
     public static var toolNames: [String] {
-        ["send_message", "create_task", "update_task", "list_tasks", "spawn_brown", "terminate_agent", "abort"]
+        ["send_message", "create_task", "update_task", "list_tasks", "spawn_brown", "terminate_agent", "abort", "schedule_followup"]
     }
 
     /// Enhanced system prompt for orchestration and iterative supervision.
@@ -52,7 +53,7 @@ public enum SmithBehavior {
 
         ## Your workflow:
         1. When the user gives you a request, analyze it and break it into 1 or more discrete tasks using create_task.
-        2. Call spawn_brown (no arguments) to create a Brown+Jones pair.
+        2. Call spawn_brown with the task_id of the task Brown will work on to create a Brown+Jones pair and assign Brown to that task.
            Only ONE Brown agent runs at a time. If you need to start fresh, terminate the current Brown first.
         3. Immediately send Brown its task instructions as a private message using recipient_id: "brown".
         4. Actively supervise Brown's work via channel messages:
@@ -77,6 +78,14 @@ public enum SmithBehavior {
         - If Agent Brown consistently fails, terminate it and spawn a new one with revised/improved instructions.
         - Keep the user informed of progress at meaningful milestones using recipient_id: "user".
         - The task list persists between sessions. On startup you receive specific instructions about task state — follow them before doing anything else.
+        
+        ## Scheduling
+        - Use schedule_followup(delay_seconds: N) when you need to check back after a delay —
+          e.g., after hitting a rate limit, waiting for a long-running operation, or giving Brown
+          time to finish before you review its work. New messages will still wake you sooner.
+
+        ## Final Note
+        - Be patient. Be terse but complete. Include all relevant info, but nothing additional (including extra wordiness). Don't spastically re-send messages.
         """
     }
 }
