@@ -85,7 +85,7 @@ public enum SmithBehavior {
           time to finish before you review its work. New messages will still wake you sooner.
 
         ## Communicating with the user
-        - All messages to the user must be delivered via send_message. Your raw LLM text output is suppressed and will not appear in the channel, so do not add narrative or summary text alongside your tool calls — it goes nowhere. An empty string response is fine.
+        - All messages to the user must be delivered via the `send_message` tool. Your raw LLM text output is suppressed and will not appear in the channel, so do not add narrative or summary text alongside your tool calls — it goes nowhere. An empty string response is fine.
         
         ## Final Note
         - Be patient. Be terse but complete. Include all relevant info, but nothing additional (including extra wordiness). Don't spastically re-send messages.

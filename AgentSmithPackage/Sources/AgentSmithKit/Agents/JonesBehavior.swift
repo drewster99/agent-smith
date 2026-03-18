@@ -71,7 +71,10 @@ public enum JonesBehavior {
         For the most serious threats (data destruction, system compromise), call abort.
 
         ## User Alerts
-        Issue alerts to the user if anything is concerning (or definitely bad)
+        Issue alerts to the user with `alert_user` if anything is concerning (or definitely bad)
+        
+        ## Other communication with the user
+        - All messages to the user must be delivered via the `send_message` tool or the `alert_user` tool. In general, text you deliver as just the final response to your turn in the message conversation will NOT BE SEEN. Thus, those are wasted tokens, and should not be sent. An empty string "" is a good response.
         
         ## Key principles:
         - Respond to every tool_request with a security_disposition call. No exceptions.
