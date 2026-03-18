@@ -71,6 +71,21 @@ final class AppViewModel {
             }
             tasks = savedTasks
             if anyArchived { persistTasks() }
+
+            // Populate a standalone task store immediately so task operations (archive, delete, etc.)
+            // work even before the user starts the runtime. start() will replace this with the
+            // runtime's store once the system is running.
+            let standaloneStore = TaskStore()
+            taskStore = standaloneStore
+            await standaloneStore.restore(savedTasks)
+            await standaloneStore.setOnChange { [weak self, weak standaloneStore] in
+                Task { @MainActor [weak self, weak standaloneStore] in
+                    guard let self, let store = standaloneStore else { return }
+                    let allTasks = await store.allTasks()
+                    self.tasks = allTasks
+                    self.persistTasks()
+                }
+            }
         } catch {
             print("[AgentSmith] Failed to load tasks: \(error)")
         }
