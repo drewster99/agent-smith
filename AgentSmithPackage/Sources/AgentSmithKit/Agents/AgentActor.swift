@@ -13,6 +13,12 @@ public actor AgentActor {
     private var isRunning = false
     private var runTask: Task<Void, Never>?
 
+    /// Gate used by Brown to submit tool-approval requests to Jones.
+    private var toolRequestGate: ToolRequestGate?
+
+    /// How long the idle loop waits between checks. Mutable so the user can adjust at runtime.
+    private var pollInterval: TimeInterval
+
     /// Messages from the channel that arrived while waiting for the LLM.
     private var pendingChannelMessages: [ChannelMessage] = []
 
@@ -38,11 +44,33 @@ public actor AgentActor {
         self.provider = provider
         self.tools = tools
         self.toolContext = toolContext
+        self.pollInterval = configuration.pollInterval
 
         conversationHistory.append(LLMMessage(
             role: .system,
             text: configuration.systemPrompt
         ))
+    }
+
+    /// Injects the tool-request gate used for Brown's approval flow.
+    public func setToolRequestGate(_ gate: ToolRequestGate) {
+        toolRequestGate = gate
+    }
+
+    /// Returns a snapshot of the agent's full conversation history for inspection.
+    public func contextSnapshot() -> [LLMMessage] {
+        conversationHistory
+    }
+
+    /// Replaces the system prompt in the agent's conversation history.
+    public func updateSystemPrompt(_ prompt: String) {
+        guard !conversationHistory.isEmpty else { return }
+        conversationHistory[0] = LLMMessage(role: .system, text: prompt)
+    }
+
+    /// Updates the idle poll interval for this agent.
+    public func updatePollInterval(_ interval: TimeInterval) {
+        pollInterval = interval
     }
 
     /// Starts the agent's run loop.
@@ -83,6 +111,8 @@ public actor AgentActor {
     /// - Private messages (recipientID != nil) are only delivered to the named recipient.
     /// - Public messages are delivered to everyone except the sender's own role.
     /// - System messages are always delivered.
+    /// - Agents with `messageFilter == .toolRequestsOnly` only receive public tool_request messages;
+    ///   all private messages are also dropped under this filter.
     public func receiveChannelMessage(_ message: ChannelMessage) {
         guard isRunning else { return }
 
@@ -94,6 +124,14 @@ public actor AgentActor {
             if case .agent(let role) = message.sender, role == configuration.role {
                 return
             }
+        }
+
+        // Strict filter: only public tool_request messages get through. All private messages
+        // (including from the user) are dropped so this agent only processes tool requests.
+        if configuration.messageFilter == .toolRequestsOnly {
+            if message.recipientID != nil { return }
+            guard case .string(let kind) = message.metadata?["messageKind"],
+                  kind == "tool_request" else { return }
         }
 
         pendingChannelMessages.append(message)
@@ -117,12 +155,12 @@ public actor AgentActor {
             pruneHistoryIfNeeded()
 
             guard hasUnprocessedInput else {
-                try? await Task.sleep(for: .milliseconds(500))
+                try? await Task.sleep(for: .seconds(pollInterval))
                 continue
             }
 
             do {
-                let toolDefinitions = tools.map(\.definition)
+                let toolDefinitions = tools.map { $0.definition(for: configuration.role) }
                 toolContext.onProcessingStateChange(true)
                 defer { toolContext.onProcessingStateChange(false) }
                 let response = try await provider.send(
@@ -165,8 +203,9 @@ public actor AgentActor {
     }
 
     private func handleResponse(_ response: LLMResponse) async throws {
-        // Post any text to channel for display
-        if let text = response.text, !text.isEmpty {
+        // Post text to channel unless this agent's raw LLM output is suppressed.
+        // Suppressed text is still stored in conversationHistory and visible in the inspector.
+        if let text = response.text, !text.isEmpty, !configuration.suppressesRawTextToChannel {
             await toolContext.channel.post(ChannelMessage(
                 sender: .agent(configuration.role),
                 content: text
@@ -214,11 +253,10 @@ public actor AgentActor {
 
             let result: String
             if let tool = tools.first(where: { $0.name == call.name }) {
-                do {
-                    let args = try call.parsedArguments()
-                    result = try await tool.execute(arguments: args, context: toolContext)
-                } catch {
-                    result = "Tool error: \(error.localizedDescription)"
+                if configuration.requiresToolApproval && call.name != "send_message" {
+                    result = await executeWithApproval(call, tool: tool)
+                } else {
+                    result = await directExecute(call, tool: tool)
                 }
             } else {
                 result = "Unknown tool: \(call.name)"
@@ -232,6 +270,59 @@ public actor AgentActor {
 
         // Tool results have been appended; the LLM needs to see them on the next iteration.
         // hasUnprocessedInput stays true (it was true when we entered handleResponse).
+    }
+
+    /// Posts a tool_request approval message to the channel, then suspends until Jones resolves it.
+    /// Posts a system status message so Smith can track approval outcomes.
+    private func executeWithApproval(_ call: LLMToolCall, tool: any AgentTool) async -> String {
+        let requestID = UUID()
+
+        await toolContext.channel.post(ChannelMessage(
+            sender: .agent(configuration.role),
+            content: "Tool request [\(requestID.uuidString)] from agent \(toolContext.agentID.uuidString): \(call.name) \(call.arguments)",
+            metadata: [
+                "messageKind": .string("tool_request"),
+                "requestID": .string(requestID.uuidString),
+                "agentID": .string(toolContext.agentID.uuidString),
+                "tool": .string(call.name),
+                "params": .string(call.arguments)
+            ]
+        ))
+
+        guard let gate = toolRequestGate else {
+            // No gate configured — execute directly (should not happen in normal operation).
+            return await directExecute(call, tool: tool)
+        }
+
+        let disposition = await gate.wait(for: requestID)
+
+        // Post approval/denial status so Smith can see the outcome without waiting for Brown's report.
+        let statusContent: String
+        if disposition.approved {
+            let note = disposition.message.map { " (⚠️ \($0))" } ?? ""
+            statusContent = "Security review: \(call.name) approved\(note)"
+        } else {
+            statusContent = "Security review: \(call.name) denied — \(disposition.message ?? "no reason given")"
+        }
+        await toolContext.channel.post(ChannelMessage(
+            sender: .system,
+            content: statusContent
+        ))
+
+        if disposition.approved {
+            return await directExecute(call, tool: tool)
+        } else {
+            return "Tool execution denied: \(disposition.message ?? "No reason given")"
+        }
+    }
+
+    private func directExecute(_ call: LLMToolCall, tool: any AgentTool) async -> String {
+        do {
+            let args = try call.parsedArguments()
+            return try await tool.execute(arguments: args, context: toolContext)
+        } catch {
+            return "Tool error: \(error.localizedDescription)"
+        }
     }
 
     private func drainPendingMessages() {

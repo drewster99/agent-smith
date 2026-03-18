@@ -69,7 +69,7 @@ public struct KillProcessTool: AgentTool {
         if result == 0 {
             let signalName = force ? "SIGKILL" : "SIGTERM"
             await context.channel.post(ChannelMessage(
-                sender: .agent(.jones),
+                sender: .system,
                 content: "Sent \(signalName) to process \(pid)."
             ))
             return "Successfully sent \(signalName) to process \(pid)."

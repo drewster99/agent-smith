@@ -47,7 +47,7 @@ public struct AlertUserTool: AgentTool {
         }
 
         await context.channel.post(ChannelMessage(
-            sender: .agent(.jones),
+            sender: .system,
             content: "\(prefix): \(message)",
             metadata: metadata
         ))

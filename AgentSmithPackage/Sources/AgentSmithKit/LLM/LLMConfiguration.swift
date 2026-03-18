@@ -4,12 +4,14 @@ import Foundation
 public enum ProviderType: String, Codable, Sendable, CaseIterable, Equatable {
     case anthropic
     case openAICompatible
+    case ollama
 
     /// Human-readable name for display.
     public var displayName: String {
         switch self {
         case .anthropic: return "Anthropic"
         case .openAICompatible: return "OpenAI Compatible"
+        case .ollama: return "Ollama"
         }
     }
 }
@@ -62,17 +64,18 @@ public struct LLMConfiguration: Codable, Sendable, Equatable {
 
     // MARK: - Defaults
 
-    /// Default endpoint for local Ollama.
+    /// Default endpoint for local Ollama (native API).
     public static let defaultOllamaEndpoint: URL = {
-        guard let url = URL(string: "http://localhost:11434/v1") else {
+        guard let url = URL(string: "http://localhost:11434/api") else {
             preconditionFailure("Invalid default endpoint URL literal")
         }
         return url
     }()
 
-    /// Default configuration targeting a local Ollama instance.
+    /// Default configuration targeting a local Ollama instance using the native API.
     public static let ollamaDefault = LLMConfiguration(
         endpoint: defaultOllamaEndpoint,
-        model: "llama3.1"
+        model: "llama3.1",
+        providerType: .ollama
     )
 }

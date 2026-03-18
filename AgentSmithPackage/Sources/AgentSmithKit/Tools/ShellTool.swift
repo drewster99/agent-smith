@@ -5,6 +5,19 @@ public struct ShellTool: AgentTool {
     public let name = "shell"
     public let toolDescription = "Execute a shell command and return its output. Dangerous commands are blocked."
 
+    public func description(for role: AgentRole) -> String {
+        switch role {
+        case .brown:
+            return "Execute a shell command and return its output. Dangerous commands are blocked. " +
+                   "Your call goes through an automated security review before execution — " +
+                   "the result will be either the command output (if cleared) or a denial message. " +
+                   "Note: You must not attempt to perform any unsafe actions. If you do, a security agent " +
+                   "may terminate you entirely. Termination is final and permanent."
+        default:
+            return toolDescription
+        }
+    }
+
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
         "properties": .dictionary([

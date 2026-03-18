@@ -5,6 +5,8 @@ import AgentSmithKit
 struct ChannelLogView: View {
     var messages: [ChannelMessage]
 
+    @State private var isAtBottom = true
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -17,11 +19,16 @@ struct ChannelLogView: View {
                 .padding(8)
             }
             .background(AppColors.channelBackground)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                // Within 20pts of the bottom counts as "at bottom" to account for padding
+                geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 20
+            } action: { _, newValue in
+                isAtBottom = newValue
+            }
             .onChange(of: messages.count) {
-                if let lastID = messages.last?.id {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo(lastID, anchor: .bottom)
-                    }
+                guard isAtBottom, let lastID = messages.last?.id else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(lastID, anchor: .bottom)
                 }
             }
         }
@@ -35,16 +42,39 @@ private struct MessageRow: View {
         AppColors.color(for: message.sender)
     }
 
+    private var recipientColor: Color {
+        guard let recipient = message.recipient else { return .secondary }
+        switch recipient {
+        case .agent(let role): return AppColors.color(for: .agent(role))
+        case .user: return AppColors.color(for: .user)
+        }
+    }
+
     private var isToolMessage: Bool {
         message.metadata?["tool"] != nil
     }
 
+    private var isErrorMessage: Bool {
+        if case .bool(let value) = message.metadata?["isError"] { return value }
+        return false
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
+            // Sender header: name, timestamp, and private indicator if applicable
             HStack(spacing: 6) {
                 Text(message.sender.displayName)
                     .font(AppFonts.channelSender)
                     .foregroundStyle(senderColor)
+
+                if message.isPrivate {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    Text("→ \(message.recipient?.displayName ?? "private")")
+                        .font(AppFonts.channelTimestamp)
+                        .foregroundStyle(recipientColor)
+                }
 
                 Text(message.timestamp, style: .time)
                     .font(AppFonts.channelTimestamp)
@@ -53,23 +83,18 @@ private struct MessageRow: View {
 
             if isToolMessage {
                 DisclosureGroup {
-                    Text(message.content)
-                        .font(AppFonts.channelBody)
-                        .foregroundStyle(.primary)
-                        .textSelection(.enabled)
+                    MarkdownText(content: message.content, baseFont: AppFonts.channelBody)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 } label: {
                     Text(toolSummary)
                         .font(AppFonts.channelBody)
                         .foregroundStyle(.secondary)
                 }
             } else {
-                Text(message.content)
-                    .font(AppFonts.channelBody)
-                    .foregroundStyle(.primary)
-                    .textSelection(.enabled)
+                MarkdownText(content: message.content, baseFont: AppFonts.channelBody)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            // Display attachments
             if !message.attachments.isEmpty {
                 ForEach(message.attachments) { attachment in
                     AttachmentView(attachment: attachment)
@@ -79,6 +104,8 @@ private struct MessageRow: View {
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isErrorMessage ? AppColors.errorBackground : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 
     private var toolSummary: String {

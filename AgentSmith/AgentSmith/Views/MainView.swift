@@ -15,7 +15,7 @@ struct MainView: View {
                     .padding(.bottom, 8)
 
                 ScrollView {
-                    TaskListView(tasks: viewModel.tasks)
+                    TaskListView(viewModel: viewModel)
                 }
             }
             .navigationSplitViewColumnWidth(min: 250, ideal: 300)
@@ -55,7 +55,19 @@ struct MainView: View {
             InspectorView(
                 messages: viewModel.messages,
                 processingRoles: viewModel.processingRoles,
-                agentToolNames: viewModel.agentToolNames
+                agentToolNames: viewModel.agentToolNames,
+                agentContexts: viewModel.agentContexts,
+                agentPollIntervals: viewModel.agentPollIntervals,
+                speechController: viewModel.speechController,
+                onSendDirectMessage: { role, text in
+                    Task { await viewModel.sendDirectMessage(to: role, text: text) }
+                },
+                onUpdateSystemPrompt: { role, prompt in
+                    Task { await viewModel.updateSystemPrompt(for: role, prompt: prompt) }
+                },
+                onUpdatePollInterval: { role, interval in
+                    Task { await viewModel.updatePollInterval(for: role, interval: interval) }
+                }
             )
         }
         .toolbar {
@@ -79,13 +91,24 @@ struct MainView: View {
                     .foregroundStyle(.green)
                 }
 
+                if viewModel.speechController.isGloballyEnabled {
+                    Button("Mute All", systemImage: "speaker.slash.fill") {
+                        viewModel.speechController.setGloballyEnabled(false)
+                    }
+                } else {
+                    Button("Unmute All", systemImage: "speaker.wave.2.fill") {
+                        viewModel.speechController.setGloballyEnabled(true)
+                    }
+                    .foregroundStyle(.secondary)
+                }
+
                 Button("Clear Log", systemImage: "trash") {
                     viewModel.clearLog()
                 }
                 .disabled(viewModel.messages.isEmpty)
 
                 Button(viewModel.showInspector ? "Hide Inspector" : "Show Inspector",
-                       systemImage: viewModel.showInspector ? "sidebar.right.fill" : "sidebar.right") {
+                       systemImage: "sidebar.right") {
                     viewModel.showInspector.toggle()
                 }
                 .keyboardShortcut("i", modifiers: [.command, .option])

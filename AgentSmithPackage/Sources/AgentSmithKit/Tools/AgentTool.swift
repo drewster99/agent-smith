@@ -16,12 +16,24 @@ public protocol AgentTool: Sendable {
 }
 
 extension AgentTool {
-    /// Builds the `LLMToolDefinition` from this tool's properties.
-    public var definition: LLMToolDefinition {
+    /// Returns the description to present to the LLM for a given agent role.
+    /// Defaults to `toolDescription`. Override to provide role-specific instructions.
+    public func description(for role: AgentRole) -> String {
+        toolDescription
+    }
+
+    /// Returns the parameters schema to present to the LLM for a given agent role.
+    /// Defaults to `parameters`. Override to provide role-specific parameter descriptions.
+    public func parameters(for role: AgentRole) -> [String: AnyCodable] {
+        parameters
+    }
+
+    /// Builds an `LLMToolDefinition` with description and parameters tailored for the given agent role.
+    public func definition(for role: AgentRole) -> LLMToolDefinition {
         LLMToolDefinition(
             name: name,
-            description: toolDescription,
-            parameters: parameters
+            description: description(for: role),
+            parameters: parameters(for: role)
         )
     }
 }
@@ -40,6 +52,8 @@ public struct ToolContext: Sendable {
     public let abort: @Sendable (String) async -> Void
     /// Resolves an agent ID to its role, used for access-control checks.
     public let agentRoleForID: @Sendable (UUID) async -> AgentRole?
+    /// Resolves a role to the currently active agent's UUID, used for role-based addressing.
+    public let agentIDForRole: @Sendable (AgentRole) async -> UUID?
     /// Called when the agent's run loop exits naturally (errors or self-termination).
     /// Allows the runtime to clean up subscriptions and registry entries.
     public let onSelfTerminate: @Sendable () async -> Void
@@ -55,6 +69,7 @@ public struct ToolContext: Sendable {
         terminateAgent: @escaping @Sendable (UUID) async -> Bool,
         abort: @escaping @Sendable (String) async -> Void,
         agentRoleForID: @escaping @Sendable (UUID) async -> AgentRole?,
+        agentIDForRole: @escaping @Sendable (AgentRole) async -> UUID? = { _ in nil },
         onSelfTerminate: @escaping @Sendable () async -> Void = {},
         onProcessingStateChange: @escaping @Sendable (Bool) -> Void = { _ in }
     ) {
@@ -66,6 +81,7 @@ public struct ToolContext: Sendable {
         self.terminateAgent = terminateAgent
         self.abort = abort
         self.agentRoleForID = agentRoleForID
+        self.agentIDForRole = agentIDForRole
         self.onSelfTerminate = onSelfTerminate
         self.onProcessingStateChange = onProcessingStateChange
     }

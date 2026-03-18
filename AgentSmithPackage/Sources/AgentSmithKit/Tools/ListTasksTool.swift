@@ -10,8 +10,8 @@ public struct ListTasksTool: AgentTool {
         "properties": .dictionary([
             "status_filter": .dictionary([
                 "type": .string("string"),
-                "description": .string("Optional filter: 'pending', 'running', 'completed', or 'failed'. Omit to list all tasks."),
-                "enum": .array([.string("pending"), .string("running"), .string("completed"), .string("failed")])
+                "description": .string("Optional filter: 'pending', 'running', 'paused', 'completed', or 'failed'. Omit to list all tasks."),
+                "enum": .array([.string("pending"), .string("running"), .string("paused"), .string("completed"), .string("failed")])
             ])
         ]),
         "required": .array([])
@@ -20,7 +20,7 @@ public struct ListTasksTool: AgentTool {
     public init() {}
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
-        var tasks = await context.taskStore.allTasks()
+        var tasks = await context.taskStore.allTasks().filter { $0.disposition == .active }
 
         if case .string(let filterValue) = arguments["status_filter"],
            let status = AgentTask.Status(rawValue: filterValue) {

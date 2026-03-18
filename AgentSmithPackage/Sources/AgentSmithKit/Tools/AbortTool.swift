@@ -1,6 +1,6 @@
 import Foundation
 
-/// Emergency abort tool for Jones. Stops all agents; requires user interaction to restart.
+/// Emergency abort: stops all agents immediately. Requires user interaction to restart.
 public struct AbortTool: AgentTool {
     public let name = "abort"
     public let toolDescription = "Emergency abort: immediately stops ALL agents. The system cannot be restarted without user interaction. Use only for serious safety violations."
@@ -19,11 +19,6 @@ public struct AbortTool: AgentTool {
     public init() {}
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
-        /// Abort is Jones-only. Any other role having this tool is a misconfiguration.
-        guard context.agentRole == .jones else {
-            return "BLOCKED: only the Jones safety monitor may trigger an emergency abort."
-        }
-
         guard case .string(let reason) = arguments["reason"] else {
             throw ToolCallError.missingRequiredArgument("reason")
         }

@@ -1,10 +1,21 @@
 import Foundation
 
 /// Allows Smith or Jones to terminate an agent by ID.
-/// Smith may only terminate Brown agents (not Jones). Jones has no restriction.
+/// Smith may only terminate Brown agents. Jones may only terminate Smith or Brown agents.
 public struct TerminateAgentTool: AgentTool {
     public let name = "terminate_agent"
-    public let toolDescription = "Terminate a running agent by its ID. Smith may terminate Brown agents. Jones may terminate any agent for safety enforcement."
+    public let toolDescription = "Terminate a running agent by its ID."
+
+    public func description(for role: AgentRole) -> String {
+        switch role {
+        case .smith:
+            return "Terminate a running Brown agent by its ID."
+        case .jones:
+            return "Terminate a running agent by its ID. You may terminate Smith or Brown agents."
+        default:
+            return toolDescription
+        }
+    }
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
@@ -27,25 +38,34 @@ public struct TerminateAgentTool: AgentTool {
         guard case .string(let agentIDString) = arguments["agent_id"] else {
             throw ToolCallError.missingRequiredArgument("agent_id")
         }
-        guard let agentID = UUID(uuidString: agentIDString) else {
-            return "Invalid agent ID format: \(agentIDString)"
-        }
         guard case .string(let reason) = arguments["reason"] else {
             throw ToolCallError.missingRequiredArgument("reason")
         }
+        guard let agentID = UUID(uuidString: agentIDString) else {
+            return "Invalid agent ID format: \(agentIDString)"
+        }
 
-        // Smith cannot terminate Jones agents.
+        let targetRole = await context.agentRoleForID(agentID)
+
+        // Smith may only terminate Brown agents.
         if context.agentRole == .smith {
-            if let targetRole = await context.agentRoleForID(agentID), targetRole == .jones {
-                return "Smith cannot terminate Jones agents. Jones operates independently as a safety monitor."
+            guard targetRole == .brown else {
+                return "Smith may only terminate Brown agents."
+            }
+        }
+
+        // Jones may only terminate Smith or Brown agents — not itself or another Jones.
+        if context.agentRole == .jones {
+            guard targetRole == .smith || targetRole == .brown else {
+                return "Jones may only terminate Smith or Brown agents."
             }
         }
 
         let success = await context.terminateAgent(agentID)
         if success {
             await context.channel.post(ChannelMessage(
-                sender: .agent(context.agentRole),
-                content: "Terminated agent \(agentIDString): \(reason)"
+                sender: .system,
+                content: "Agent \(agentIDString) terminated: \(reason)"
             ))
             return "Agent \(agentIDString) terminated successfully."
         } else {

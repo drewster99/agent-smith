@@ -11,11 +11,6 @@ let package = Package(
         .library(name: "AgentSmithKit", targets: ["AgentSmithKit"])
     ],
     targets: [
-        .executableTarget(
-            name: "AgentSmithApp",
-            dependencies: ["AgentSmithKit"],
-            path: "Sources/AgentSmithApp"
-        ),
         .target(
             name: "AgentSmithKit",
             path: "Sources/AgentSmithKit"

@@ -1,0 +1,599 @@
+import AVFoundation
+import SwiftUI
+import AgentSmithKit
+
+/// Inspector panel showing per-agent status: activity, context, tools, and direct messaging.
+struct InspectorView: View {
+    let messages: [ChannelMessage]
+    let processingRoles: Set<AgentRole>
+    let agentToolNames: [AgentRole: [String]]
+    let agentContexts: [AgentRole: [LLMMessage]]
+    let agentPollIntervals: [AgentRole: TimeInterval]
+    let speechController: SpeechController
+    let onSendDirectMessage: (AgentRole, String) -> Void
+    let onUpdateSystemPrompt: (AgentRole, String) -> Void
+    let onUpdatePollInterval: (AgentRole, TimeInterval) -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Agents")
+                    .font(AppFonts.sectionHeader)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 12)
+                    .padding(.bottom, 10)
+
+                ForEach(AgentRole.allCases, id: \.self) { role in
+                    let roleMessages = messages.filter {
+                        if case .agent(let r) = $0.sender { return r == role }
+                        return false
+                    }
+                    let recentMessages = Array(roleMessages.suffix(5).reversed())
+                    let recentTools = Array(
+                        roleMessages.filter { $0.metadata?["tool"] != nil }.suffix(3).reversed()
+                    )
+                    let context = agentContexts[role] ?? []
+                    let pollInterval = agentPollIntervals[role] ?? 5
+                    let currentSystemPrompt = context.first(where: { $0.role == .system })
+                        .flatMap { $0.content.textValue } ?? ""
+
+                    AgentCard(
+                        role: role,
+                        isProcessing: processingRoles.contains(role),
+                        hasActivity: !roleMessages.isEmpty,
+                        availableTools: agentToolNames[role] ?? [],
+                        recentMessages: recentMessages,
+                        recentToolUses: recentTools,
+                        contextMessages: context,
+                        currentSystemPrompt: currentSystemPrompt,
+                        pollInterval: pollInterval,
+                        speechController: speechController,
+                        onSendDirectMessage: { text in onSendDirectMessage(role, text) },
+                        onUpdateSystemPrompt: { prompt in onUpdateSystemPrompt(role, prompt) },
+                        onUpdatePollInterval: { interval in onUpdatePollInterval(role, interval) }
+                    )
+                }
+            }
+        }
+        .inspectorColumnWidth(min: 280, ideal: 320, max: 460)
+    }
+}
+
+private struct AgentCard: View {
+    let role: AgentRole
+    let isProcessing: Bool
+    let hasActivity: Bool
+    let availableTools: [String]
+    let recentMessages: [ChannelMessage]
+    let recentToolUses: [ChannelMessage]
+    let contextMessages: [LLMMessage]
+    let currentSystemPrompt: String
+    let pollInterval: TimeInterval
+    let speechController: SpeechController
+    let onSendDirectMessage: (String) -> Void
+    let onUpdateSystemPrompt: (String) -> Void
+    let onUpdatePollInterval: (TimeInterval) -> Void
+
+    @State private var expanded = true
+    @State private var showingConfig = false
+
+    private var roleColor: Color { AppColors.color(for: .agent(role)) }
+    private var isSpeechEnabled: Bool { speechController.agentEnabled[role] ?? false }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header row
+            HStack(spacing: 8) {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                }, label: {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(hasActivity ? roleColor : Color.secondary.opacity(0.4))
+                            .frame(width: 8, height: 8)
+
+                        Text(role.displayName)
+                            .font(.headline)
+                            .foregroundStyle(hasActivity ? roleColor : .secondary)
+
+                        Spacer()
+
+                        if isProcessing {
+                            HStack(spacing: 4) {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                Text("Thinking")
+                                    .font(AppFonts.inspectorLabel)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else if hasActivity {
+                            Text("Idle")
+                                .font(AppFonts.inspectorLabel)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Not active")
+                                .font(AppFonts.inspectorLabel)
+                                .foregroundStyle(.tertiary)
+                        }
+
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                    }
+                    .contentShape(Rectangle())
+                })
+                .buttonStyle(.plain)
+
+                Button(action: {
+                    speechController.setEnabled(!isSpeechEnabled, for: role)
+                }, label: {
+                    Image(systemName: isSpeechEnabled ? "speaker.wave.1" : "speaker.slash")
+                        .font(.caption)
+                        .foregroundStyle(isSpeechEnabled ? roleColor : Color.secondary.opacity(0.4))
+                })
+                .buttonStyle(.plain)
+                .help(isSpeechEnabled ? "Mute \(role.displayName)" : "Unmute \(role.displayName)")
+
+                Button(action: { showingConfig = true }, label: {
+                    Image(systemName: "gearshape")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                })
+                .buttonStyle(.plain)
+                .padding(.leading, 4)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 10) {
+                    if !availableTools.isEmpty {
+                        InspectorSection(title: "Available Tools") {
+                            AvailableToolsGrid(toolNames: availableTools)
+                        }
+                    }
+
+                    if !recentToolUses.isEmpty {
+                        InspectorSection(title: "Recent Tool Calls") {
+                            ForEach(recentToolUses) { msg in
+                                InspectorToolRow(message: msg)
+                            }
+                        }
+                    }
+
+                    if !recentMessages.isEmpty {
+                        InspectorSection(title: "Recent Messages") {
+                            ForEach(recentMessages) { msg in
+                                InspectorMessageRow(message: msg)
+                            }
+                        }
+                    }
+
+                    // For agents whose raw text is suppressed from the channel, surface recent
+                    // LLM reasoning inline so it isn't invisible.
+                    let llmOutputs = contextMessages.compactMap { msg -> String? in
+                        guard msg.role == .assistant else { return nil }
+                        switch msg.content {
+                        case .text(let s): return s.isEmpty ? nil : s
+                        case .mixed(let s, _): return s.isEmpty ? nil : s
+                        default: return nil
+                        }
+                    }
+                    let recentLLMOutputs = Array(llmOutputs.suffix(3).reversed())
+                    if role == .jones && !recentLLMOutputs.isEmpty {
+                        InspectorSection(title: "LLM Reasoning") {
+                            ForEach(recentLLMOutputs.indices, id: \.self) { i in
+                                LLMReasoningRow(text: recentLLMOutputs[i])
+                            }
+                        }
+                    }
+
+                    if !contextMessages.isEmpty {
+                        InspectorSection(title: "Context (\(contextMessages.count) entries)") {
+                            ScrollView(.vertical) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    ForEach(contextMessages.indices, id: \.self) { i in
+                                        ContextMessageRow(message: contextMessages[i])
+                                    }
+                                }
+                            }
+                            .frame(maxHeight: 300)
+                        }
+                    }
+
+                    // Direct message input — hidden for Jones since its filter drops all private messages
+                    if role != .jones {
+                        InspectorSection(title: "Direct Message") {
+                            DirectMessageInputRow(
+                                placeholder: "Message \(role.displayName) privately…",
+                                onSend: onSendDirectMessage
+                            )
+                        }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
+            }
+
+            Divider()
+        }
+        .sheet(isPresented: $showingConfig) {
+            AgentConfigSheet(
+                role: role,
+                roleColor: roleColor,
+                initialSystemPrompt: currentSystemPrompt,
+                initialPollInterval: pollInterval,
+                speechController: speechController,
+                onSave: { prompt, interval in
+                    onUpdateSystemPrompt(prompt)
+                    onUpdatePollInterval(interval)
+                }
+            )
+        }
+    }
+}
+
+// MARK: - Subviews
+
+private struct AvailableToolsGrid: View {
+    let toolNames: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(toolNames, id: \.self) { name in
+                HStack(spacing: 5) {
+                    Image(systemName: "wrench")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    Text(name)
+                        .font(AppFonts.inspectorBody)
+                        .foregroundStyle(.primary)
+                }
+            }
+        }
+    }
+}
+
+private struct InspectorSection<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(AppFonts.inspectorLabel.weight(.bold))
+                .foregroundStyle(.secondary)
+            content()
+        }
+    }
+}
+
+private struct InspectorToolRow: View {
+    let message: ChannelMessage
+
+    private var toolName: String {
+        if case .string(let name) = message.metadata?["tool"] { return name }
+        return "unknown"
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "terminal")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+            Text(toolName)
+                .font(AppFonts.inspectorBody)
+                .foregroundStyle(.primary)
+            Spacer()
+            Text(message.timestamp, style: .time)
+                .font(AppFonts.inspectorBody)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 6)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+private struct InspectorMessageRow: View {
+    let message: ChannelMessage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(message.content)
+                .font(AppFonts.inspectorBody)
+                .foregroundStyle(.primary)
+            Text(message.timestamp, style: .time)
+                .font(AppFonts.inspectorBody)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 3)
+        .padding(.horizontal, 6)
+        .background(Color.secondary.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+/// A single entry from an agent's LLM context window. Tap to expand the full content.
+private struct ContextMessageRow: View {
+    let message: LLMMessage
+
+    @State private var expanded = false
+
+    var body: some View {
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+        }, label: {
+            HStack(alignment: .top, spacing: 5) {
+                Text(roleLabel)
+                    .font(AppFonts.inspectorBody.weight(.bold))
+                    .foregroundStyle(roleColor)
+                    .frame(width: 14, alignment: .center)
+
+                Text(expanded ? fullContent : contentSummary)
+                    .font(AppFonts.inspectorBody)
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .multilineTextAlignment(.leading)
+            }
+            .padding(.vertical, 2)
+            .padding(.horizontal, 4)
+            .background(rowBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+        })
+        .buttonStyle(.plain)
+    }
+
+    private var roleLabel: String {
+        switch message.role {
+        case .system: return "S"
+        case .user: return "U"
+        case .assistant: return "A"
+        case .tool: return "T"
+        }
+    }
+
+    private var roleColor: Color {
+        switch message.role {
+        case .system: return .secondary
+        case .user: return .blue
+        case .assistant: return .green
+        case .tool: return .orange
+        }
+    }
+
+    private var rowBackground: Color {
+        switch message.role {
+        case .system: return Color.secondary.opacity(0.05)
+        case .user: return Color.blue.opacity(0.05)
+        case .assistant: return Color.green.opacity(0.05)
+        case .tool: return Color.orange.opacity(0.05)
+        }
+    }
+
+    private var contentSummary: String {
+        switch message.content {
+        case .text(let s): return truncate(s)
+        case .toolCalls(let calls): return calls.map { "[\($0.name)]" }.joined(separator: ", ")
+        case .mixed(let text, let calls):
+            return truncate(text) + " " + calls.map { "[\($0.name)]" }.joined(separator: ", ")
+        case .toolResult(let callID, let content):
+            return "→ \(String(callID.prefix(8))): \(truncate(content))"
+        }
+    }
+
+    private var fullContent: String {
+        switch message.content {
+        case .text(let s): return s
+        case .toolCalls(let calls): return calls.map { "[\($0.name)]" }.joined(separator: ", ")
+        case .mixed(let text, let calls):
+            return text + " " + calls.map { "[\($0.name)]" }.joined(separator: ", ")
+        case .toolResult(let callID, let content):
+            return "→ \(callID): \(content)"
+        }
+    }
+
+    private func truncate(_ s: String) -> String {
+        let limit = 120
+        guard s.count > limit else { return s }
+        return String(s.prefix(limit)) + "…"
+    }
+}
+
+private struct LLMReasoningRow: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text("LLM")
+                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background(Color.purple.opacity(0.65))
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+
+            Text(text)
+                .font(AppFonts.inspectorBody.italic())
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .multilineTextAlignment(.leading)
+        }
+        .padding(.vertical, 3)
+        .padding(.horizontal, 6)
+        .background(Color.purple.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+private struct DirectMessageInputRow: View {
+    let placeholder: String
+    let onSend: (String) -> Void
+
+    @State private var draftText = ""
+
+    var body: some View {
+        HStack(spacing: 6) {
+            TextField(placeholder, text: $draftText)
+                .textFieldStyle(.roundedBorder)
+                .font(AppFonts.inspectorBody)
+                .onSubmit { sendIfNotEmpty() }
+
+            Button("Send") {
+                sendIfNotEmpty()
+            }
+            .disabled(draftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .controlSize(.small)
+        }
+    }
+
+    private func sendIfNotEmpty() {
+        let text = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        onSend(text)
+        draftText = ""
+    }
+}
+
+// MARK: - Config Sheet
+
+private struct AgentConfigSheet: View {
+    let role: AgentRole
+    let roleColor: Color
+    let speechController: SpeechController
+    let onSave: (String, TimeInterval) -> Void
+
+    @State private var draftPrompt: String
+    @State private var draftPollInterval: TimeInterval
+    @State private var availableVoices: [AVSpeechSynthesisVoice] = []
+    @Environment(\.dismiss) private var dismiss
+
+    init(
+        role: AgentRole,
+        roleColor: Color,
+        initialSystemPrompt: String,
+        initialPollInterval: TimeInterval,
+        speechController: SpeechController,
+        onSave: @escaping (String, TimeInterval) -> Void
+    ) {
+        self.role = role
+        self.roleColor = roleColor
+        self.speechController = speechController
+        self.onSave = onSave
+        _draftPrompt = State(initialValue: initialSystemPrompt)
+        _draftPollInterval = State(initialValue: initialPollInterval)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("\(role.displayName) Configuration")
+                    .font(.title3.bold())
+                    .foregroundStyle(roleColor)
+                Spacer()
+                Button("Done") {
+                    onSave(draftPrompt, draftPollInterval)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(20)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // System prompt
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("System Prompt")
+                            .font(AppFonts.inspectorLabel.weight(.bold))
+                            .foregroundStyle(.secondary)
+                        TextEditor(text: $draftPrompt)
+                            .font(AppFonts.inspectorBody)
+                            .frame(maxWidth: .infinity, minHeight: 200)
+                            .scrollContentBackground(.hidden)
+                            .background(Color.secondary.opacity(0.06))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+
+                    // Poll interval
+                    HStack(spacing: 12) {
+                        Text("Poll Interval")
+                            .font(AppFonts.inspectorLabel.weight(.bold))
+                            .foregroundStyle(.secondary)
+                        Stepper(
+                            "\(Int(draftPollInterval))s",
+                            value: $draftPollInterval,
+                            in: 1...300,
+                            step: 1
+                        )
+                        .labelsHidden()
+                        Text("\(Int(draftPollInterval)) seconds")
+                            .font(AppFonts.inspectorBody)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+
+                    Divider()
+
+                    // Speech settings
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Speech")
+                            .font(AppFonts.inspectorLabel.weight(.bold))
+                            .foregroundStyle(.secondary)
+
+                        LabeledContent("Voice") {
+                            Picker("", selection: Binding(
+                                get: { speechController.agentVoiceIdentifier[role] ?? "" },
+                                set: { speechController.setVoice($0, for: role) }
+                            )) {
+                                Text("System Default").tag("")
+                                ForEach(availableVoices, id: \.identifier) { voice in
+                                    Text("\(voice.name) (\(voice.language))").tag(voice.identifier)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                        }
+
+                        LabeledContent("Message Sound") {
+                            Picker("", selection: Binding(
+                                get: { speechController.agentMessageSoundName[role] ?? "" },
+                                set: { speechController.setMessageSound($0, for: role) }
+                            )) {
+                                Text("None").tag("")
+                                ForEach(SpeechController.systemSoundNames, id: \.self) { name in
+                                    Text(name).tag(name)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                        }
+
+                        LabeledContent("Tool Sound") {
+                            Picker("", selection: Binding(
+                                get: { speechController.agentToolSoundName[role] ?? "" },
+                                set: { speechController.setToolSound($0, for: role) }
+                            )) {
+                                Text("None").tag("")
+                                ForEach(SpeechController.systemSoundNames, id: \.self) { name in
+                                    Text(name).tag(name)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                        }
+                    }
+                }
+                .padding(20)
+            }
+        }
+        .frame(minWidth: 500, minHeight: 540)
+        .onAppear {
+            availableVoices = AVSpeechSynthesisVoice.speechVoices()
+                .sorted { $0.name < $1.name }
+        }
+    }
+}

@@ -54,9 +54,6 @@ public struct ListProcessesTool: AgentTool {
             lines = allLines
         }
 
-        if lines.count > 100 {
-            return lines.prefix(100).joined(separator: "\n") + "\n... (\(lines.count - 100) more lines truncated)"
-        }
         return lines.joined(separator: "\n")
     }
 }

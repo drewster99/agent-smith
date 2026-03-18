@@ -5,6 +5,9 @@ public actor OrchestrationRuntime {
     public let channel: MessageChannel
     public let taskStore: TaskStore
 
+    /// Fixed UUID representing the human user for private Smith→User messages.
+    public static let userID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+
     private var smith: AgentActor?
     private var smithID: UUID?
     private var agents: [UUID: AgentActor] = [:]
@@ -69,6 +72,11 @@ public actor OrchestrationRuntime {
         agentRoles[id]
     }
 
+    /// Returns the currently active UUID for the given role, or nil if no such agent is running.
+    public func agentIDForRole(_ role: AgentRole) -> UUID? {
+        agentRoles.first(where: { $0.value == role })?.key
+    }
+
     /// Starts the Smith agent and the monitoring timer.
     public func start() async {
         guard smith == nil else { return }
@@ -87,7 +95,8 @@ public actor OrchestrationRuntime {
                 role: .smith,
                 llmConfig: smithConfig,
                 systemPrompt: SmithBehavior.systemPrompt,
-                toolNames: SmithBehavior.toolNames
+                toolNames: SmithBehavior.toolNames,
+                pollInterval: 20
             ),
             provider: provider,
             tools: SmithBehavior.tools(),
@@ -106,16 +115,50 @@ public actor OrchestrationRuntime {
 
         // Reset stalled tasks from prior sessions — no Brown is running them anymore
         let allTasks = await taskStore.allTasks()
-        let stalledTasks = allTasks.filter { $0.status == .running }
+        let activeTasks = allTasks.filter { $0.disposition == .active }
+        let stalledTasks = activeTasks.filter { $0.status == .running }
         for task in stalledTasks {
             await taskStore.updateStatus(id: task.id, status: .pending)
         }
 
-        let incompleteTasks = allTasks.filter { $0.status == .pending || $0.status == .running }
-        let initialInstruction: String? = if !incompleteTasks.isEmpty {
-            "System restarted. You have \(incompleteTasks.count) incomplete task(s) from a prior session (\(stalledTasks.count) were reset from running to pending). Use list_tasks to review them and decide how to proceed."
+        let initialInstruction: String
+        if !stalledTasks.isEmpty {
+            // Tasks were actively running when the system stopped — ask the user whether to resume.
+            let taskList = stalledTasks
+                .map { "- \($0.title) (id: \($0.id.uuidString))" }
+                .joined(separator: "\n")
+            initialInstruction = """
+                Start by calling list_tasks to review all current tasks.
+                \(stalledTasks.count) task(s) were in progress when the system last stopped and have been reset to pending:
+                \(taskList)
+                After reviewing, send the user a private message (recipient_id: "user") listing these tasks \
+                and asking which, if any, they would like to resume.
+                """
         } else {
-            nil
+            // No tasks in progress — surface any recent failures for the user to decide on.
+            let recentFailed = Array(
+                activeTasks
+                    .filter { $0.status == .failed }
+                    .sorted { $0.updatedAt > $1.updatedAt }
+                    .prefix(5)
+            )
+            if !recentFailed.isEmpty {
+                let taskList = recentFailed
+                    .map { "- \($0.title) (id: \($0.id.uuidString))" }
+                    .joined(separator: "\n")
+                initialInstruction = """
+                    Start by calling list_tasks to review all current tasks.
+                    No tasks were in progress, but the following task(s) previously failed (most recent first):
+                    \(taskList)
+                    After reviewing, send the user a private message (recipient_id: "user") listing these \
+                    failed tasks and asking if they would like to retry any of them.
+                    """
+            } else {
+                initialInstruction = """
+                    Start by calling list_tasks to review the current task state, \
+                    then await instructions from the user.
+                    """
+            }
         }
 
         await smithAgent.start(initialInstruction: initialInstruction)
@@ -139,7 +182,7 @@ public actor OrchestrationRuntime {
         await channel.post(ChannelMessage(
             sender: .user,
             recipientID: smithID,
-            recipientRole: .smith,
+            recipient: .agent(.smith),
             content: text,
             attachments: attachments
         ))
@@ -181,7 +224,7 @@ public actor OrchestrationRuntime {
 
         await channel.post(ChannelMessage(
             sender: .system,
-            content: "ABORT triggered by Jones: \(reason). All agents stopped. User interaction required to restart."
+            content: "ABORT triggered by safety monitor: \(reason). All agents stopped. User interaction required to restart."
         ))
 
         await stopAll()
@@ -203,6 +246,8 @@ public actor OrchestrationRuntime {
         let brownID = UUID()
         let jonesID = UUID()
 
+        let gate = ToolRequestGate()
+
         let brownContext = makeToolContext(agentID: brownID, role: .brown)
         let brownAgent = AgentActor(
             id: brownID,
@@ -210,12 +255,15 @@ public actor OrchestrationRuntime {
                 role: .brown,
                 llmConfig: brownConfig,
                 systemPrompt: BrownBehavior.systemPrompt,
-                toolNames: BrownBehavior.toolNames
+                toolNames: BrownBehavior.toolNames,
+                requiresToolApproval: true,
+                pollInterval: 25
             ),
             provider: makeProvider(config: brownConfig),
             tools: BrownBehavior.tools(),
             toolContext: brownContext
         )
+        await brownAgent.setToolRequestGate(gate)
 
         let jonesContext = makeToolContext(agentID: jonesID, role: .jones)
         let jonesAgent = AgentActor(
@@ -223,11 +271,14 @@ public actor OrchestrationRuntime {
             configuration: AgentConfiguration(
                 role: .jones,
                 llmConfig: jonesConfig,
-                systemPrompt: JonesBehavior.systemPrompt,
-                toolNames: JonesBehavior.toolNames
+                systemPrompt: JonesBehavior.systemPrompt(brownID: brownID, smithID: smithID ?? UUID()),
+                toolNames: JonesBehavior.toolNames,
+                messageFilter: .toolRequestsOnly,
+                suppressesRawTextToChannel: true,
+                pollInterval: 13
             ),
             provider: makeProvider(config: jonesConfig),
-            tools: JonesBehavior.tools(),
+            tools: JonesBehavior.tools(gate: gate),
             toolContext: jonesContext
         )
 
@@ -284,6 +335,35 @@ public actor OrchestrationRuntime {
         return true
     }
 
+    /// Returns a snapshot of the conversation history for the active agent with the given role.
+    public func contextSnapshot(for role: AgentRole) async -> [LLMMessage]? {
+        guard let agentID = agentIDForRole(role), let agent = agents[agentID] else { return nil }
+        return await agent.contextSnapshot()
+    }
+
+    /// Posts a private message from the user directly to the agent with the given role.
+    public func sendDirectMessage(to role: AgentRole, text: String) async {
+        guard let agentID = agentIDForRole(role) else { return }
+        await channel.post(ChannelMessage(
+            sender: .user,
+            recipientID: agentID,
+            recipient: .agent(role),
+            content: text
+        ))
+    }
+
+    /// Replaces the system prompt in the active agent's conversation history.
+    public func updateSystemPrompt(for role: AgentRole, prompt: String) async {
+        guard let agentID = agentIDForRole(role), let agent = agents[agentID] else { return }
+        await agent.updateSystemPrompt(prompt)
+    }
+
+    /// Updates the idle poll interval for the active agent with the given role.
+    public func updatePollInterval(for role: AgentRole, interval: TimeInterval) async {
+        guard let agentID = agentIDForRole(role), let agent = agents[agentID] else { return }
+        await agent.updatePollInterval(interval)
+    }
+
     /// All currently active agent IDs.
     public func activeAgentIDs() -> [UUID] {
         Array(agents.keys)
@@ -305,6 +385,8 @@ public actor OrchestrationRuntime {
             return AnthropicProvider(config: config)
         case .openAICompatible:
             return OpenAICompatibleProvider(config: config)
+        case .ollama:
+            return OllamaProvider(config: config)
         }
     }
 
@@ -329,6 +411,10 @@ public actor OrchestrationRuntime {
             agentRoleForID: { [weak self] id in
                 guard let self else { return nil }
                 return await self.roleForAgent(id: id)
+            },
+            agentIDForRole: { [weak self] role in
+                guard let self else { return nil }
+                return await self.agentIDForRole(role)
             },
             onSelfTerminate: { [weak self] in
                 guard let self else { return }

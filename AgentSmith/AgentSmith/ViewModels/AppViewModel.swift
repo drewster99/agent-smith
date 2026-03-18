@@ -8,6 +8,8 @@ import UniformTypeIdentifiers
 final class AppViewModel {
     var messages: [ChannelMessage] = []
     var tasks: [AgentTask] = []
+    /// Set when a task action (archive, delete) is blocked; drives the error alert.
+    var taskActionError: String? = nil
     var isRunning = false
     var isAborted = false
     var abortReason = ""
@@ -19,15 +21,28 @@ final class AppViewModel {
     var agentToolNames: [AgentRole: [String]] = [:]
     /// Whether the Inspector panel is visible.
     var showInspector = false
+    /// Snapshots of each active agent's full LLM conversation history.
+    var agentContexts: [AgentRole: [LLMMessage]] = [:]
+    /// Current idle poll intervals for each agent role (seconds).
+    var agentPollIntervals: [AgentRole: TimeInterval] = [
+        .smith: 20, .brown: 25, .jones: 13
+    ]
 
     /// Per-role LLM configurations, editable from settings.
     var smithConfig = LLMConfiguration.ollamaDefault
     var brownConfig = LLMConfiguration.ollamaDefault
     var jonesConfig = LLMConfiguration.ollamaDefault
 
+    let speechController = SpeechController()
+
     private var runtime: OrchestrationRuntime?
+    /// Kept alive independently of `runtime` so task operations work even when agents aren't running.
+    private var taskStore: TaskStore?
     private var channelStreamTask: Task<Void, Never>?
+    private var contextRefreshTask: Task<Void, Never>?
     private var persistenceManager = PersistenceManager()
+    /// Full message history — a superset of `messages`. Never cleared; always written to disk.
+    private var allPersistedMessages: [ChannelMessage] = []
 
     // MARK: - Lifecycle
 
@@ -36,6 +51,7 @@ final class AppViewModel {
         do {
             let savedMessages = try await persistenceManager.loadChannelLog()
             messages = savedMessages
+            allPersistedMessages = savedMessages
         } catch {
             print("[AgentSmith] Failed to load channel log: \(error)")
         }
@@ -88,6 +104,7 @@ final class AppViewModel {
                 self.isRunning = false
                 self.processingRoles.removeAll()
                 self.agentToolNames.removeAll()
+                self.agentContexts.removeAll()
                 self.runtime = nil
             }
         }
@@ -113,16 +130,19 @@ final class AppViewModel {
 
         // Subscribe to channel messages
         let channel = await newRuntime.channel
-        channelStreamTask = Task { [weak self] in
+        channelStreamTask = Task { @MainActor [weak self] in
             for await message in await channel.stream() {
                 guard let self else { break }
                 self.messages.append(message)
+                self.allPersistedMessages.append(message)
+                self.speechController.handle(message)
                 self.persistMessages()
             }
         }
 
-        // Subscribe to task changes
+        // Subscribe to task changes — keep a strong reference so operations work post-stop
         let taskStore = await newRuntime.taskStore
+        self.taskStore = taskStore
         await taskStore.setOnChange { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -133,6 +153,7 @@ final class AppViewModel {
         }
 
         await newRuntime.start()
+        startContextRefresh()
     }
 
     /// Sends user input (with any pending attachments) to Smith.
@@ -159,16 +180,107 @@ final class AppViewModel {
         await runtime.sendUserMessage(text, attachments: attachments)
     }
 
+    /// Sends a private message from the user directly to the specified agent role.
+    func sendDirectMessage(to role: AgentRole, text: String) async {
+        guard let runtime else { return }
+        await runtime.sendDirectMessage(to: role, text: text)
+    }
+
+    /// Replaces the system prompt for the active agent with the given role.
+    func updateSystemPrompt(for role: AgentRole, prompt: String) async {
+        guard let runtime else { return }
+        await runtime.updateSystemPrompt(for: role, prompt: prompt)
+    }
+
+    // MARK: - Task actions
+
+    func archiveTask(id: UUID) async {
+        let succeeded = await taskStore?.archive(id: id) ?? true
+        if !succeeded {
+            taskActionError = "This task is in progress and cannot be archived."
+        }
+    }
+
+    func deleteTask(id: UUID) async {
+        let succeeded = await taskStore?.softDelete(id: id) ?? true
+        if !succeeded {
+            taskActionError = "This task is in progress and cannot be deleted."
+        }
+    }
+
+    func unarchiveTask(id: UUID) async {
+        await taskStore?.unarchive(id: id)
+    }
+
+    func undeleteTask(id: UUID) async {
+        await taskStore?.undelete(id: id)
+    }
+
+    func permanentlyDeleteTask(id: UUID) async {
+        let succeeded = await taskStore?.permanentlyDelete(id: id) ?? true
+        if !succeeded {
+            taskActionError = "This task is in progress and cannot be permanently deleted."
+        }
+    }
+
+    func pauseTask(id: UUID) async {
+        await taskStore?.pause(id: id)
+    }
+
+    func stopTask(id: UUID) async {
+        await taskStore?.stop(id: id)
+    }
+
+    /// Resets a task to pending and asks Smith to retry it.
+    func retryTask(_ task: AgentTask) async {
+        await taskStore?.updateStatus(id: task.id, status: .pending)
+        await taskStore?.unarchive(id: task.id)
+        await sendDirectMessage(
+            to: .smith,
+            text: "Please retry this failed task:\nTitle: \(task.title)\nDescription: \(task.description)\nID: \(task.id.uuidString)"
+        )
+    }
+
+    /// Resets a completed task to pending and asks Smith to run it again.
+    func runTaskAgain(_ task: AgentTask) async {
+        await taskStore?.updateStatus(id: task.id, status: .pending)
+        await taskStore?.unarchive(id: task.id)
+        await sendDirectMessage(
+            to: .smith,
+            text: "Please run this task again:\nTitle: \(task.title)\nDescription: \(task.description)\nID: \(task.id.uuidString)"
+        )
+    }
+
+    /// Updates the idle poll interval for the active agent with the given role.
+    func updatePollInterval(for role: AgentRole, interval: TimeInterval) async {
+        agentPollIntervals[role] = interval
+        guard let runtime else { return }
+        await runtime.updatePollInterval(for: role, interval: interval)
+    }
+
     /// Master kill switch — stops everything immediately.
     func stopAll() async {
         guard let runtime else { return }
         await runtime.stopAll()
+        speechController.stopAll()
         isRunning = false
         processingRoles.removeAll()
         agentToolNames.removeAll()
+        agentContexts.removeAll()
         channelStreamTask?.cancel()
         channelStreamTask = nil
+        contextRefreshTask?.cancel()
+        contextRefreshTask = nil
         self.runtime = nil
+
+        // Reset any tasks that were mid-flight back to pending.
+        // Read from the store directly to get the most current state after agents have stopped.
+        if let store = taskStore {
+            let liveTasks = await store.allTasks()
+            for task in liveTasks where task.status == .running {
+                await store.updateStatus(id: task.id, status: .pending)
+            }
+        }
 
         // Persist final state
         persistMessages()
@@ -181,10 +293,10 @@ final class AppViewModel {
         abortReason = ""
     }
 
-    /// Clears the message log.
+    /// Clears the message display and inspector snapshots. The full history is always retained on disk.
     func clearLog() {
         messages.removeAll()
-        persistMessages()
+        agentContexts.removeAll()
     }
 
     // MARK: - Attachments
@@ -221,11 +333,31 @@ final class AppViewModel {
 
     // MARK: - Private
 
+    /// Polls each agent's conversation history every 2 seconds while the system is running.
+    private func startContextRefresh() {
+        contextRefreshTask?.cancel()
+        contextRefreshTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, let runtime = self.runtime else { break }
+                for role in AgentRole.allCases {
+                    if let context = await runtime.contextSnapshot(for: role) {
+                        self.agentContexts[role] = context
+                    }
+                }
+                do {
+                    try await Task.sleep(for: .seconds(2))
+                } catch {
+                    break
+                }
+            }
+        }
+    }
+
     private func persistMessages() {
-        let messagesToSave = messages
+        let snapshot = allPersistedMessages
         Task.detached { [persistenceManager] in
             do {
-                try await persistenceManager.saveChannelLog(messagesToSave)
+                try await persistenceManager.saveChannelLog(snapshot)
             } catch {
                 print("[AgentSmith] Failed to persist messages: \(error)")
             }
