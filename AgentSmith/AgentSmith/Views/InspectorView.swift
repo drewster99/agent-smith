@@ -559,31 +559,47 @@ private struct AgentConfigSheet: View {
                         }
 
                         LabeledContent("Message Sound") {
-                            Picker("", selection: Binding(
-                                get: { speechController.agentMessageSoundName[role] ?? "" },
-                                set: { speechController.setMessageSound($0, for: role) }
-                            )) {
-                                Text("None").tag("")
-                                ForEach(SpeechController.systemSoundNames, id: \.self) { name in
-                                    Text(name).tag(name)
+                            HStack {
+                                let soundName = speechController.agentMessageSoundName[role] ?? ""
+                                Picker("", selection: Binding(
+                                    get: { speechController.agentMessageSoundName[role] ?? "" },
+                                    set: { speechController.setMessageSound($0, for: role) }
+                                )) {
+                                    Text("None").tag("")
+                                    ForEach(SpeechController.systemSoundNames, id: \.self) { name in
+                                        Text(name).tag(name)
+                                    }
                                 }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                Button(action: { speechController.previewSound(named: soundName) }) {
+                                    Image(systemName: "play.circle")
+                                }
+                                .disabled(soundName.isEmpty)
+                                .buttonStyle(.borderless)
                             }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
                         }
 
                         LabeledContent("Tool Sound") {
-                            Picker("", selection: Binding(
-                                get: { speechController.agentToolSoundName[role] ?? "" },
-                                set: { speechController.setToolSound($0, for: role) }
-                            )) {
-                                Text("None").tag("")
-                                ForEach(SpeechController.systemSoundNames, id: \.self) { name in
-                                    Text(name).tag(name)
+                            HStack {
+                                let soundName = speechController.agentToolSoundName[role] ?? ""
+                                Picker("", selection: Binding(
+                                    get: { speechController.agentToolSoundName[role] ?? "" },
+                                    set: { speechController.setToolSound($0, for: role) }
+                                )) {
+                                    Text("None").tag("")
+                                    ForEach(SpeechController.systemSoundNames, id: \.self) { name in
+                                        Text(name).tag(name)
+                                    }
                                 }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                Button(action: { speechController.previewSound(named: soundName) }) {
+                                    Image(systemName: "play.circle")
+                                }
+                                .disabled(soundName.isEmpty)
+                                .buttonStyle(.borderless)
                             }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
                         }
                     }
                 }

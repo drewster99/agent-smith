@@ -57,8 +57,20 @@ final class AppViewModel {
         }
 
         do {
-            let savedTasks = try await persistenceManager.loadTasks()
+            var savedTasks = try await persistenceManager.loadTasks()
+            // Archive any completed tasks that have been sitting for more than 4 hours.
+            let cutoff = Date().addingTimeInterval(-4 * 3600)
+            var anyArchived = false
+            for i in savedTasks.indices {
+                if savedTasks[i].status == .completed,
+                   savedTasks[i].disposition == .active,
+                   savedTasks[i].updatedAt < cutoff {
+                    savedTasks[i].disposition = .archived
+                    anyArchived = true
+                }
+            }
             tasks = savedTasks
+            if anyArchived { persistTasks() }
         } catch {
             print("[AgentSmith] Failed to load tasks: \(error)")
         }
@@ -152,6 +164,9 @@ final class AppViewModel {
             }
         }
 
+        // Archive any completed tasks older than 4 hours now that the store is live.
+        await taskStore.archiveStaleCompleted()
+
         await newRuntime.start()
         startContextRefresh()
     }
@@ -231,20 +246,18 @@ final class AppViewModel {
         await taskStore?.stop(id: id)
     }
 
-    /// Resets a task to pending and asks Smith to retry it.
+    /// Soft-deletes the failed task (a new one will be created on retry) and asks Smith to retry.
     func retryTask(_ task: AgentTask) async {
-        await taskStore?.updateStatus(id: task.id, status: .pending)
-        await taskStore?.unarchive(id: task.id)
+        await taskStore?.softDelete(id: task.id)
         await sendDirectMessage(
             to: .smith,
             text: "Please retry this failed task:\nTitle: \(task.title)\nDescription: \(task.description)\nID: \(task.id.uuidString)"
         )
     }
 
-    /// Resets a completed task to pending and asks Smith to run it again.
+    /// Archives the completed task (a new one will be created) and asks Smith to run it again.
     func runTaskAgain(_ task: AgentTask) async {
-        await taskStore?.updateStatus(id: task.id, status: .pending)
-        await taskStore?.unarchive(id: task.id)
+        await taskStore?.archive(id: task.id)
         await sendDirectMessage(
             to: .smith,
             text: "Please run this task again:\nTitle: \(task.title)\nDescription: \(task.description)\nID: \(task.id.uuidString)"

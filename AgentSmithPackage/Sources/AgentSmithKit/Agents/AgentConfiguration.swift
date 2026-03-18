@@ -25,6 +25,11 @@ public struct AgentConfiguration: Sendable {
     /// How long the agent's idle loop waits before draining pending messages and querying the LLM.
     /// A longer interval causes the agent to batch accumulated messages into a single context update.
     public var pollInterval: TimeInterval
+    /// Seconds of channel silence required after a new message before the agent acts.
+    public var messageDebounceInterval: TimeInterval
+    /// Optional additional filter applied after all routing rules. Return `false` to drop a message
+    /// entirely — it will not be added to the agent's pending queue and will not trigger a wake.
+    public var messageAcceptFilter: (@Sendable (ChannelMessage) -> Bool)?
 
     public init(
         role: AgentRole,
@@ -34,7 +39,9 @@ public struct AgentConfiguration: Sendable {
         requiresToolApproval: Bool = false,
         messageFilter: MessageFilter = .all,
         suppressesRawTextToChannel: Bool = false,
-        pollInterval: TimeInterval = 5
+        pollInterval: TimeInterval = 5,
+        messageDebounceInterval: TimeInterval = 10,
+        messageAcceptFilter: (@Sendable (ChannelMessage) -> Bool)? = nil
     ) {
         self.role = role
         self.llmConfig = llmConfig
@@ -44,5 +51,7 @@ public struct AgentConfiguration: Sendable {
         self.messageFilter = messageFilter
         self.suppressesRawTextToChannel = suppressesRawTextToChannel
         self.pollInterval = pollInterval
+        self.messageDebounceInterval = messageDebounceInterval
+        self.messageAcceptFilter = messageAcceptFilter
     }
 }

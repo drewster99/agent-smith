@@ -108,6 +108,19 @@ private struct TaskSectionHeader: View {
     }
 }
 
+// MARK: - Timestamp helper
+
+private func taskTimestamp(_ date: Date) -> String {
+    let calendar = Calendar.current
+    if calendar.isDateInToday(date) {
+        return date.formatted(date: .omitted, time: .shortened)
+    } else if calendar.isDateInYesterday(date) {
+        return "Yesterday"
+    } else {
+        return date.formatted(.dateTime.month(.abbreviated).day())
+    }
+}
+
 // MARK: - Active task row
 
 private struct ActiveTaskRow: View {
@@ -115,51 +128,67 @@ private struct ActiveTaskRow: View {
     let viewModel: AppViewModel
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             Image(systemName: TaskStatusBadge.icon(for: task.status))
                 .foregroundStyle(TaskStatusBadge.color(for: task.status))
                 .imageScale(.medium)
                 .frame(width: 18)
+                .padding(.top, 2)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(task.title)
-                    .font(AppFonts.taskTitle)
-                    .lineLimit(1)
-
-                Text(task.description)
-                    .font(AppFonts.taskDescription)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-
-            Spacer()
-
-            if task.status == .running {
-                // Inline controls for in-progress tasks
+            VStack(alignment: .leading, spacing: 3) {
+                // Title row — spans full width; running tasks get inline controls on the right.
                 HStack(spacing: 6) {
-                    Button(action: { Task { await viewModel.pauseTask(id: task.id) } }, label: {
-                        Image(systemName: "pause.fill")
-                            .imageScale(.small)
-                            .foregroundStyle(.secondary)
-                    })
-                    .buttonStyle(.plain)
-                    .help("Pause")
+                    Text(task.title)
+                        .font(AppFonts.taskTitle)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Button(action: { Task { await viewModel.stopTask(id: task.id) } }, label: {
-                        Image(systemName: "stop.fill")
-                            .imageScale(.small)
-                            .foregroundStyle(.secondary)
-                    })
-                    .buttonStyle(.plain)
-                    .help("Stop")
+                    if task.status == .running {
+                        HStack(spacing: 6) {
+                            Button(action: { Task { await viewModel.pauseTask(id: task.id) } }, label: {
+                                Image(systemName: "pause.fill")
+                                    .imageScale(.small)
+                                    .foregroundStyle(.secondary)
+                            })
+                            .buttonStyle(.plain)
+                            .help("Pause")
+
+                            Button(action: { Task { await viewModel.stopTask(id: task.id) } }, label: {
+                                Image(systemName: "stop.fill")
+                                    .imageScale(.small)
+                                    .foregroundStyle(.secondary)
+                            })
+                            .buttonStyle(.plain)
+                            .help("Stop")
+                        }
+                    }
                 }
-            } else {
-                Text(task.status.rawValue.capitalized)
-                    .font(.caption)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(TaskStatusBadge.color(for: task.status).opacity(0.2)))
-                    .foregroundStyle(TaskStatusBadge.color(for: task.status))
+
+                // Description + status badge + timestamp on one line.
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(task.description)
+                        .font(AppFonts.taskDescription)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+
+                    Spacer(minLength: 0)
+
+                    if task.status != .running {
+                        HStack(spacing: 4) {
+                            Text(task.status.rawValue.capitalized)
+                                .font(.caption)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(TaskStatusBadge.color(for: task.status).opacity(0.2)))
+                                .foregroundStyle(TaskStatusBadge.color(for: task.status))
+
+                            Text(taskTimestamp(task.updatedAt))
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .fixedSize()
+                        }
+                    }
+                }
             }
         }
         .padding(.horizontal, 12)
@@ -226,25 +255,34 @@ private struct ArchivedTaskRow: View {
     let viewModel: AppViewModel
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             Image(systemName: TaskStatusBadge.icon(for: task.status))
                 .foregroundStyle(TaskStatusBadge.color(for: task.status).opacity(0.5))
                 .imageScale(.medium)
                 .frame(width: 18)
+                .padding(.top, 2)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(task.title)
                     .font(AppFonts.taskTitle)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text(task.description)
-                    .font(AppFonts.taskDescription)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(task.description)
+                        .font(AppFonts.taskDescription)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 0)
+
+                    Text(taskTimestamp(task.updatedAt))
+                        .font(.caption2)
+                        .foregroundStyle(.quaternary)
+                        .fixedSize()
+                }
             }
-
-            Spacer()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

@@ -92,6 +92,31 @@ public actor OrchestrationRuntime {
         let followUpScheduler = FollowUpScheduler()
         let context = makeToolContext(agentID: id, role: .smith, followUpScheduler: followUpScheduler)
 
+        // Smith only wakes for: private messages (user/Brown/Jones→Smith), system termination notices.
+        // Public Brown messages, tool_request/tool execution messages, and security review notices
+        // are completely filtered out — they generate too much noise and don't need Smith's attention.
+        let smithMessageFilter: @Sendable (ChannelMessage) -> Bool = { message in
+            // Drop all public messages from Brown or Jones — Smith only cares about their private replies.
+            if case .agent(let role) = message.sender, message.recipientID == nil,
+               role == .brown || role == .jones {
+                return false
+            }
+            // Drop tool_request messages (Brown's approval requests, already public Brown → caught above,
+            // but guard here in case routing changes).
+            if case .string(let kind) = message.metadata?["messageKind"], kind == "tool_request" {
+                return false
+            }
+            // Drop tool execution trace messages.
+            if message.metadata?["tool"] != nil {
+                return false
+            }
+            // Drop security review status lines posted by the approval gate.
+            if case .system = message.sender, message.content.hasPrefix("Security review:") {
+                return false
+            }
+            return true
+        }
+
         let smithAgent = AgentActor(
             id: id,
             configuration: AgentConfiguration(
@@ -99,7 +124,9 @@ public actor OrchestrationRuntime {
                 llmConfig: smithConfig,
                 systemPrompt: SmithBehavior.systemPrompt,
                 toolNames: SmithBehavior.toolNames,
-                pollInterval: 20
+                pollInterval: 20,
+                messageDebounceInterval: 5,
+                messageAcceptFilter: smithMessageFilter
             ),
             provider: provider,
             tools: SmithBehavior.tools(),

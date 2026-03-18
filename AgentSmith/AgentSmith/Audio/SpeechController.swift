@@ -72,6 +72,11 @@ final class SpeechController {
         }
     }
 
+    /// Plays the named system sound for preview purposes, bypassing all enable guards.
+    func previewSound(named name: String) {
+        playSound(named: name)
+    }
+
     // MARK: - Settings mutators
 
     func setGloballyEnabled(_ enabled: Bool) {
@@ -115,7 +120,13 @@ final class SpeechController {
 
     private func playSound(named name: String?) {
         guard let name, !name.isEmpty else { return }
-        NSSound(named: NSSound.Name(name))?.play()
+        // NSSound(named:) caches system sounds; fall back to file URL if not found
+        if let sound = NSSound(named: NSSound.Name(name)) {
+            sound.play()
+        } else {
+            let url = URL(fileURLWithPath: "/System/Library/Sounds/\(name).aiff")
+            NSSound(contentsOf: url, byReference: false)?.play()
+        }
     }
 
     private func loadSettings() {

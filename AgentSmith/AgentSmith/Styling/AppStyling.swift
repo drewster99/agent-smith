@@ -12,6 +12,8 @@ enum AppColors {
     static let secondaryBackground = Color(.controlBackgroundColor)
     static let channelBackground = Color(.textBackgroundColor)
     static let errorBackground = Color.red.opacity(0.12)
+    /// Subtle highlight for Smith→User private messages to draw attention to agent output.
+    static let smithToUserBackground = Color.green.opacity(0.08)
 
     /// Returns the color for a given channel message sender.
     static func color(for sender: ChannelMessage.Sender) -> Color {

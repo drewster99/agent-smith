@@ -12,9 +12,9 @@ public actor TaskStore {
         onChange = handler
     }
 
-    /// All tasks, ordered by creation date.
+    /// All tasks, newest first.
     public func allTasks() -> [AgentTask] {
-        tasks.values.sorted { $0.createdAt < $1.createdAt }
+        tasks.values.sorted { $0.createdAt > $1.createdAt }
     }
 
     /// Retrieves a single task by ID.
@@ -22,13 +22,28 @@ public actor TaskStore {
         tasks[id]
     }
 
-    /// Adds a new task and returns it.
+    /// Adds a new task and returns it. Also archives any completed tasks older than 4 hours.
     @discardableResult
     public func addTask(title: String, description: String) -> AgentTask {
+        archiveStaleCompleted()
         let task = AgentTask(title: title, description: description)
         tasks[task.id] = task
         onChange?()
         return task
+    }
+
+    /// Archives all active completed tasks whose `updatedAt` is older than `interval` seconds.
+    /// Called automatically on task creation and on app startup.
+    public func archiveStaleCompleted(olderThan interval: TimeInterval = 4 * 3600) {
+        let cutoff = Date().addingTimeInterval(-interval)
+        var changed = false
+        for (id, task) in tasks where task.status == .completed && task.disposition == .active && task.updatedAt < cutoff {
+            var updated = task
+            updated.disposition = .archived
+            tasks[id] = updated
+            changed = true
+        }
+        if changed { onChange?() }
     }
 
     /// Updates a task's status.

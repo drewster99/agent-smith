@@ -38,7 +38,7 @@ public actor AgentActor {
     private var idleSleepTask: Task<Void, Never>?
 
     /// Seconds of channel silence required before processing new messages.
-    private static let messageDebounceInterval: TimeInterval = 10
+    private let messageDebounceInterval: TimeInterval
 
     /// Tracks consecutive LLM errors for exponential backoff.
     private var consecutiveErrors = 0
@@ -59,6 +59,7 @@ public actor AgentActor {
         self.tools = tools
         self.toolContext = toolContext
         self.pollInterval = configuration.pollInterval
+        self.messageDebounceInterval = configuration.messageDebounceInterval
 
         conversationHistory.append(LLMMessage(
             role: .system,
@@ -158,6 +159,9 @@ public actor AgentActor {
             guard case .string(let kind) = message.metadata?["messageKind"],
                   kind == "tool_request" else { return }
         }
+
+        // Optional per-agent content filter — drops messages that shouldn't trigger a wake.
+        if let filter = configuration.messageAcceptFilter, !filter(message) { return }
 
         pendingChannelMessages.append(message)
         lastChannelMessageAt = Date()
@@ -406,7 +410,7 @@ public actor AgentActor {
     /// Returns how many seconds remain in the post-message debounce window, or 0 if settled.
     private func debounceTimeRemaining() -> TimeInterval {
         guard let last = lastChannelMessageAt else { return 0 }
-        return max(0, Self.messageDebounceInterval - Date().timeIntervalSince(last))
+        return max(0, messageDebounceInterval - Date().timeIntervalSince(last))
     }
 
     /// Fires a scheduled follow-up if its deadline has arrived, injecting a reminder

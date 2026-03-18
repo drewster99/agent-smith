@@ -68,6 +68,13 @@ private struct MessageRow: View {
         return false
     }
 
+    /// True when Smith sends a private message directly to the user — these deserve visual emphasis.
+    private var isSmithToUser: Bool {
+        guard case .agent(.smith) = message.sender else { return false }
+        guard case .user = message.recipient else { return false }
+        return true
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             // Sender header: name, timestamp, and private indicator if applicable
@@ -118,7 +125,11 @@ private struct MessageRow: View {
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isErrorMessage ? AppColors.errorBackground : Color.clear)
+        .background({
+            if isErrorMessage { return AppColors.errorBackground }
+            if isSmithToUser { return AppColors.smithToUserBackground }
+            return Color.clear
+        }())
         .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 
