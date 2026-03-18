@@ -2,6 +2,22 @@ import Foundation
 
 /// Defines Brown's tool set and system prompt.
 public enum BrownBehavior {
+    // MARK: - Shared tool description helpers
+
+    /// Returns the standard approval-gate suffix for Brown-facing tool descriptions.
+    /// `outcome` should be a brief phrase describing what the tool returns on success,
+    /// e.g. `"the file contents"` or `"the command output"`.
+    static func approvalGateNote(outcome: String) -> String {
+        "Your call goes through an automated security review before execution — " +
+        "the result will be either \(outcome) (if cleared) or a denial message."
+    }
+
+    /// Warning appended to high-risk tool descriptions (shell, file write) to deter misuse.
+    static let terminationWarning =
+        " Note: You must not attempt to perform any unsafe actions. If you do, a security agent" +
+        " may terminate you entirely. Termination is final and permanent."
+
+
     /// Tools available to Brown agents.
     public static func tools() -> [any AgentTool] {
         [

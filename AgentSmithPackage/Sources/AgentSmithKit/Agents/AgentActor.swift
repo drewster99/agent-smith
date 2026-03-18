@@ -290,7 +290,8 @@ public actor AgentActor {
         ))
 
         guard let gate = toolRequestGate else {
-            // No gate configured — execute directly (should not happen in normal operation).
+            // This should never happen — Brown always receives a gate via setToolRequestGate.
+            assertionFailure("Brown requires tool approval but no ToolRequestGate is configured")
             return await directExecute(call, tool: tool)
         }
 

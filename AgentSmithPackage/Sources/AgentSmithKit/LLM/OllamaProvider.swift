@@ -1,6 +1,10 @@
 import Foundation
 
 /// LLM provider for Ollama's native API (POST /api/chat, GET /api/tags).
+///
+/// The `endpoint` in `LLMConfiguration` must be the base path that `/chat` is appended to,
+/// e.g. `http://localhost:11434/api`. Do **not** include a trailing `/chat` in the endpoint itself.
+///
 /// Differs from the OpenAI-compatible provider in several ways:
 /// - Tool arguments in responses are JSON objects, not strings
 /// - Tool calls have no `id` — synthetic UUIDs are generated

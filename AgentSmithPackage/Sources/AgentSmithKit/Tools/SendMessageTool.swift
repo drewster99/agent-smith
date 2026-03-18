@@ -103,10 +103,11 @@ public struct SendMessageTool: AgentTool {
             }
         }
 
-        // Brown may only message Smith directly.
+        // Brown may only message Smith directly. Require both sides to be non-nil so a public
+        // message (recipientID == nil) is rejected even if Smith isn't running yet (smithID == nil).
         if context.agentRole == .brown {
             let smithID = await context.agentIDForRole(.smith)
-            guard recipientID == smithID else {
+            guard let smithID, recipientID == smithID else {
                 return "Brown may only send messages to Smith. Use recipient_id: \"smith\"."
             }
         }

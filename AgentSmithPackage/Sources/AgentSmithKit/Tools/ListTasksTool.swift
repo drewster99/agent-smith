@@ -3,7 +3,7 @@ import Foundation
 /// Allows Smith to list all tasks and their statuses.
 public struct ListTasksTool: AgentTool {
     public let name = "list_tasks"
-    public let toolDescription = "List all tasks with their current status, title, and description."
+    public let toolDescription = "List active tasks (excludes archived and recently-deleted) with their current status, title, and description."
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),

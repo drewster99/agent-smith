@@ -29,4 +29,14 @@ public actor ToolRequestGate {
     public func resolve(requestID: UUID, disposition: SecurityDisposition) {
         continuations.removeValue(forKey: requestID)?.resume(returning: disposition)
     }
+
+    /// Resolves all pending requests with the given disposition.
+    /// Call this when Brown is being shut down to prevent suspended continuations from leaking.
+    public func drainAll(approved: Bool = false, message: String? = nil) {
+        let disposition = SecurityDisposition(approved: approved, message: message)
+        for continuation in continuations.values {
+            continuation.resume(returning: disposition)
+        }
+        continuations.removeAll()
+    }
 }

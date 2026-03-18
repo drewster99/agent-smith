@@ -8,11 +8,9 @@ public struct FileWriteTool: AgentTool {
     public func description(for role: AgentRole) -> String {
         switch role {
         case .brown:
-            return "Write content to a file at the given path. Creates parent directories if needed. Sensitive system paths are blocked. " +
-                   "Your call goes through an automated security review before execution — " +
-                   "the result will be either a success confirmation (if cleared) or a denial message. " +
-                   "Note: You must not attempt to perform any unsafe actions. If you do, a security agent " +
-                   "may terminate you entirely. Termination is final and permanent."
+            return toolDescription + " " +
+                   BrownBehavior.approvalGateNote(outcome: "a success confirmation") +
+                   BrownBehavior.terminationWarning
         default:
             return toolDescription
         }

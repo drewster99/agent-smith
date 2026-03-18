@@ -8,9 +8,8 @@ public struct FileReadTool: AgentTool {
     public func description(for role: AgentRole) -> String {
         switch role {
         case .brown:
-            return "Read the contents of a file at the given path. Sensitive credential paths are blocked. " +
-                   "Your call goes through an automated security review before execution — " +
-                   "the result will be either the file contents (if cleared) or a denial message."
+            return toolDescription + " " +
+                   BrownBehavior.approvalGateNote(outcome: "the file contents")
         default:
             return toolDescription
         }

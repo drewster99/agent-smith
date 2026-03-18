@@ -21,6 +21,8 @@ public actor OrchestrationRuntime {
 
     private var llmConfigs: [AgentRole: LLMConfiguration]
     private var monitoringTimer: MonitoringTimer?
+    /// Maps Brown agent IDs to their active ToolRequestGate so we can drain pending approvals on shutdown.
+    private var toolRequestGates: [UUID: ToolRequestGate] = [:]
     /// Maps each agent ID to its channel subscription IDs for proper cleanup.
     private var agentSubscriptions: [UUID: [UUID]] = [:]
 
@@ -193,6 +195,13 @@ public actor OrchestrationRuntime {
         await monitoringTimer?.stop()
         monitoringTimer = nil
 
+        // Drain all pending tool-approval continuations before stopping agents so no Task is
+        // left suspended forever waiting for a Jones that is about to be torn down.
+        for (_, gate) in toolRequestGates {
+            await gate.drainAll(approved: false, message: "System shutting down")
+        }
+        toolRequestGates.removeAll()
+
         for (_, agent) in agents {
             await agent.stop()
         }
@@ -247,6 +256,7 @@ public actor OrchestrationRuntime {
         let jonesID = UUID()
 
         let gate = ToolRequestGate()
+        toolRequestGates[brownID] = gate
 
         let brownContext = makeToolContext(agentID: brownID, role: .brown)
         let brownAgent = AgentActor(
@@ -265,13 +275,23 @@ public actor OrchestrationRuntime {
         )
         await brownAgent.setToolRequestGate(gate)
 
+        // Jones needs Smith's UUID in its system prompt so it can call terminate_agent correctly.
+        // This should never be nil — spawnBrown is only reachable while Smith is running.
+        let smithIDForJones: UUID
+        if let id = smithID {
+            smithIDForJones = id
+        } else {
+            assertionFailure("spawnBrown called without an active Smith — Jones will receive an incorrect Smith UUID")
+            smithIDForJones = UUID()
+        }
+
         let jonesContext = makeToolContext(agentID: jonesID, role: .jones)
         let jonesAgent = AgentActor(
             id: jonesID,
             configuration: AgentConfiguration(
                 role: .jones,
                 llmConfig: jonesConfig,
-                systemPrompt: JonesBehavior.systemPrompt(brownID: brownID, smithID: smithID ?? UUID()),
+                systemPrompt: JonesBehavior.systemPrompt(brownID: brownID, smithID: smithIDForJones),
                 toolNames: JonesBehavior.toolNames,
                 messageFilter: .toolRequestsOnly,
                 suppressesRawTextToChannel: true,
@@ -312,6 +332,12 @@ public actor OrchestrationRuntime {
     /// Terminates a specific agent. If it's a Brown, also stops its paired Jones.
     public func terminateAgent(id: UUID) async -> Bool {
         guard let agent = agents[id] else { return false }
+
+        // Drain any pending approval requests before stopping so Brown's suspended tool
+        // calls are unblocked rather than leaking as orphaned continuations.
+        if let gate = toolRequestGates.removeValue(forKey: id) {
+            await gate.drainAll(approved: false, message: "Agent terminated")
+        }
 
         await agent.stop()
         agents.removeValue(forKey: id)
@@ -435,6 +461,11 @@ public actor OrchestrationRuntime {
     /// Guarded by agents[id] presence to be idempotent with terminateAgent().
     private func handleAgentSelfTerminate(id: UUID) async {
         guard agents[id] != nil else { return }
+
+        // Drain any pending approval requests so Brown's suspended continuations are not leaked.
+        if let gate = toolRequestGates.removeValue(forKey: id) {
+            await gate.drainAll(approved: false, message: "Agent self-terminated")
+        }
 
         agents.removeValue(forKey: id)
         agentRoles.removeValue(forKey: id)
