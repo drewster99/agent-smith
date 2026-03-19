@@ -298,6 +298,7 @@ public actor AgentActor {
         }
 
         var sentMessage = false
+        var spawnedBrown = false
         for call in callsToExecute {
             guard isRunning else { break }
 
@@ -313,6 +314,7 @@ public actor AgentActor {
             }
 
             if call.name == "send_message" { sentMessage = true }
+            if call.name == "spawn_brown" { spawnedBrown = true }
 
             conversationHistory.append(LLMMessage(
                 role: .tool,
@@ -325,6 +327,16 @@ public actor AgentActor {
         // anyone has had a chance to respond.
         if sentMessage {
             hasUnprocessedInput = false
+            return
+        }
+
+        // After spawning Brown (without also sending it a message in the same turn), stop
+        // the loop to prevent spawn storms. Schedule a short follow-up so Smith wakes to
+        // send Brown its task instructions — Brown's online announcement is filtered, so
+        // nothing else would wake Smith without this.
+        if spawnedBrown {
+            hasUnprocessedInput = false
+            await toolContext.scheduleFollowUp(10)
             return
         }
 
