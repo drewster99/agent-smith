@@ -8,11 +8,14 @@ struct InspectorView: View {
     let processingRoles: Set<AgentRole>
     let agentToolNames: [AgentRole: [String]]
     let agentContexts: [AgentRole: [LLMMessage]]
+    let agentTurns: [AgentRole: [LLMTurnRecord]]
     let agentPollIntervals: [AgentRole: TimeInterval]
+    let agentMaxToolCalls: [AgentRole: Int]
     let speechController: SpeechController
     let onSendDirectMessage: (AgentRole, String) -> Void
     let onUpdateSystemPrompt: (AgentRole, String) -> Void
     let onUpdatePollInterval: (AgentRole, TimeInterval) -> Void
+    let onUpdateMaxToolCalls: (AgentRole, Int) -> Void
 
     var body: some View {
         ScrollView {
@@ -33,7 +36,9 @@ struct InspectorView: View {
                         roleMessages.filter { $0.metadata?["tool"] != nil }.suffix(3).reversed()
                     )
                     let context = agentContexts[role] ?? []
+                    let turns = agentTurns[role] ?? []
                     let pollInterval = agentPollIntervals[role] ?? 5
+                    let maxToolCalls = agentMaxToolCalls[role] ?? 100
                     let currentSystemPrompt = context.first(where: { $0.role == .system })
                         .flatMap { $0.content.textValue } ?? ""
 
@@ -45,12 +50,15 @@ struct InspectorView: View {
                         recentMessages: recentMessages,
                         recentToolUses: recentTools,
                         contextMessages: context,
+                        llmTurns: turns,
                         currentSystemPrompt: currentSystemPrompt,
                         pollInterval: pollInterval,
+                        maxToolCalls: maxToolCalls,
                         speechController: speechController,
                         onSendDirectMessage: { text in onSendDirectMessage(role, text) },
                         onUpdateSystemPrompt: { prompt in onUpdateSystemPrompt(role, prompt) },
-                        onUpdatePollInterval: { interval in onUpdatePollInterval(role, interval) }
+                        onUpdatePollInterval: { interval in onUpdatePollInterval(role, interval) },
+                        onUpdateMaxToolCalls: { count in onUpdateMaxToolCalls(role, count) }
                     )
                 }
             }
@@ -67,15 +75,19 @@ private struct AgentCard: View {
     let recentMessages: [ChannelMessage]
     let recentToolUses: [ChannelMessage]
     let contextMessages: [LLMMessage]
+    let llmTurns: [LLMTurnRecord]
     let currentSystemPrompt: String
     let pollInterval: TimeInterval
+    let maxToolCalls: Int
     let speechController: SpeechController
     let onSendDirectMessage: (String) -> Void
     let onUpdateSystemPrompt: (String) -> Void
     let onUpdatePollInterval: (TimeInterval) -> Void
+    let onUpdateMaxToolCalls: (Int) -> Void
 
     @State private var expanded = true
     @State private var showingConfig = false
+    @State private var expandedTurnIDs: Set<UUID> = []
 
     private var roleColor: Color { AppColors.color(for: .agent(role)) }
     private var isSpeechEnabled: Bool { speechController.agentEnabled[role] ?? false }
@@ -202,6 +214,32 @@ private struct AgentCard: View {
                         }
                     }
 
+                    if !llmTurns.isEmpty {
+                        InspectorSection(title: "LLM Turns (\(llmTurns.count))") {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(Array(llmTurns.enumerated()), id: \.element.id) { i, turn in
+                                    LLMTurnDisclosureRow(
+                                        turn: turn,
+                                        turnNumber: i + 1,
+                                        isExpanded: Binding(
+                                            get: { expandedTurnIDs.contains(turn.id) },
+                                            set: { expand in
+                                                if expand { expandedTurnIDs.insert(turn.id) }
+                                                else { expandedTurnIDs.remove(turn.id) }
+                                            }
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                        .onAppear {
+                            if let last = llmTurns.last { expandedTurnIDs.insert(last.id) }
+                        }
+                        .onChange(of: llmTurns.count) {
+                            if let last = llmTurns.last { expandedTurnIDs.insert(last.id) }
+                        }
+                    }
+
                     // Direct message input — hidden for Jones since its filter drops all private messages
                     if role != .jones {
                         InspectorSection(title: "Direct Message") {
@@ -224,10 +262,12 @@ private struct AgentCard: View {
                 roleColor: roleColor,
                 initialSystemPrompt: currentSystemPrompt,
                 initialPollInterval: pollInterval,
+                initialMaxToolCalls: maxToolCalls,
                 speechController: speechController,
-                onSave: { prompt, interval in
+                onSave: { prompt, interval, maxCalls in
                     onUpdateSystemPrompt(prompt)
                     onUpdatePollInterval(interval)
+                    onUpdateMaxToolCalls(maxCalls)
                 }
             )
         }
@@ -331,6 +371,7 @@ private struct ContextMessageRow: View {
                     .font(AppFonts.inspectorBody.weight(.bold))
                     .foregroundStyle(roleColor)
                     .frame(width: 14, alignment: .center)
+                    .help(roleTooltip)
 
                 Text(expanded ? fullContent : contentSummary)
                     .font(AppFonts.inspectorBody)
@@ -352,6 +393,15 @@ private struct ContextMessageRow: View {
         case .user: return "U"
         case .assistant: return "A"
         case .tool: return "T"
+        }
+    }
+
+    private var roleTooltip: String {
+        switch message.role {
+        case .system: return "System — the agent's system prompt"
+        case .user: return "User — input from the user or channel messages"
+        case .assistant: return "Assistant — the LLM's response (text or tool calls)"
+        case .tool: return "Tool — result returned by a tool call"
         }
     }
 
@@ -428,6 +478,76 @@ private struct LLMReasoningRow: View {
     }
 }
 
+private let inspectorTimestampFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm:ss.SS"
+    return f
+}()
+
+/// A single LLM turn entry in the per-turn inspection log.
+private struct LLMTurnDisclosureRow: View {
+    let turn: LLMTurnRecord
+    let turnNumber: Int
+    @Binding var isExpanded: Bool
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: 6) {
+                if !turn.inputDelta.isEmpty {
+                    Text("Input (\(turn.inputDelta.count) new msg\(turn.inputDelta.count == 1 ? "" : "s")):")
+                        .font(AppFonts.inspectorLabel.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(turn.inputDelta.indices, id: \.self) { i in
+                        ContextMessageRow(message: turn.inputDelta[i])
+                    }
+                }
+                Text("Response:")
+                    .font(AppFonts.inspectorLabel.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(responseSummary)
+                    .font(AppFonts.inspectorBody)
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .multilineTextAlignment(.leading)
+            }
+            .padding(.top, 4)
+            .padding(.leading, 8)
+        } label: {
+            Text(turnLabel)
+                .font(AppFonts.inspectorBody)
+                .foregroundStyle(.primary)
+        }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 4)
+        .background(Color.secondary.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+
+    private var turnLabel: String {
+        let ts = inspectorTimestampFormatter.string(from: turn.timestamp)
+        let responseDesc: String
+        switch turn.response {
+        case .text: responseDesc = "text"
+        case .toolCalls(let c): responseDesc = "\(c.count) tool call\(c.count == 1 ? "" : "s")"
+        case .mixed(_, let c): responseDesc = "text + \(c.count) tool call\(c.count == 1 ? "" : "s")"
+        }
+        return "\(ts)  Turn \(turnNumber) · \(turn.inputDelta.count) in → \(responseDesc)"
+    }
+
+    private var responseSummary: String {
+        switch turn.response {
+        case .text(let s):
+            return s
+        case .toolCalls(let calls):
+            return calls.map { "\($0.name)(\($0.arguments))" }.joined(separator: "\n\n")
+        case .mixed(let text, let calls):
+            let textPart = text.isEmpty ? "" : text + "\n\n"
+            let callPart = calls.map { "\($0.name)(\($0.arguments))" }.joined(separator: "\n\n")
+            return textPart + callPart
+        }
+    }
+}
+
 private struct DirectMessageInputRow: View {
     let placeholder: String
     let onSend: (String) -> Void
@@ -463,10 +583,11 @@ private struct AgentConfigSheet: View {
     let role: AgentRole
     let roleColor: Color
     let speechController: SpeechController
-    let onSave: (String, TimeInterval) -> Void
+    let onSave: (String, TimeInterval, Int) -> Void
 
     @State private var draftPrompt: String
     @State private var draftPollInterval: TimeInterval
+    @State private var draftMaxToolCalls: Int
     @State private var availableVoices: [AVSpeechSynthesisVoice] = []
     @Environment(\.dismiss) private var dismiss
 
@@ -475,8 +596,9 @@ private struct AgentConfigSheet: View {
         roleColor: Color,
         initialSystemPrompt: String,
         initialPollInterval: TimeInterval,
+        initialMaxToolCalls: Int,
         speechController: SpeechController,
-        onSave: @escaping (String, TimeInterval) -> Void
+        onSave: @escaping (String, TimeInterval, Int) -> Void
     ) {
         self.role = role
         self.roleColor = roleColor
@@ -484,6 +606,7 @@ private struct AgentConfigSheet: View {
         self.onSave = onSave
         _draftPrompt = State(initialValue: initialSystemPrompt)
         _draftPollInterval = State(initialValue: initialPollInterval)
+        _draftMaxToolCalls = State(initialValue: initialMaxToolCalls)
     }
 
     var body: some View {
@@ -494,7 +617,7 @@ private struct AgentConfigSheet: View {
                     .foregroundStyle(roleColor)
                 Spacer()
                 Button("Done") {
-                    onSave(draftPrompt, draftPollInterval)
+                    onSave(draftPrompt, draftPollInterval, draftMaxToolCalls)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -531,6 +654,24 @@ private struct AgentConfigSheet: View {
                         )
                         .labelsHidden()
                         Text("\(Int(draftPollInterval)) seconds")
+                            .font(AppFonts.inspectorBody)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+
+                    // Max tool calls per response
+                    HStack(spacing: 12) {
+                        Text("Max Tool Calls / Response")
+                            .font(AppFonts.inspectorLabel.weight(.bold))
+                            .foregroundStyle(.secondary)
+                        Stepper(
+                            "\(draftMaxToolCalls)",
+                            value: $draftMaxToolCalls,
+                            in: 1...500,
+                            step: 1
+                        )
+                        .labelsHidden()
+                        Text("\(draftMaxToolCalls)")
                             .font(AppFonts.inspectorBody)
                             .foregroundStyle(.secondary)
                             .monospacedDigit()

@@ -23,9 +23,15 @@ final class AppViewModel {
     var showInspector = false
     /// Snapshots of each active agent's full LLM conversation history.
     var agentContexts: [AgentRole: [LLMMessage]] = [:]
+    /// Snapshots of per-turn LLM call records for each active agent.
+    var agentTurns: [AgentRole: [LLMTurnRecord]] = [:]
     /// Current idle poll intervals for each agent role (seconds).
     var agentPollIntervals: [AgentRole: TimeInterval] = [
         .smith: 20, .brown: 25, .jones: 13
+    ]
+    /// Maximum tool calls per LLM response for each agent role.
+    var agentMaxToolCalls: [AgentRole: Int] = [
+        .smith: 100, .brown: 100, .jones: 100
     ]
 
     /// Per-role LLM configurations, editable from settings.
@@ -132,6 +138,7 @@ final class AppViewModel {
                 self.processingRoles.removeAll()
                 self.agentToolNames.removeAll()
                 self.agentContexts.removeAll()
+                self.agentTurns.removeAll()
                 self.runtime = nil
             }
         }
@@ -286,6 +293,13 @@ final class AppViewModel {
         await runtime.updatePollInterval(for: role, interval: interval)
     }
 
+    /// Updates the maximum tool calls per LLM response for the active agent with the given role.
+    func updateMaxToolCalls(for role: AgentRole, count: Int) async {
+        agentMaxToolCalls[role] = count
+        guard let runtime else { return }
+        await runtime.updateMaxToolCalls(for: role, count: count)
+    }
+
     /// Master kill switch — stops everything immediately.
     func stopAll() async {
         guard let runtime else { return }
@@ -295,6 +309,7 @@ final class AppViewModel {
         processingRoles.removeAll()
         agentToolNames.removeAll()
         agentContexts.removeAll()
+        agentTurns.removeAll()
         channelStreamTask?.cancel()
         channelStreamTask = nil
         contextRefreshTask?.cancel()
@@ -325,6 +340,7 @@ final class AppViewModel {
     func clearLog() {
         messages.removeAll()
         agentContexts.removeAll()
+        agentTurns.removeAll()
     }
 
     // MARK: - Attachments
@@ -370,6 +386,9 @@ final class AppViewModel {
                 for role in AgentRole.allCases {
                     if let context = await runtime.contextSnapshot(for: role) {
                         self.agentContexts[role] = context
+                    }
+                    if let turns = await runtime.turnsSnapshot(for: role) {
+                        self.agentTurns[role] = turns
                     }
                 }
                 do {

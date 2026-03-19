@@ -101,13 +101,14 @@ public actor OrchestrationRuntime {
             if case .agent(let role) = message.sender, role == .smith {
                 return false
             }
-            // Drop all public messages from Brown or Jones — Smith only cares about their private replies.
+            // Drop all public messages from Brown or Jones, except their online announcements
+            // which Smith needs to know about for coordination.
             if case .agent(let role) = message.sender, message.recipientID == nil,
                role == .brown || role == .jones {
-                return false
+                guard case .string(let kind) = message.metadata?["messageKind"],
+                      kind == "agent_online" else { return false }
             }
-            // Drop tool_request messages (Brown's approval requests, already public Brown → caught above,
-            // but guard here in case routing changes).
+            // Drop tool_request messages (Brown's approval requests).
             if case .string(let kind) = message.metadata?["messageKind"], kind == "tool_request" {
                 return false
             }
@@ -115,9 +116,12 @@ public actor OrchestrationRuntime {
             if message.metadata?["tool"] != nil {
                 return false
             }
-            // Drop security review status lines posted by the approval gate.
-            if case .system = message.sender, message.content.hasPrefix("Security review:") {
-                return false
+            // For system messages, only pass through diagnostics directly relevant to Smith:
+            // agent lifecycle events (errors, termination) and rate-limit notices.
+            // Drop startup/shutdown notices, monitoring summaries, approval statuses, etc.
+            if case .system = message.sender {
+                let c = message.content
+                guard c.hasPrefix("Agent ") || c.hasPrefix("Rate limit:") else { return false }
             }
             return true
         }
@@ -172,27 +176,38 @@ public actor OrchestrationRuntime {
                 Then stop — do not call any other tools or send any further messages until the user replies.
                 """
         } else {
-            // No tasks in progress — surface any recent failures for the user to decide on.
+            // No tasks were running — surface any pending or recently failed tasks.
+            let pendingTasks = activeTasks.filter { $0.status == .pending }
             let recentFailed = Array(
                 activeTasks
                     .filter { $0.status == .failed }
                     .sorted { $0.updatedAt > $1.updatedAt }
                     .prefix(5)
             )
-            if !recentFailed.isEmpty {
-                let taskList = recentFailed
-                    .map { "- \($0.title) (id: \($0.id.uuidString))" }
-                    .joined(separator: "\n")
-                initialInstruction = """
-                    No tasks were in progress, but the following task(s) previously failed (most recent first):
-                    \(taskList)
-                    Send the user a single private message (recipient_id: "user") listing these \
-                    failed tasks and asking if they would like to retry any of them. \
-                    Then stop — do not call any other tools or send any further messages until the user replies.
-                    """
-            } else {
+
+            if pendingTasks.isEmpty && recentFailed.isEmpty {
                 initialInstruction = """
                     No tasks are pending. Await instructions from the user.
+                    """
+            } else {
+                var parts: [String] = []
+                if !pendingTasks.isEmpty {
+                    let list = pendingTasks
+                        .map { "- \($0.title) (id: \($0.id.uuidString))" }
+                        .joined(separator: "\n")
+                    parts.append("The following task(s) are pending and waiting to be started:\n\(list)")
+                }
+                if !recentFailed.isEmpty {
+                    let list = recentFailed
+                        .map { "- \($0.title) (id: \($0.id.uuidString))" }
+                        .joined(separator: "\n")
+                    parts.append("The following task(s) previously failed (most recent first):\n\(list)")
+                }
+                initialInstruction = """
+                    \(parts.joined(separator: "\n\n"))
+                    Send the user a single private message (recipient_id: "user") listing these tasks \
+                    and asking what they would like to do. \
+                    Then stop — do not call any other tools or send any further messages until the user replies.
                     """
             }
         }
@@ -401,6 +416,12 @@ public actor OrchestrationRuntime {
         return await agent.contextSnapshot()
     }
 
+    /// Returns a snapshot of recent LLM turns for the active agent with the given role.
+    public func turnsSnapshot(for role: AgentRole) async -> [LLMTurnRecord]? {
+        guard let agentID = agentIDForRole(role), let agent = agents[agentID] else { return nil }
+        return await agent.turnsSnapshot()
+    }
+
     /// Posts a private message from the user directly to the agent with the given role.
     public func sendDirectMessage(to role: AgentRole, text: String) async {
         guard let agentID = agentIDForRole(role) else { return }
@@ -422,6 +443,12 @@ public actor OrchestrationRuntime {
     public func updatePollInterval(for role: AgentRole, interval: TimeInterval) async {
         guard let agentID = agentIDForRole(role), let agent = agents[agentID] else { return }
         await agent.updatePollInterval(interval)
+    }
+
+    /// Updates the maximum tool calls per LLM response for the active agent with the given role.
+    public func updateMaxToolCalls(for role: AgentRole, count: Int) async {
+        guard let agentID = agentIDForRole(role), let agent = agents[agentID] else { return }
+        await agent.updateMaxToolCalls(count)
     }
 
     /// All currently active agent IDs.

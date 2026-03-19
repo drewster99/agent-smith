@@ -57,7 +57,9 @@ struct MainView: View {
                 processingRoles: viewModel.processingRoles,
                 agentToolNames: viewModel.agentToolNames,
                 agentContexts: viewModel.agentContexts,
+                agentTurns: viewModel.agentTurns,
                 agentPollIntervals: viewModel.agentPollIntervals,
+                agentMaxToolCalls: viewModel.agentMaxToolCalls,
                 speechController: viewModel.speechController,
                 onSendDirectMessage: { role, text in
                     Task { await viewModel.sendDirectMessage(to: role, text: text) }
@@ -67,6 +69,9 @@ struct MainView: View {
                 },
                 onUpdatePollInterval: { role, interval in
                     Task { await viewModel.updatePollInterval(for: role, interval: interval) }
+                },
+                onUpdateMaxToolCalls: { role, count in
+                    Task { await viewModel.updateMaxToolCalls(for: role, count: count) }
                 }
             )
         }

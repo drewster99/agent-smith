@@ -12,8 +12,13 @@ struct ChannelLogView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(messages) { message in
-                        MessageRow(message: message)
-                            .id(message.id)
+                        // Agent online announcements are internal coordination messages;
+                        // suppress them from the channel log display.
+                        if case .string(let kind) = message.metadata?["messageKind"], kind == "agent_online" {
+                        } else {
+                            MessageRow(message: message)
+                                .id(message.id)
+                        }
                     }
                 }
                 .padding(8)
@@ -92,7 +97,7 @@ private struct MessageRow: View {
                         .foregroundStyle(recipientColor)
                 }
 
-                Text(message.timestamp, style: .time)
+                Text(Self.timestampFormatter.string(from: message.timestamp))
                     .font(AppFonts.channelTimestamp)
                     .foregroundStyle(.secondary)
             }
@@ -132,6 +137,12 @@ private struct MessageRow: View {
         }())
         .clipShape(RoundedRectangle(cornerRadius: 4))
     }
+
+    private static let timestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SS"
+        return f
+    }()
 
     private var toolSummary: String {
         if case .string(let toolName) = message.metadata?["tool"] {

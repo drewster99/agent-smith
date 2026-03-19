@@ -130,7 +130,9 @@ final class SpeechController {
     }
 
     private func loadSettings() {
-        isGloballyEnabled = UserDefaults.standard.bool(forKey: "speech.globalEnabled")
+        // Default to enabled so the per-agent speaker icons work without needing a separate
+        // global toggle. The user can mute all via the toolbar "Mute All" button if desired.
+        isGloballyEnabled = UserDefaults.standard.object(forKey: "speech.globalEnabled") as? Bool ?? true
         for role in AgentRole.allCases {
             let key = role.rawValue
             agentEnabled[role] = UserDefaults.standard.object(forKey: "speech.\(key).enabled") as? Bool ?? false

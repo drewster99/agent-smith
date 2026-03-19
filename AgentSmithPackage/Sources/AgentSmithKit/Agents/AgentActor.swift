@@ -44,7 +44,13 @@ public actor AgentActor {
     private var consecutiveErrors = 0
     private static let maxConsecutiveErrors = 10
     private static let maxBackoffSeconds: Double = 60
-    private static let maxToolCallsPerIteration = 10
+    private var maxToolCallsPerIteration: Int
+
+    /// Per-turn LLM call log for per-turn inspection.
+    private var llmTurns: [LLMTurnRecord] = []
+    /// Message count at the time of the previous LLM call — used to compute inputDelta.
+    private var lastTurnMessageCount: Int = 0
+    private static let maxTurnRecords = 30
 
     public init(
         id: UUID = UUID(),
@@ -60,6 +66,7 @@ public actor AgentActor {
         self.toolContext = toolContext
         self.pollInterval = configuration.pollInterval
         self.messageDebounceInterval = configuration.messageDebounceInterval
+        self.maxToolCallsPerIteration = configuration.maxToolCallsPerIteration
 
         conversationHistory.append(LLMMessage(
             role: .system,
@@ -77,6 +84,11 @@ public actor AgentActor {
         conversationHistory
     }
 
+    /// Returns a snapshot of recent LLM turns for per-turn inspection.
+    public func turnsSnapshot() -> [LLMTurnRecord] {
+        llmTurns
+    }
+
     /// Replaces the system prompt in the agent's conversation history.
     public func updateSystemPrompt(_ prompt: String) {
         guard !conversationHistory.isEmpty else { return }
@@ -86,6 +98,11 @@ public actor AgentActor {
     /// Updates the idle poll interval for this agent.
     public func updatePollInterval(_ interval: TimeInterval) {
         pollInterval = interval
+    }
+
+    /// Updates the maximum number of tool calls executed per LLM response.
+    public func updateMaxToolCalls(_ count: Int) {
+        maxToolCallsPerIteration = count
     }
 
     /// Schedules a follow-up wake after the given delay.
@@ -116,7 +133,8 @@ public actor AgentActor {
             // Announce on the public channel so all agents and the UI know we're alive.
             await channel.post(ChannelMessage(
                 sender: .agent(role),
-                content: "\(role.displayName) agent \(agentID) is online."
+                content: "\(role.displayName) agent \(agentID) is online.",
+                metadata: ["messageKind": .string("agent_online")]
             ))
 
             guard let self else { return }
@@ -219,6 +237,16 @@ public actor AgentActor {
                 guard isRunning else { break }
 
                 consecutiveErrors = 0
+                let inputDelta = Array(conversationHistory[lastTurnMessageCount...])
+                lastTurnMessageCount = conversationHistory.count
+                llmTurns.append(LLMTurnRecord(
+                    inputDelta: inputDelta,
+                    response: response,
+                    totalMessageCount: conversationHistory.count
+                ))
+                if llmTurns.count > Self.maxTurnRecords {
+                    llmTurns.removeFirst(llmTurns.count - Self.maxTurnRecords)
+                }
                 try await handleResponse(response)
             } catch {
                 guard isRunning else { break }
@@ -275,11 +303,11 @@ public actor AgentActor {
 
         // Cap tool calls before recording to history — every recorded tool call must have
         // a matching tool result, or the LLM API will error on the next request.
-        let callsToExecute = Array(toolCalls.prefix(Self.maxToolCallsPerIteration))
+        let callsToExecute = Array(toolCalls.prefix(maxToolCallsPerIteration))
         if callsToExecute.count < toolCalls.count {
             await toolContext.channel.post(ChannelMessage(
                 sender: .system,
-                content: "Rate limit: dropped \(toolCalls.count - callsToExecute.count) tool calls (max \(Self.maxToolCallsPerIteration) per iteration)."
+                content: "Rate limit: dropped \(toolCalls.count - callsToExecute.count) tool calls (max \(maxToolCallsPerIteration) per iteration)."
             ))
         }
 
@@ -530,16 +558,23 @@ public actor AgentActor {
             keepFromIndex = 2
         }
 
-        let prunedCount = keepFromIndex - 1
+        // Brown retains its system prompt plus the initial task instruction(s) so it never
+        // forgets what it was asked to do, even after many tool call rounds cause pruning.
+        let retainHead = configuration.role == .brown ? min(3, conversationHistory.count) : 1
+        let tailStart = max(keepFromIndex, retainHead)
+        let prunedCount = tailStart - retainHead
         guard prunedCount > 0 else { return }
 
-        var newHistory = [conversationHistory[0]]
+        var newHistory = Array(conversationHistory.prefix(retainHead))
         newHistory.append(LLMMessage(
             role: .user,
             text: "[System: \(prunedCount) earlier messages were pruned to stay within context limits. Continue from the recent context below.]"
         ))
-        newHistory.append(contentsOf: conversationHistory[keepFromIndex...])
+        newHistory.append(contentsOf: conversationHistory[tailStart...])
         conversationHistory = newHistory
+        // After pruning, reset the turn baseline so the next turn's delta doesn't
+        // use a stale index that would be out of bounds.
+        lastTurnMessageCount = conversationHistory.count
 
         // Post a notification about pruning. channel.post doesn't throw,
         // so this detached Task won't eat errors.

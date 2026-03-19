@@ -30,6 +30,9 @@ public struct AgentConfiguration: Sendable {
     /// Optional additional filter applied after all routing rules. Return `false` to drop a message
     /// entirely — it will not be added to the agent's pending queue and will not trigger a wake.
     public var messageAcceptFilter: (@Sendable (ChannelMessage) -> Bool)?
+    /// Maximum number of tool calls executed per LLM response. Extra calls are dropped with a
+    /// channel notice. Exists to prevent runaway tool loops.
+    public var maxToolCallsPerIteration: Int
 
     public init(
         role: AgentRole,
@@ -41,7 +44,8 @@ public struct AgentConfiguration: Sendable {
         suppressesRawTextToChannel: Bool = false,
         pollInterval: TimeInterval = 5,
         messageDebounceInterval: TimeInterval = 10,
-        messageAcceptFilter: (@Sendable (ChannelMessage) -> Bool)? = nil
+        messageAcceptFilter: (@Sendable (ChannelMessage) -> Bool)? = nil,
+        maxToolCallsPerIteration: Int = 100
     ) {
         self.role = role
         self.llmConfig = llmConfig
@@ -53,5 +57,6 @@ public struct AgentConfiguration: Sendable {
         self.pollInterval = pollInterval
         self.messageDebounceInterval = messageDebounceInterval
         self.messageAcceptFilter = messageAcceptFilter
+        self.maxToolCallsPerIteration = maxToolCallsPerIteration
     }
 }
