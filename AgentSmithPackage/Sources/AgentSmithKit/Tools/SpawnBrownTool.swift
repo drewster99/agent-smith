@@ -19,6 +19,21 @@ public struct SpawnBrownTool: AgentTool {
     public init() {}
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+        // If a task_id is provided, check that no active Brown is already assigned to it
+        if case .string(let taskIDString) = arguments["task_id"],
+           let taskID = UUID(uuidString: taskIDString) {
+            if let task = await context.taskStore.task(id: taskID) {
+                let activeStatuses: Set<AgentTask.Status> = [.pending, .running, .paused, .awaitingReview]
+                if activeStatuses.contains(task.status) {
+                    for assigneeID in task.assigneeIDs {
+                        if let role = await context.agentRoleForID(assigneeID), role == .brown {
+                            return "A Brown agent is already assigned to this task. Use schedule_followup to check back later, or terminate the existing Brown first."
+                        }
+                    }
+                }
+            }
+        }
+
         guard let brownID = await context.spawnBrown() else {
             return "Failed to spawn Brown agent."
         }

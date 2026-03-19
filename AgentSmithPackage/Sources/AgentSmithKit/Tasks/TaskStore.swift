@@ -71,6 +71,34 @@ public actor TaskStore {
         }
     }
 
+    /// Returns the first active task assigned to the given agent that is still actionable.
+    public func taskForAgent(agentID: UUID) -> AgentTask? {
+        let actionableStatuses: Set<AgentTask.Status> = [.pending, .running, .paused, .awaitingReview]
+        return tasks.values.first { task in
+            task.assigneeIDs.contains(agentID) && actionableStatuses.contains(task.status)
+        }
+    }
+
+    /// Stores a result (and optional commentary) on a task.
+    public func setResult(id: UUID, result: String, commentary: String?) {
+        guard var task = tasks[id] else { return }
+        task.result = result
+        task.commentary = commentary
+        task.updatedAt = Date()
+        tasks[id] = task
+        onChange?()
+    }
+
+    /// Clears the stored result and commentary on a task.
+    public func clearResult(id: UUID) {
+        guard var task = tasks[id] else { return }
+        task.result = nil
+        task.commentary = nil
+        task.updatedAt = Date()
+        tasks[id] = task
+        onChange?()
+    }
+
     // MARK: - Disposition management
 
     /// Moves a task to the archive bucket.

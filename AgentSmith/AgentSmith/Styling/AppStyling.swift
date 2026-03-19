@@ -52,6 +52,7 @@ enum TaskStatusBadge {
         case .completed: return .green
         case .failed: return .red
         case .paused: return .indigo
+        case .awaitingReview: return .orange
         }
     }
 
@@ -62,6 +63,7 @@ enum TaskStatusBadge {
         case .completed: return "checkmark.circle.fill"
         case .failed: return "xmark.circle.fill"
         case .paused: return "pause.circle.fill"
+        case .awaitingReview: return "eye.circle.fill"
         }
     }
 }

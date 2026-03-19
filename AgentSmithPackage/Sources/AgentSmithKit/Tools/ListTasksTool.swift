@@ -10,8 +10,8 @@ public struct ListTasksTool: AgentTool {
         "properties": .dictionary([
             "status_filter": .dictionary([
                 "type": .string("string"),
-                "description": .string("Optional filter: 'pending', 'running', 'paused', 'completed', or 'failed'. Omit to list all tasks."),
-                "enum": .array([.string("pending"), .string("running"), .string("paused"), .string("completed"), .string("failed")])
+                "description": .string("Optional filter: 'pending', 'running', 'paused', 'completed', 'failed', or 'awaitingReview'. Omit to list all tasks."),
+                "enum": .array([.string("pending"), .string("running"), .string("paused"), .string("completed"), .string("failed"), .string("awaitingReview")])
             ])
         ]),
         "required": .array([])

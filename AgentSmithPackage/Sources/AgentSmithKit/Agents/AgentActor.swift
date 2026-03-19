@@ -40,6 +40,10 @@ public actor AgentActor {
     /// Seconds of channel silence required before processing new messages.
     private let messageDebounceInterval: TimeInterval
 
+    /// Timestamp of the most recent direct message from the user to this agent.
+    /// Used to gate availability of the `reply_to_user` tool.
+    private var lastDirectUserMessageAt: Date?
+
     /// Tracks consecutive LLM errors for exponential backoff.
     private var consecutiveErrors = 0
     private static let maxConsecutiveErrors = 10
@@ -181,6 +185,11 @@ public actor AgentActor {
         // Optional per-agent content filter — drops messages that shouldn't trigger a wake.
         if let filter = configuration.messageAcceptFilter, !filter(message) { return }
 
+        // Track when the user sends a direct message to this agent (for reply_to_user availability)
+        if case .user = message.sender, message.recipientID == id {
+            lastDirectUserMessageAt = Date()
+        }
+
         pendingChannelMessages.append(message)
         lastChannelMessageAt = Date()
         // Only start debouncing if the agent was idle — during an active tool loop
@@ -227,7 +236,13 @@ public actor AgentActor {
             }
 
             do {
-                let toolDefinitions = tools.map { $0.definition(for: configuration.role) }
+                let availabilityContext = ToolAvailabilityContext(
+                    lastDirectUserMessageAt: lastDirectUserMessageAt,
+                    agentRole: configuration.role
+                )
+                let toolDefinitions = tools
+                    .filter { $0.isAvailable(in: availabilityContext) }
+                    .map { $0.definition(for: configuration.role) }
                 toolContext.onProcessingStateChange(true)
                 defer { toolContext.onProcessingStateChange(false) }
                 let response = try await provider.send(
@@ -327,12 +342,19 @@ public actor AgentActor {
 
         var sentMessage = false
         var spawnedBrown = false
+        var calledTaskComplete = false
         for call in callsToExecute {
             guard isRunning else { break }
 
             let result: String
+            // Look up tool from the full array — not the filtered list — so tools available
+            // at definition time but whose window expired during the LLM call still execute.
             if let tool = tools.first(where: { $0.name == call.name }) {
-                if configuration.requiresToolApproval && call.name != "send_message" {
+                let taskLifecycleTools: Set<String> = [
+                    "task_acknowledged", "task_update", "task_complete", "reply_to_user",
+                    "send_message"
+                ]
+                if configuration.requiresToolApproval && !taskLifecycleTools.contains(call.name) {
                     result = await executeWithApproval(call, tool: tool)
                 } else {
                     result = await directExecute(call, tool: tool)
@@ -343,11 +365,19 @@ public actor AgentActor {
 
             if call.name == "send_message" { sentMessage = true }
             if call.name == "spawn_brown" { spawnedBrown = true }
+            if call.name == "task_complete" { calledTaskComplete = true }
 
             conversationHistory.append(LLMMessage(
                 role: .tool,
                 content: .toolResult(toolCallID: call.id, content: result)
             ))
+        }
+
+        // After completing a task, stop and wait for Smith's review.
+        // This takes priority over the sentMessage check since task_complete also posts a message.
+        if calledTaskComplete {
+            hasUnprocessedInput = false
+            return
         }
 
         // After sending a message, stop and wait for a reply rather than continuing to act.

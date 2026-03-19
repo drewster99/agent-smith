@@ -13,9 +13,29 @@ public protocol AgentTool: Sendable {
 
     /// Executes the tool with the given arguments and returns a result string.
     func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String
+
+    /// Whether this tool should be included in the LLM's tool definitions for this turn.
+    /// Default is `true`. Override to conditionally hide tools based on context.
+    func isAvailable(in context: ToolAvailabilityContext) -> Bool
+}
+
+/// Contextual information for determining tool availability before an LLM call.
+public struct ToolAvailabilityContext: Sendable {
+    /// When the user last sent a direct message to this agent, if ever.
+    public let lastDirectUserMessageAt: Date?
+    /// The role of the agent whose tools are being evaluated.
+    public let agentRole: AgentRole
+
+    public init(lastDirectUserMessageAt: Date? = nil, agentRole: AgentRole) {
+        self.lastDirectUserMessageAt = lastDirectUserMessageAt
+        self.agentRole = agentRole
+    }
 }
 
 extension AgentTool {
+    /// Default: tool is always available.
+    public func isAvailable(in context: ToolAvailabilityContext) -> Bool { true }
+
     /// Returns the description to present to the LLM for a given agent role.
     /// Defaults to `toolDescription`. Override to provide role-specific instructions.
     public func description(for role: AgentRole) -> String {

@@ -162,17 +162,38 @@ public actor OrchestrationRuntime {
             await taskStore.updateStatus(id: task.id, status: .pending)
         }
 
+        // Gather awaitingReview tasks — these survive restart and need Smith's attention
+        let awaitingReviewTasks = activeTasks.filter { $0.status == .awaitingReview }
+
         let initialInstruction: String
-        if !stalledTasks.isEmpty {
-            // Tasks were actively running when the system stopped — ask the user whether to resume.
-            let taskList = stalledTasks
-                .map { "- \($0.title) (id: \($0.id.uuidString))" }
-                .joined(separator: "\n")
+        if !stalledTasks.isEmpty || !awaitingReviewTasks.isEmpty {
+            var parts: [String] = []
+
+            if !stalledTasks.isEmpty {
+                let taskList = stalledTasks
+                    .map { "- \($0.title) (id: \($0.id.uuidString))" }
+                    .joined(separator: "\n")
+                parts.append("\(stalledTasks.count) task(s) were in progress when the system last stopped and have been reset to pending:\n\(taskList)")
+            }
+
+            if !awaitingReviewTasks.isEmpty {
+                let taskList = awaitingReviewTasks.map { task in
+                    var entry = "- \(task.title) (id: \(task.id.uuidString))"
+                    if let result = task.result {
+                        entry += "\n  Result: \(result)"
+                    }
+                    if let commentary = task.commentary {
+                        entry += "\n  Commentary: \(commentary)"
+                    }
+                    return entry
+                }.joined(separator: "\n")
+                parts.append("\(awaitingReviewTasks.count) task(s) are awaiting your review:\n\(taskList)\nReview each and call `accept_work` or `request_changes`.")
+            }
+
             initialInstruction = """
-                \(stalledTasks.count) task(s) were in progress when the system last stopped and have been reset to pending:
-                \(taskList)
-                Send the user a single private message (recipient_id: "user") listing these tasks \
-                and asking which, if any, they would like to resume. \
+                \(parts.joined(separator: "\n\n"))
+                Send the user a single private message (recipient_id: "user") summarizing the situation \
+                and asking how they would like to proceed. \
                 Then stop — do not call any other tools or send any further messages until the user replies.
                 """
         } else {
@@ -548,6 +569,12 @@ public actor OrchestrationRuntime {
             }
             await unsubscribeAgent(id: jonesID)
             brownToJones.removeValue(forKey: id)
+        }
+
+        // Mark any running tasks assigned to this agent as failed — no agent is working on them anymore
+        let allTasks = await taskStore.allTasks()
+        for task in allTasks where task.assigneeIDs.contains(id) && task.status == .running {
+            await taskStore.updateStatus(id: task.id, status: .failed)
         }
 
         if currentBrownID == id {

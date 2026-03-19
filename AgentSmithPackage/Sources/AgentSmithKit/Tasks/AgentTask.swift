@@ -8,6 +8,8 @@ public struct AgentTask: Identifiable, Codable, Sendable {
     public var status: Status
     public var disposition: TaskDisposition
     public var assigneeIDs: [UUID]
+    public var result: String?
+    public var commentary: String?
     public var createdAt: Date
     public var updatedAt: Date
 
@@ -17,6 +19,7 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         case completed
         case failed
         case paused
+        case awaitingReview
 
         /// Whether this status represents work that is active or waiting — prevents archiving or deletion.
         public var isInProgress: Bool {
@@ -40,6 +43,8 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         status: Status = .pending,
         disposition: TaskDisposition = .active,
         assigneeIDs: [UUID] = [],
+        result: String? = nil,
+        commentary: String? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -49,6 +54,8 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         self.status = status
         self.disposition = disposition
         self.assigneeIDs = assigneeIDs
+        self.result = result
+        self.commentary = commentary
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -56,7 +63,7 @@ public struct AgentTask: Identifiable, Codable, Sendable {
     // MARK: - Codable (backward-compatible with persisted data lacking `disposition`)
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, description, status, disposition, assigneeIDs, createdAt, updatedAt
+        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -67,6 +74,8 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         status = try c.decode(Status.self, forKey: .status)
         disposition = try c.decodeIfPresent(TaskDisposition.self, forKey: .disposition) ?? .active
         assigneeIDs = try c.decode([UUID].self, forKey: .assigneeIDs)
+        result = try c.decodeIfPresent(String.self, forKey: .result)
+        commentary = try c.decodeIfPresent(String.self, forKey: .commentary)
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         updatedAt = try c.decode(Date.self, forKey: .updatedAt)
     }
@@ -79,6 +88,8 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         try c.encode(status, forKey: .status)
         try c.encode(disposition, forKey: .disposition)
         try c.encode(assigneeIDs, forKey: .assigneeIDs)
+        try c.encodeIfPresent(result, forKey: .result)
+        try c.encodeIfPresent(commentary, forKey: .commentary)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)
     }
