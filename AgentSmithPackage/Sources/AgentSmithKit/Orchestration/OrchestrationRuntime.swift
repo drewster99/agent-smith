@@ -165,11 +165,11 @@ public actor OrchestrationRuntime {
                 .map { "- \($0.title) (id: \($0.id.uuidString))" }
                 .joined(separator: "\n")
             initialInstruction = """
-                Start by calling list_tasks to review all current tasks.
                 \(stalledTasks.count) task(s) were in progress when the system last stopped and have been reset to pending:
                 \(taskList)
-                After reviewing, send the user a private message (recipient_id: "user") listing these tasks \
-                and asking which, if any, they would like to resume.
+                Send the user a single private message (recipient_id: "user") listing these tasks \
+                and asking which, if any, they would like to resume. \
+                Then stop — do not call any other tools or send any further messages until the user replies.
                 """
         } else {
             // No tasks in progress — surface any recent failures for the user to decide on.
@@ -184,16 +184,15 @@ public actor OrchestrationRuntime {
                     .map { "- \($0.title) (id: \($0.id.uuidString))" }
                     .joined(separator: "\n")
                 initialInstruction = """
-                    Start by calling list_tasks to review all current tasks.
                     No tasks were in progress, but the following task(s) previously failed (most recent first):
                     \(taskList)
-                    After reviewing, send the user a private message (recipient_id: "user") listing these \
-                    failed tasks and asking if they would like to retry any of them.
+                    Send the user a single private message (recipient_id: "user") listing these \
+                    failed tasks and asking if they would like to retry any of them. \
+                    Then stop — do not call any other tools or send any further messages until the user replies.
                     """
             } else {
                 initialInstruction = """
-                    Start by calling list_tasks to review the current task state, \
-                    then await instructions from the user.
+                    No tasks are pending. Await instructions from the user.
                     """
             }
         }
