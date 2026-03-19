@@ -297,6 +297,7 @@ public actor AgentActor {
             ))
         }
 
+        var sentMessage = false
         for call in callsToExecute {
             guard isRunning else { break }
 
@@ -311,10 +312,20 @@ public actor AgentActor {
                 result = "Unknown tool: \(call.name)"
             }
 
+            if call.name == "send_message" { sentMessage = true }
+
             conversationHistory.append(LLMMessage(
                 role: .tool,
                 content: .toolResult(toolCallID: call.id, content: result)
             ))
+        }
+
+        // After sending a message, stop and wait for a reply rather than continuing to act.
+        // This prevents agents from looping by sending the same message repeatedly before
+        // anyone has had a chance to respond.
+        if sentMessage {
+            hasUnprocessedInput = false
+            return
         }
 
         // Tool results have been appended; the LLM needs to see them on the next iteration.
