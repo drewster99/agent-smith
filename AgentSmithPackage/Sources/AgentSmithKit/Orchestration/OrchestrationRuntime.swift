@@ -96,6 +96,11 @@ public actor OrchestrationRuntime {
         // Public Brown messages, tool_request/tool execution messages, and security review notices
         // are completely filtered out — they generate too much noise and don't need Smith's attention.
         let smithMessageFilter: @Sendable (ChannelMessage) -> Bool = { message in
+            // Drop Smith's own outgoing messages — they are published to the channel and would
+            // immediately re-wake Smith, producing an infinite loop of repeated messages.
+            if case .agent(let role) = message.sender, role == .smith {
+                return false
+            }
             // Drop all public messages from Brown or Jones — Smith only cares about their private replies.
             if case .agent(let role) = message.sender, message.recipientID == nil,
                role == .brown || role == .jones {
