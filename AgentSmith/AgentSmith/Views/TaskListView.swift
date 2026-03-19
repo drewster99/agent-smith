@@ -236,13 +236,7 @@ private struct ActiveTaskRow: View {
                 })
 
             case .awaitingReview:
-                Button(action: { Task { await viewModel.archiveTask(id: task.id) } }, label: {
-                    Label("Archive", systemImage: "archivebox")
-                })
-                Divider()
-                Button(role: .destructive, action: { Task { await viewModel.deleteTask(id: task.id) } }, label: {
-                    Label("Delete", systemImage: "trash")
-                })
+                EmptyView()
 
             case .pending, .paused:
                 Button(action: { Task { await viewModel.archiveTask(id: task.id) } }, label: {

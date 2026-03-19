@@ -12,6 +12,7 @@ public enum SmithBehavior {
             SpawnBrownTool(),
             AcceptWorkTool(),
             RequestChangesTool(),
+            ManageTaskDispositionTool(),
             TerminateAgentTool(),
             AbortTool(),
             ScheduleFollowUpTool()
@@ -20,7 +21,7 @@ public enum SmithBehavior {
 
     /// Tool names for configuration.
     public static var toolNames: [String] {
-        ["send_message", "create_task", "update_task", "list_tasks", "spawn_brown", "accept_work", "request_changes", "terminate_agent", "abort", "schedule_followup"]
+        ["send_message", "create_task", "update_task", "list_tasks", "spawn_brown", "accept_work", "request_changes", "manage_task_disposition", "terminate_agent", "abort", "schedule_followup"]
     }
 
     /// Enhanced system prompt for orchestration and iterative supervision.
