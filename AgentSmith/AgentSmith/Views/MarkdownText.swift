@@ -109,13 +109,21 @@ struct MarkdownText: View {
             ForEach(Array(rows.enumerated()), id: \.offset) { rowIdx, row in
                 HStack(spacing: 0) {
                     ForEach(0..<columnCount, id: \.self) { colIdx in
-                        Text(LocalizedStringKey(linkifyBareURLs(colIdx < row.count ? row[colIdx] : "")))
-                            .font(baseFont)
-                            .fontWeight(rowIdx == 0 ? .semibold : .regular)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(rowIdx == 0 ? Color.secondary.opacity(0.12) : Color.clear)
+                        let cell = linkifyBareURLs(colIdx < row.count ? row[colIdx] : "")
+                        Group {
+                            if rowIdx == 0 {
+                                Text(LocalizedStringKey(cell))
+                                    .font(baseFont)
+                                    .fontWeight(.semibold)
+                            } else {
+                                Text(LocalizedStringKey(cell))
+                                    .font(baseFont)
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(rowIdx == 0 ? Color.secondary.opacity(0.12) : Color.clear)
                     }
                 }
                 Divider()
