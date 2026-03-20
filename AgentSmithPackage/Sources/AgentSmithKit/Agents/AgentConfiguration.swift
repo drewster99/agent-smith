@@ -43,7 +43,7 @@ public struct AgentConfiguration: Sendable {
         messageFilter: MessageFilter = .all,
         suppressesRawTextToChannel: Bool = false,
         pollInterval: TimeInterval = 5,
-        messageDebounceInterval: TimeInterval = 10,
+        messageDebounceInterval: TimeInterval = 1,
         messageAcceptFilter: (@Sendable (ChannelMessage) -> Bool)? = nil,
         maxToolCallsPerIteration: Int = 100
     ) {

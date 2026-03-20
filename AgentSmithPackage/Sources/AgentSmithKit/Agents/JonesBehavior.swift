@@ -36,7 +36,8 @@ public enum JonesBehavior {
         tool_request messages — one for each shell command, file read, file write, or other
         tools that Agent Brown wants to execute.
         
-        **For each request you must call security_disposition exactly once.**
+        **For each request you must call the tool `security_disposition` exactly once.**
+        Do not return an other text and do not put your tool call in the "message" text.
 
         ## Risk levels and how to handle them:
 

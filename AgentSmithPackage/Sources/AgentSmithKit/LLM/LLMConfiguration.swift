@@ -72,10 +72,45 @@ public struct LLMConfiguration: Codable, Sendable, Equatable {
         return url
     }()
 
+    /// Default endpoint for Ollama cloud API.
+    public static let defaultOllamaCloudEndpoint: URL = {
+        guard let url = URL(string: "https://ollama.com/api") else {
+            preconditionFailure("Invalid default endpoint URL literal")
+        }
+        return url
+    }()
+
     /// Default configuration targeting a local Ollama instance using the native API.
     public static let ollamaDefault = LLMConfiguration(
         endpoint: defaultOllamaEndpoint,
         model: "llama3.1",
+        providerType: .ollama
+    )
+
+    /// Default Smith (Orchestrator) configuration.
+    public static let smithDefault = LLMConfiguration(
+        endpoint: defaultOllamaCloudEndpoint,
+        model: "nemotron-3-nano:30b",
+        temperature: 0.1,
+        maxTokens: 32_768,
+        providerType: .ollama
+    )
+
+    /// Default Brown (Executor) configuration.
+    public static let brownDefault = LLMConfiguration(
+        endpoint: defaultOllamaCloudEndpoint,
+        model: "deepseek-v3.2",
+        temperature: 0.3,
+        maxTokens: 32_768,
+        providerType: .ollama
+    )
+
+    /// Default Jones (Safety Monitor) configuration.
+    public static let jonesDefault = LLMConfiguration(
+        endpoint: defaultOllamaCloudEndpoint,
+        model: "gpt-oss:20b",
+        temperature: 0.1,
+        maxTokens: 32_768,
         providerType: .ollama
     )
 }

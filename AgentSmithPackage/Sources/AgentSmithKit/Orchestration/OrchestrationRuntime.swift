@@ -135,7 +135,7 @@ public actor OrchestrationRuntime {
                 toolNames: SmithBehavior.toolNames,
                 suppressesRawTextToChannel: true,
                 pollInterval: 20,
-                messageDebounceInterval: 5,
+                messageDebounceInterval: 1,
                 messageAcceptFilter: smithMessageFilter
             ),
             provider: provider,

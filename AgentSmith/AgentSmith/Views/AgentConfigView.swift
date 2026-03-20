@@ -126,19 +126,64 @@ struct AgentConfigView: View {
         }
     }
 
+    /// The fetched entry matching the currently selected model, if any.
+    private var selectedModelEntry: ModelPickerEntry? {
+        availableModels.first { $0.modelName == config.model }
+    }
+
     private var modelRow: some View {
-        LabeledContent("Model") {
-            HStack(spacing: 4) {
-                TextField("model name", text: $config.model)
-                    .textFieldStyle(.roundedBorder)
+        VStack(alignment: .leading, spacing: 4) {
+            LabeledContent("Model") {
+                HStack(spacing: 4) {
+                    TextField("model name", text: $config.model)
+                        .textFieldStyle(.roundedBorder)
 
-                fetchButton
+                    fetchButton
 
-                if !availableModels.isEmpty {
-                    modelPickerMenu
+                    if !availableModels.isEmpty {
+                        modelPickerMenu
+                    }
+                }
+            }
+
+            if let entry = selectedModelEntry {
+                modelInfoBar(for: entry)
+            }
+        }
+    }
+
+    /// Compact info bar showing known metadata for the selected model.
+    private func modelInfoBar(for entry: ModelPickerEntry) -> some View {
+        HStack(spacing: 12) {
+            if let maxOut = entry.maxOutputTokens {
+                let exceeds = config.maxTokens > maxOut
+                HStack(spacing: 2) {
+                    Text("Max output:")
+                        .foregroundStyle(.secondary)
+                    Text(formatTokenCount(maxOut))
+                        .foregroundStyle(exceeds ? .red : .primary)
+                }
+            }
+            if let maxIn = entry.maxInputTokens {
+                HStack(spacing: 2) {
+                    Text("Context:")
+                        .foregroundStyle(.secondary)
+                    Text(formatTokenCount(maxIn))
+                }
+            }
+            if let caps = entry.capabilities, !caps.isEmpty {
+                HStack(spacing: 2) {
+                    ForEach(caps, id: \.self) { cap in
+                        Text(cap)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(.quaternary)
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
                 }
             }
         }
+        .font(.caption)
     }
 
     private var fetchButton: some View {
@@ -175,13 +220,14 @@ struct AgentConfigView: View {
             content: {
                 ForEach(availableModels) { entry in
                     Button(action: { config.model = entry.modelName }) {
-                        Label(
-                            title: { Text(entry.menuLabel) },
-                            icon: {
-                                Image(systemName: "checkmark")
-                                    .opacity(entry.modelName == config.model ? 1 : 0)
+                        HStack {
+                            Text(entry.menuLabel)
+                            if entry.isNew {
+                                Spacer()
+                                Text("New")
+                                    .foregroundStyle(.orange)
                             }
-                        )
+                        }
                     }
                 }
             },
@@ -314,7 +360,8 @@ struct AgentConfigView: View {
                     modelName: model.name,
                     sizeLabel: formatBytes(model.size),
                     quantLabel: quant.isEmpty ? "" : quant,
-                    dateLabel: formatISODate(model.modifiedAt)
+                    rawDate: parseISODate(model.modifiedAt),
+                    capabilities: model.capabilities
                 )
             }
             .sorted { $0.modelName < $1.modelName }
@@ -327,7 +374,9 @@ struct AgentConfigView: View {
                 ModelPickerEntry(
                     modelName: model.id,
                     displayName: model.displayName ?? "",
-                    dateLabel: model.createdAt.map { formatISODate($0) } ?? ""
+                    rawDate: model.createdAt.flatMap { parseISODate($0) },
+                    maxOutputTokens: model.maxTokens,
+                    maxInputTokens: model.maxInputTokens
                 )
             }
             .sorted { $0.modelName < $1.modelName }
@@ -340,7 +389,7 @@ struct AgentConfigView: View {
                 ModelPickerEntry(
                     modelName: model.id,
                     ownerLabel: model.ownedBy ?? "",
-                    dateLabel: model.created.map { formatUnixDate($0) } ?? ""
+                    rawDate: model.created.map { Date(timeIntervalSince1970: TimeInterval($0)) }
                 )
             }
             .sorted { $0.modelName < $1.modelName }
@@ -364,21 +413,26 @@ struct AgentConfigView: View {
             : String(format: "%.0f\(suffix)", value)
     }
 
-    /// Parses an ISO 8601 date string and returns a short "Mon YYYY" label.
-    private func formatISODate(_ iso: String) -> String {
-        let parser = ISO8601DateFormatter()
-        guard let date = parser.date(from: iso) else { return "" }
-        let fmt = DateFormatter()
-        fmt.dateFormat = "MMM yyyy"
-        return fmt.string(from: date)
+    /// Formats a token count as a compact "16K" / "1M" label.
+    private func formatTokenCount(_ count: Int) -> String {
+        if count >= 1_000_000 {
+            let value = Double(count) / 1_000_000
+            return value.truncatingRemainder(dividingBy: 1) == 0
+                ? String(format: "%.0fM", value)
+                : String(format: "%.1fM", value)
+        } else if count >= 1_000 {
+            let value = Double(count) / 1_000
+            return value.truncatingRemainder(dividingBy: 1) == 0
+                ? String(format: "%.0fK", value)
+                : String(format: "%.1fK", value)
+        }
+        return "\(count)"
     }
 
-    /// Converts a Unix timestamp to a short "Mon YYYY" label.
-    private func formatUnixDate(_ timestamp: Int) -> String {
-        let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
-        let fmt = DateFormatter()
-        fmt.dateFormat = "MMM yyyy"
-        return fmt.string(from: date)
+    /// Parses an ISO 8601 date string into a `Date`.
+    private func parseISODate(_ iso: String) -> Date? {
+        let parser = ISO8601DateFormatter()
+        return parser.date(from: iso)
     }
 }
 
@@ -397,8 +451,14 @@ private struct ModelPickerEntry: Identifiable {
     let quantLabel: String
     /// Owner/organization label, e.g. "openai" (OpenAI only).
     let ownerLabel: String
-    /// Creation or last-modified date, e.g. "Mar 2025".
-    let dateLabel: String
+    /// Raw creation or last-modified date, used for "New" badge computation.
+    let rawDate: Date?
+    /// Maximum output tokens the model supports (Anthropic).
+    let maxOutputTokens: Int?
+    /// Maximum input context window tokens (Anthropic).
+    let maxInputTokens: Int?
+    /// Capability tags reported by the provider, e.g. ["completion", "tools"] (Ollama).
+    let capabilities: [String]?
 
     init(
         modelName: String,
@@ -406,14 +466,26 @@ private struct ModelPickerEntry: Identifiable {
         sizeLabel: String = "",
         quantLabel: String = "",
         ownerLabel: String = "",
-        dateLabel: String = ""
+        rawDate: Date? = nil,
+        maxOutputTokens: Int? = nil,
+        maxInputTokens: Int? = nil,
+        capabilities: [String]? = nil
     ) {
         self.modelName = modelName
         self.displayName = displayName.isEmpty ? modelName : displayName
         self.sizeLabel = sizeLabel
         self.quantLabel = quantLabel
         self.ownerLabel = ownerLabel
-        self.dateLabel = dateLabel
+        self.rawDate = rawDate
+        self.maxOutputTokens = maxOutputTokens
+        self.maxInputTokens = maxInputTokens
+        self.capabilities = capabilities
+    }
+
+    /// Whether the model was created/modified within the last 90 days.
+    var isNew: Bool {
+        guard let rawDate else { return false }
+        return rawDate > Calendar.current.date(byAdding: .day, value: -90, to: Date()) ?? Date.distantPast
     }
 
     /// Single-line label used in the picker menu.
@@ -425,7 +497,6 @@ private struct ModelPickerEntry: Identifiable {
         if !sizeLabel.isEmpty  { meta.append(sizeLabel) }
         if !quantLabel.isEmpty { meta.append(quantLabel) }
         if !ownerLabel.isEmpty { meta.append(ownerLabel) }
-        if !dateLabel.isEmpty  { meta.append(dateLabel) }
         parts.append(primary)
         if !meta.isEmpty { parts.append(meta.joined(separator: " · ")) }
         return parts.joined(separator: "   ")
@@ -439,10 +510,14 @@ private struct AnthropicModelsResponse: Decodable {
         let id: String
         let displayName: String?
         let createdAt: String?
+        let maxTokens: Int?
+        let maxInputTokens: Int?
         enum CodingKeys: String, CodingKey {
             case id
             case displayName = "display_name"
             case createdAt = "created_at"
+            case maxTokens = "max_tokens"
+            case maxInputTokens = "max_input_tokens"
         }
     }
     let data: [ModelEntry]
@@ -473,8 +548,10 @@ private struct OllamaTagsResponse: Decodable {
         let size: Int64
         let modifiedAt: String
         let details: Details?
+        /// Capability tags, e.g. ["completion", "tools"]. Present in newer Ollama versions.
+        let capabilities: [String]?
         enum CodingKeys: String, CodingKey {
-            case name, size
+            case name, size, capabilities
             case modifiedAt = "modified_at"
             case details
         }

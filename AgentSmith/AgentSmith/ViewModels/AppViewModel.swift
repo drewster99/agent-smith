@@ -35,9 +35,9 @@ final class AppViewModel {
     ]
 
     /// Per-role LLM configurations, editable from settings.
-    var smithConfig = LLMConfiguration.ollamaDefault
-    var brownConfig = LLMConfiguration.ollamaDefault
-    var jonesConfig = LLMConfiguration.ollamaDefault
+    var smithConfig = LLMConfiguration.smithDefault
+    var brownConfig = LLMConfiguration.brownDefault
+    var jonesConfig = LLMConfiguration.jonesDefault
 
     let speechController = SpeechController()
 
