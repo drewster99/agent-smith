@@ -296,14 +296,15 @@ public actor OrchestrationRuntime {
         ))
     }
 
-    /// Emergency abort triggered by Jones. Stops everything; requires user interaction to restart.
-    public func abort(reason: String) async {
+    /// Emergency abort triggered by an agent. Stops everything; requires user interaction to restart.
+    public func abort(reason: String, callerRole: AgentRole? = nil) async {
         guard !aborted else { return }
         aborted = true
 
+        let callerName = callerRole?.displayName ?? "safety monitor"
         await channel.post(ChannelMessage(
             sender: .system,
-            content: "ABORT triggered by safety monitor: \(reason). All agents stopped. User interaction required to restart."
+            content: "ABORT triggered by \(callerName): \(reason). All agents stopped. User interaction required to restart."
         ))
 
         await stopAll()
@@ -399,8 +400,9 @@ public actor OrchestrationRuntime {
         return brownID
     }
 
-    /// Terminates a specific agent. If it's a Brown, also stops its paired Jones.
-    public func terminateAgent(id: UUID) async -> Bool {
+    /// Terminates a specific agent. If it's a Brown, also stops its paired Jones
+    /// (unless Jones is the caller — in that case Jones finishes its turn naturally).
+    public func terminateAgent(id: UUID, callerID: UUID? = nil) async -> Bool {
         guard let agent = agents[id] else { return false }
 
         // Drain any pending approval requests before stopping so Brown's suspended tool
@@ -415,12 +417,21 @@ public actor OrchestrationRuntime {
         await unsubscribeAgent(id: id)
 
         if let jonesID = brownToJones[id] {
-            if let jones = agents[jonesID] {
-                await jones.stop()
-                agents.removeValue(forKey: jonesID)
-                agentRoles.removeValue(forKey: jonesID)
+            if jonesID != callerID {
+                // Jones is NOT the caller — stop it immediately.
+                if let jones = agents[jonesID] {
+                    await jones.stop()
+                    agents.removeValue(forKey: jonesID)
+                    agentRoles.removeValue(forKey: jonesID)
+                }
+                await unsubscribeAgent(id: jonesID)
+            } else {
+                // Jones IS the caller — let it finish its current turn so it can
+                // send follow-up messages. Unsubscribe from the channel to prevent
+                // interference with any future Brown agent's tool_request messages.
+                // Jones remains in `agents` so stopAll() can clean it up later.
+                await unsubscribeAgent(id: jonesID)
             }
-            await unsubscribeAgent(id: jonesID)
             brownToJones.removeValue(forKey: id)
         }
 
@@ -512,13 +523,13 @@ public actor OrchestrationRuntime {
                 guard let self else { return nil }
                 return await self.spawnBrown()
             },
-            terminateAgent: { [weak self] id in
+            terminateAgent: { [weak self] id, callerID in
                 guard let self else { return false }
-                return await self.terminateAgent(id: id)
+                return await self.terminateAgent(id: id, callerID: callerID)
             },
-            abort: { [weak self] reason in
+            abort: { [weak self] reason, callerRole in
                 guard let self else { return }
-                await self.abort(reason: reason)
+                await self.abort(reason: reason, callerRole: callerRole)
             },
             agentRoleForID: { [weak self] id in
                 guard let self else { return nil }

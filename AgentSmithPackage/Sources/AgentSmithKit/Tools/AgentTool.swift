@@ -66,10 +66,11 @@ public struct ToolContext: Sendable {
     public let taskStore: TaskStore
     /// Callback to request spawning a new Brown+Jones pair. Returns the Brown agent's ID.
     public let spawnBrown: @Sendable () async -> UUID?
-    /// Callback to terminate an agent by ID.
-    public let terminateAgent: @Sendable (UUID) async -> Bool
+    /// Callback to terminate an agent by ID. Second parameter is the caller's agent ID.
+    public let terminateAgent: @Sendable (UUID, UUID) async -> Bool
     /// Emergency abort: stops all agents. Requires user interaction to restart.
-    public let abort: @Sendable (String) async -> Void
+    /// Second parameter is the caller's role for attribution.
+    public let abort: @Sendable (String, AgentRole) async -> Void
     /// Resolves an agent ID to its role, used for access-control checks.
     public let agentRoleForID: @Sendable (UUID) async -> AgentRole?
     /// Resolves a role to the currently active agent's UUID, used for role-based addressing.
@@ -88,8 +89,8 @@ public struct ToolContext: Sendable {
         channel: MessageChannel,
         taskStore: TaskStore,
         spawnBrown: @escaping @Sendable () async -> UUID?,
-        terminateAgent: @escaping @Sendable (UUID) async -> Bool,
-        abort: @escaping @Sendable (String) async -> Void,
+        terminateAgent: @escaping @Sendable (UUID, UUID) async -> Bool,
+        abort: @escaping @Sendable (String, AgentRole) async -> Void,
         agentRoleForID: @escaping @Sendable (UUID) async -> AgentRole?,
         agentIDForRole: @escaping @Sendable (AgentRole) async -> UUID? = { _ in nil },
         onSelfTerminate: @escaping @Sendable () async -> Void = {},

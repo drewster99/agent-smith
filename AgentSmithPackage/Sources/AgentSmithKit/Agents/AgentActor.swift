@@ -429,9 +429,12 @@ public actor AgentActor {
 
         // Post approval/denial status so Smith can see the outcome without waiting for Brown's report.
         let statusContent: String
+        let systemCancellationMessages: Set<String> = ["Agent terminated", "Agent self-terminated", "System shutting down"]
         if disposition.approved {
             let note = disposition.message.map { " (⚠️ \($0))" } ?? ""
             statusContent = "Security review: \(call.name) approved\(note)"
+        } else if let msg = disposition.message, systemCancellationMessages.contains(msg) {
+            statusContent = "Tool request cancelled: \(call.name) — \(msg)"
         } else {
             statusContent = "Security review: \(call.name) denied — \(disposition.message ?? "no reason given")"
         }

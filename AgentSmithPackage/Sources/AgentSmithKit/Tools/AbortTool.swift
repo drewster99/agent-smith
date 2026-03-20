@@ -23,7 +23,7 @@ public struct AbortTool: AgentTool {
             throw ToolCallError.missingRequiredArgument("reason")
         }
 
-        await context.abort(reason)
+        await context.abort(reason, context.agentRole)
         return "ABORT executed. All agents stopped. User must restart the system."
     }
 }

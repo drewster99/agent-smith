@@ -41,7 +41,7 @@ public struct AcceptWorkTool: AgentTool {
 
         // Terminate all agents assigned to this task
         for agentID in task.assigneeIDs {
-            _ = await context.terminateAgent(agentID)
+            _ = await context.terminateAgent(agentID, context.agentID)
         }
 
         await context.channel.post(ChannelMessage(
