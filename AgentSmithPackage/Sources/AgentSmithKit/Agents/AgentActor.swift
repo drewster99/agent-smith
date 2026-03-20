@@ -275,14 +275,14 @@ public actor AgentActor {
                 await toolContext.channel.post(ChannelMessage(
                     sender: .system,
                     content: "Agent \(configuration.role.displayName) error (\(consecutiveErrors)/\(Self.maxConsecutiveErrors)): \(error.localizedDescription)",
-                    metadata: ["isError": .bool(true)]
+                    metadata: ["isError": .bool(true), "agentRole": .string(configuration.role.rawValue)]
                 ))
 
                 if consecutiveErrors >= Self.maxConsecutiveErrors {
                     await toolContext.channel.post(ChannelMessage(
                         sender: .system,
                         content: "Agent \(configuration.role.displayName) stopped after \(Self.maxConsecutiveErrors) consecutive errors.",
-                        metadata: ["isError": .bool(true)]
+                        metadata: ["isError": .bool(true), "agentRole": .string(configuration.role.rawValue)]
                     ))
                     isRunning = false
                     break
@@ -429,17 +429,26 @@ public actor AgentActor {
 
         // Post approval/denial status so Smith can see the outcome without waiting for Brown's report.
         let statusContent: String
+        let securityDisposition: String
         if disposition.approved {
             let note = disposition.message.map { " (⚠️ \($0))" } ?? ""
             statusContent = "Security review: \(call.name) approved\(note)"
+            securityDisposition = disposition.message != nil ? "warning" : "approved"
         } else if let msg = disposition.message, SystemCancellationReason.allMessages.contains(msg) {
             statusContent = "Tool request cancelled: \(call.name) — \(msg)"
+            securityDisposition = "cancelled"
         } else {
             statusContent = "Security review: \(call.name) denied — \(disposition.message ?? "no reason given")"
+            securityDisposition = "denied"
         }
         await toolContext.channel.post(ChannelMessage(
             sender: .system,
-            content: statusContent
+            content: statusContent,
+            metadata: [
+                "securityDisposition": .string(securityDisposition),
+                "agentRole": .string(configuration.role.rawValue),
+                "tool": .string(call.name)
+            ]
         ))
 
         if disposition.approved {

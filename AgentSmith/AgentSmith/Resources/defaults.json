@@ -1,0 +1,146 @@
+{
+  "agentTuning" : {
+    "brown" : {
+      "maxToolCalls" : 100,
+      "messageDebounceInterval" : 1,
+      "pollInterval" : 25
+    },
+    "jones" : {
+      "maxToolCalls" : 100,
+      "messageDebounceInterval" : 1,
+      "pollInterval" : 13
+    },
+    "smith" : {
+      "maxToolCalls" : 100,
+      "messageDebounceInterval" : 1,
+      "pollInterval" : 20
+    }
+  },
+  "llmConfigs" : {
+    "brown" : {
+      "apiKey" : "",
+      "contextWindowSize" : 128000,
+      "endpoint" : "https://ollama.com/api",
+      "maxTokens" : 32768,
+      "model" : "deepseek-v3.2",
+      "providerType" : "ollama",
+      "temperature" : 0.3
+    },
+    "jones" : {
+      "apiKey" : "",
+      "contextWindowSize" : 128000,
+      "endpoint" : "https://ollama.com/api",
+      "maxTokens" : 32768,
+      "model" : "gpt-oss:20b",
+      "providerType" : "ollama",
+      "temperature" : 0.1
+    },
+    "smith" : {
+      "apiKey" : "",
+      "contextWindowSize" : 128000,
+      "endpoint" : "https://ollama.com/api",
+      "maxTokens" : 32768,
+      "model" : "nemotron-3-nano:30b",
+      "providerType" : "ollama",
+      "temperature" : 0.1
+    }
+  },
+  "speech" : {
+    "agents" : {
+      "brown" : {
+        "categories" : {
+          "error" : {
+            "soundName" : "",
+            "speakEnabled" : false
+          },
+          "public" : {
+            "soundName" : "",
+            "speakEnabled" : false
+          },
+          "toAgent" : {
+            "soundName" : "",
+            "speakEnabled" : false
+          },
+          "tool" : {
+            "soundName" : "",
+            "speakEnabled" : false
+          },
+          "toUser" : {
+            "soundName" : "",
+            "speakEnabled" : false
+          }
+        },
+        "enabled" : false,
+        "voiceIdentifier" : ""
+      },
+      "jones" : {
+        "categories" : {
+          "error" : {
+            "soundName" : "",
+            "speakEnabled" : false
+          },
+          "public" : {
+            "soundName" : "",
+            "speakEnabled" : false
+          },
+          "toAgent" : {
+            "soundName" : "",
+            "speakEnabled" : false
+          },
+          "tool" : {
+            "soundName" : "",
+            "speakEnabled" : false
+          },
+          "toUser" : {
+            "soundName" : "",
+            "speakEnabled" : false
+          }
+        },
+        "enabled" : false,
+        "voiceIdentifier" : ""
+      },
+      "smith" : {
+        "categories" : {
+          "error" : {
+            "soundName" : "",
+            "speakEnabled" : false
+          },
+          "public" : {
+            "soundName" : "",
+            "speakEnabled" : false
+          },
+          "toAgent" : {
+            "soundName" : "",
+            "speakEnabled" : false
+          },
+          "tool" : {
+            "soundName" : "",
+            "speakEnabled" : false
+          },
+          "toUser" : {
+            "soundName" : "",
+            "speakEnabled" : false
+          }
+        },
+        "enabled" : false,
+        "voiceIdentifier" : ""
+      }
+    },
+    "globalEnabled" : true,
+    "narrator" : {
+      "enabled" : false,
+      "voiceIdentifier" : ""
+    },
+    "security" : {
+      "denySoundName" : "",
+      "safeSoundName" : "",
+      "warnSoundName" : ""
+    },
+    "user" : {
+      "soundName" : "",
+      "speakEnabled" : false,
+      "voiceIdentifier" : ""
+    }
+  },
+  "version" : 1
+}

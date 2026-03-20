@@ -20,6 +20,7 @@ public actor OrchestrationRuntime {
     private var agentRoles: [UUID: AgentRole] = [:]
 
     private var llmConfigs: [AgentRole: LLMConfiguration]
+    private var agentTuning: [AgentRole: AgentTuningConfig]
     private var monitoringTimer: MonitoringTimer?
     /// Maps Brown agent IDs to their active ToolRequestGate so we can drain pending approvals on shutdown.
     private var toolRequestGates: [UUID: ToolRequestGate] = [:]
@@ -35,10 +36,14 @@ public actor OrchestrationRuntime {
     /// Callback fired when an agent comes online, passing its role and configured tool names.
     private var onAgentStarted: (@Sendable (AgentRole, [String]) -> Void)?
 
-    public init(llmConfigs: [AgentRole: LLMConfiguration]) {
+    public init(
+        llmConfigs: [AgentRole: LLMConfiguration],
+        agentTuning: [AgentRole: AgentTuningConfig] = [:]
+    ) {
         self.channel = MessageChannel()
         self.taskStore = TaskStore()
         self.llmConfigs = llmConfigs
+        self.agentTuning = agentTuning
     }
 
     /// Updates the LLM configuration for a given role.
@@ -134,9 +139,10 @@ public actor OrchestrationRuntime {
                 systemPrompt: SmithBehavior.systemPrompt,
                 toolNames: SmithBehavior.toolNames,
                 suppressesRawTextToChannel: true,
-                pollInterval: 20,
-                messageDebounceInterval: 1,
-                messageAcceptFilter: smithMessageFilter
+                pollInterval: agentTuning[.smith]?.pollInterval ?? 20,
+                messageDebounceInterval: agentTuning[.smith]?.messageDebounceInterval ?? 1,
+                messageAcceptFilter: smithMessageFilter,
+                maxToolCallsPerIteration: agentTuning[.smith]?.maxToolCalls ?? 100
             ),
             provider: provider,
             tools: SmithBehavior.tools(),
@@ -362,7 +368,9 @@ public actor OrchestrationRuntime {
                 systemPrompt: BrownBehavior.systemPrompt,
                 toolNames: BrownBehavior.toolNames,
                 requiresToolApproval: true,
-                pollInterval: 25
+                pollInterval: agentTuning[.brown]?.pollInterval ?? 25,
+                messageDebounceInterval: agentTuning[.brown]?.messageDebounceInterval ?? 1,
+                maxToolCallsPerIteration: agentTuning[.brown]?.maxToolCalls ?? 100
             ),
             provider: makeProvider(config: brownConfig),
             tools: BrownBehavior.tools(),
@@ -390,7 +398,9 @@ public actor OrchestrationRuntime {
                 toolNames: JonesBehavior.toolNames,
                 messageFilter: .toolRequestsOnly,
                 suppressesRawTextToChannel: true,
-                pollInterval: 13
+                pollInterval: agentTuning[.jones]?.pollInterval ?? 13,
+                messageDebounceInterval: agentTuning[.jones]?.messageDebounceInterval ?? 1,
+                maxToolCallsPerIteration: agentTuning[.jones]?.maxToolCalls ?? 100
             ),
             provider: makeProvider(config: jonesConfig),
             tools: JonesBehavior.tools(gate: gate),

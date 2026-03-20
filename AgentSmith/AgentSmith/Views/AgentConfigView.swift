@@ -430,8 +430,20 @@ struct AgentConfigView: View {
     }
 
     /// Parses an ISO 8601 date string into a `Date`.
+    /// Handles nanosecond-precision timestamps (e.g. from Ollama) by truncating to milliseconds.
     private func parseISODate(_ iso: String) -> Date? {
+        // Truncate nanosecond precision to milliseconds — ISO8601DateFormatter
+        // supports at most 3 fractional digits.
+        let truncated = iso.replacingOccurrences(
+            of: #"(\.\d{3})\d+"#,
+            with: "$1",
+            options: .regularExpression
+        )
         let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = parser.date(from: truncated) { return date }
+        // Fall back for dates without fractional seconds
+        parser.formatOptions = [.withInternetDateTime]
         return parser.date(from: iso)
     }
 }

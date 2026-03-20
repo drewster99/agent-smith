@@ -54,6 +54,22 @@ final class AppViewModel {
 
     /// Loads persisted messages, tasks, and LLM configs from disk. Call on app launch.
     func loadPersistedState() async {
+        // Load bundled defaults first — these provide baseline values that are
+        // overridden by any persisted UserDefaults or file-based configs below.
+        do {
+            let bundled = try DefaultsLoader.loadBundledDefaults()
+            if let smith = bundled.llmConfigs[.smith] { smithConfig = smith }
+            if let brown = bundled.llmConfigs[.brown] { brownConfig = brown }
+            if let jones = bundled.llmConfigs[.jones] { jonesConfig = jones }
+            for (role, tuning) in bundled.agentTuning {
+                agentPollIntervals[role] = tuning.pollInterval
+                agentMaxToolCalls[role] = tuning.maxToolCalls
+            }
+            speechController.applyBundledDefaults(bundled.speech)
+        } catch {
+            print("[AgentSmith] No bundled defaults (using hardcoded): \(error)")
+        }
+
         do {
             let savedMessages = try await persistenceManager.loadChannelLog()
             messages = savedMessages
@@ -118,7 +134,16 @@ final class AppViewModel {
             .jones: jonesConfig
         ]
 
-        let newRuntime = OrchestrationRuntime(llmConfigs: configs)
+        var tuning: [AgentRole: AgentTuningConfig] = [:]
+        for role in AgentRole.allCases {
+            tuning[role] = AgentTuningConfig(
+                pollInterval: agentPollIntervals[role] ?? 5,
+                maxToolCalls: agentMaxToolCalls[role] ?? 100,
+                messageDebounceInterval: 1
+            )
+        }
+
+        let newRuntime = OrchestrationRuntime(llmConfigs: configs, agentTuning: tuning)
         runtime = newRuntime
         isRunning = true
 

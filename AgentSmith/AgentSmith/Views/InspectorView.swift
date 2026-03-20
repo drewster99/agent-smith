@@ -142,7 +142,7 @@ private struct AgentCard: View {
                 }, label: {
                     Image(systemName: isSpeechEnabled ? "speaker.wave.1" : "speaker.slash")
                         .font(.caption)
-                        .foregroundStyle(isSpeechEnabled ? roleColor : Color.secondary.opacity(0.4))
+                        .foregroundStyle(isSpeechEnabled ? .green : Color.secondary.opacity(0.4))
                 })
                 .buttonStyle(.plain)
                 .help(isSpeechEnabled ? "Mute \(role.displayName)" : "Unmute \(role.displayName)")
@@ -628,9 +628,101 @@ private struct AgentConfigSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    // System prompt
+                    // Speech
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Speech")
+                            .font(AppFonts.inspectorLabel.weight(.bold))
+                            .foregroundStyle(.secondary)
+
+                        VoicePickerRow(
+                            voiceIdentifier: Binding(
+                                get: { speechController.agentVoiceIdentifier[role] ?? "" },
+                                set: { speechController.setVoice($0, for: role) }
+                            ),
+                            availableVoices: availableVoices,
+                            onTest: { speechController.previewSpeech(for: role) }
+                        )
+
+                        ForEach(AgentSoundCategory.allCases.filter(\.supportsSpeech), id: \.self) { category in
+                            Toggle(
+                                "Speak \(category.displayName.lowercased())",
+                                isOn: Binding(
+                                    get: { speechController.soundConfig(for: role, category: category).speakEnabled },
+                                    set: { speechController.setSpeakEnabled($0, for: role, category: category) }
+                                )
+                            )
+                            .font(AppFonts.inspectorBody)
+                        }
+                    }
+
+                    Divider()
+
+                    // Sounds
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Sounds")
+                            .font(AppFonts.inspectorLabel.weight(.bold))
+                            .foregroundStyle(.secondary)
+
+                        ForEach(AgentSoundCategory.allCases, id: \.self) { category in
+                            SoundPickerRow(
+                                label: category.displayName,
+                                soundName: Binding(
+                                    get: { speechController.soundConfig(for: role, category: category).soundName },
+                                    set: { speechController.setSoundName($0, for: role, category: category) }
+                                ),
+                                onPreview: { speechController.previewSound(named: $0) }
+                            )
+                        }
+                    }
+
+                    Divider()
+
+                    // Responsiveness
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Responsiveness")
+                            .font(AppFonts.inspectorLabel.weight(.bold))
+                            .foregroundStyle(.secondary)
+
+                        HStack(spacing: 12) {
+                            Text("Max Tool Calls / Response")
+                                .font(AppFonts.inspectorBody)
+                                .foregroundStyle(.secondary)
+                            Stepper(
+                                "\(draftMaxToolCalls)",
+                                value: $draftMaxToolCalls,
+                                in: 1...500,
+                                step: 1
+                            )
+                            .labelsHidden()
+                            Text("\(draftMaxToolCalls)")
+                                .font(AppFonts.inspectorBody)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+
+                        HStack(spacing: 12) {
+                            Text("Poll Interval")
+                                .font(AppFonts.inspectorBody)
+                                .foregroundStyle(.secondary)
+                            Stepper(
+                                "\(Int(draftPollInterval))s",
+                                value: $draftPollInterval,
+                                in: 1...300,
+                                step: 1
+                            )
+                            .labelsHidden()
+                            Text("\(Int(draftPollInterval)) seconds")
+                                .font(AppFonts.inspectorBody)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
+
+                    Divider()
+
+                    // LLM System Prompt
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("System Prompt")
+                        Text("LLM System Prompt")
                             .font(AppFonts.inspectorLabel.weight(.bold))
                             .foregroundStyle(.secondary)
                         TextEditor(text: $draftPrompt)
@@ -640,109 +732,6 @@ private struct AgentConfigSheet: View {
                             .background(Color.secondary.opacity(0.06))
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                     }
-
-                    // Poll interval
-                    HStack(spacing: 12) {
-                        Text("Poll Interval")
-                            .font(AppFonts.inspectorLabel.weight(.bold))
-                            .foregroundStyle(.secondary)
-                        Stepper(
-                            "\(Int(draftPollInterval))s",
-                            value: $draftPollInterval,
-                            in: 1...300,
-                            step: 1
-                        )
-                        .labelsHidden()
-                        Text("\(Int(draftPollInterval)) seconds")
-                            .font(AppFonts.inspectorBody)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-
-                    // Max tool calls per response
-                    HStack(spacing: 12) {
-                        Text("Max Tool Calls / Response")
-                            .font(AppFonts.inspectorLabel.weight(.bold))
-                            .foregroundStyle(.secondary)
-                        Stepper(
-                            "\(draftMaxToolCalls)",
-                            value: $draftMaxToolCalls,
-                            in: 1...500,
-                            step: 1
-                        )
-                        .labelsHidden()
-                        Text("\(draftMaxToolCalls)")
-                            .font(AppFonts.inspectorBody)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-
-                    Divider()
-
-                    // Speech settings
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Speech")
-                            .font(AppFonts.inspectorLabel.weight(.bold))
-                            .foregroundStyle(.secondary)
-
-                        LabeledContent("Voice") {
-                            Picker("", selection: Binding(
-                                get: { speechController.agentVoiceIdentifier[role] ?? "" },
-                                set: { speechController.setVoice($0, for: role) }
-                            )) {
-                                Text("System Default").tag("")
-                                ForEach(availableVoices, id: \.identifier) { voice in
-                                    Text("\(voice.name) (\(voice.language))").tag(voice.identifier)
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
-                        }
-
-                        LabeledContent("Message Sound") {
-                            HStack {
-                                let soundName = speechController.agentMessageSoundName[role] ?? ""
-                                Picker("", selection: Binding(
-                                    get: { speechController.agentMessageSoundName[role] ?? "" },
-                                    set: { speechController.setMessageSound($0, for: role) }
-                                )) {
-                                    Text("None").tag("")
-                                    ForEach(SpeechController.systemSoundNames, id: \.self) { name in
-                                        Text(name).tag(name)
-                                    }
-                                }
-                                .labelsHidden()
-                                .pickerStyle(.menu)
-                                Button(action: { speechController.previewSound(named: soundName) }) {
-                                    Image(systemName: "play.circle")
-                                }
-                                .disabled(soundName.isEmpty)
-                                .buttonStyle(.borderless)
-                            }
-                        }
-
-                        LabeledContent("Tool Sound") {
-                            HStack {
-                                let soundName = speechController.agentToolSoundName[role] ?? ""
-                                Picker("", selection: Binding(
-                                    get: { speechController.agentToolSoundName[role] ?? "" },
-                                    set: { speechController.setToolSound($0, for: role) }
-                                )) {
-                                    Text("None").tag("")
-                                    ForEach(SpeechController.systemSoundNames, id: \.self) { name in
-                                        Text(name).tag(name)
-                                    }
-                                }
-                                .labelsHidden()
-                                .pickerStyle(.menu)
-                                Button(action: { speechController.previewSound(named: soundName) }) {
-                                    Image(systemName: "play.circle")
-                                }
-                                .disabled(soundName.isEmpty)
-                                .buttonStyle(.borderless)
-                            }
-                        }
-                    }
                 }
                 .padding(20)
             }
@@ -751,6 +740,62 @@ private struct AgentConfigSheet: View {
         .onAppear {
             availableVoices = AVSpeechSynthesisVoice.speechVoices()
                 .sorted { $0.name < $1.name }
+        }
+    }
+}
+
+// MARK: - Reusable Sound/Voice Components
+
+/// A sound-effect picker with a label and preview button.
+struct SoundPickerRow: View {
+    let label: String
+    @Binding var soundName: String
+    let onPreview: (String) -> Void
+
+    var body: some View {
+        LabeledContent(label) {
+            HStack {
+                Picker("", selection: $soundName) {
+                    Text("None").tag("")
+                    ForEach(SpeechController.systemSoundNames, id: \.self) { name in
+                        Text(name).tag(name)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                Button(action: { onPreview(soundName) }) {
+                    Image(systemName: "play.circle")
+                }
+                .disabled(soundName.isEmpty)
+                .buttonStyle(.borderless)
+            }
+        }
+    }
+}
+
+/// A voice picker with a test-speech button.
+struct VoicePickerRow: View {
+    @Binding var voiceIdentifier: String
+    let availableVoices: [AVSpeechSynthesisVoice]
+    let onTest: () -> Void
+
+    var body: some View {
+        LabeledContent("Voice") {
+            HStack {
+                Picker("", selection: $voiceIdentifier) {
+                    Text("System Default").tag("")
+                    ForEach(availableVoices, id: \.identifier) { voice in
+                        Text("\(voice.name) (\(voice.language))").tag(voice.identifier)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                Button(action: onTest) {
+                    Image(systemName: "play.circle")
+                }
+                .buttonStyle(.borderless)
+                .help("Test voice")
+            }
         }
     }
 }

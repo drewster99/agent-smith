@@ -9,10 +9,12 @@
 /* Begin PBXBuildFile section */
 		49453AE12F6A119B00695CE3 /* AgentSmithKit in Frameworks */ = {isa = PBXBuildFile; productRef = 49453AE02F6A119B00695CE3 /* AgentSmithKit */; };
 		49453AFF2F6A12AF00695CE3 /* AgentSmithKit in Frameworks */ = {isa = PBXBuildFile; productRef = 49453AFE2F6A12AF00695CE3 /* AgentSmithKit */; };
+		49ED01012FA0000100000001 /* AgentSmithKit in Frameworks */ = {isa = PBXBuildFile; productRef = 49ED01002FA0000100000001 /* AgentSmithKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		49BC83A12F6230E0000DD756 /* AgentSmith.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AgentSmith.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		49ED01022FA0000100000002 /* ExportDefaults */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = ExportDefaults; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -34,6 +36,11 @@
 			path = AgentSmith;
 			sourceTree = "<group>";
 		};
+		49ED01032FA0000100000003 /* ExportDefaults */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ExportDefaults;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -46,6 +53,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		49ED01042FA0000100000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				49ED01012FA0000100000001 /* AgentSmithKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -53,6 +68,7 @@
 			isa = PBXGroup;
 			children = (
 				49BC83A32F6230E0000DD756 /* AgentSmith */,
+				49ED01032FA0000100000003 /* ExportDefaults */,
 				49BC83A22F6230E0000DD756 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -61,6 +77,7 @@
 			isa = PBXGroup;
 			children = (
 				49BC83A12F6230E0000DD756 /* AgentSmith.app */,
+				49ED01022FA0000100000002 /* ExportDefaults */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -92,6 +109,28 @@
 			productReference = 49BC83A12F6230E0000DD756 /* AgentSmith.app */;
 			productType = "com.apple.product-type.application";
 		};
+		49ED01052FA0000100000005 /* ExportDefaults */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 49ED010C2FA0000100000012 /* Build configuration list for PBXNativeTarget "ExportDefaults" */;
+			buildPhases = (
+				49ED01062FA0000100000006 /* Sources */,
+				49ED01042FA0000100000004 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				49ED01032FA0000100000003 /* ExportDefaults */,
+			);
+			name = ExportDefaults;
+			packageProductDependencies = (
+				49ED01002FA0000100000001 /* AgentSmithKit */,
+			);
+			productName = ExportDefaults;
+			productReference = 49ED01022FA0000100000002 /* ExportDefaults */;
+			productType = "com.apple.product-type.tool";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -103,6 +142,9 @@
 				LastUpgradeCheck = 2630;
 				TargetAttributes = {
 					49BC83A02F6230E0000DD756 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					49ED01052FA0000100000005 = {
 						CreatedOnToolsVersion = 26.3;
 					};
 				};
@@ -125,6 +167,7 @@
 			projectRoot = "";
 			targets = (
 				49BC83A02F6230E0000DD756 /* AgentSmith */,
+				49ED01052FA0000100000005 /* ExportDefaults */,
 			);
 		};
 /* End PBXProject section */
@@ -141,6 +184,13 @@
 
 /* Begin PBXSourcesBuildPhase section */
 		49BC839D2F6230E0000DD756 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		49ED01062FA0000100000006 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -342,6 +392,36 @@
 			};
 			name = Release;
 		};
+		49ED01072FA0000100000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = P8MA38JTXY;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		49ED01082FA0000100000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = P8MA38JTXY;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -363,6 +443,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		49ED010C2FA0000100000012 /* Build configuration list for PBXNativeTarget "ExportDefaults" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				49ED01072FA0000100000007 /* Debug */,
+				49ED01082FA0000100000008 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -378,6 +467,10 @@
 			productName = AgentSmithKit;
 		};
 		49453AFE2F6A12AF00695CE3 /* AgentSmithKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AgentSmithKit;
+		};
+		49ED01002FA0000100000001 /* AgentSmithKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AgentSmithKit;
 		};
