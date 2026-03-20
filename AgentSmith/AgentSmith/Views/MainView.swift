@@ -123,20 +123,37 @@ struct MainView: View {
     }
 }
 
-/// Banner displayed when Jones triggers an emergency abort.
+/// Banner displayed when an agent triggers an emergency abort.
 private struct AbortBanner: View {
     let reason: String
     let onReset: () -> Void
+
+    /// Extracts the headline (e.g. "ABORT triggered by Smith") from the reason string.
+    private var headline: String {
+        // reason format: "ABORT triggered by <name>: <detail>"
+        if let colonRange = reason.range(of: ": ") {
+            return String(reason[reason.startIndex..<colonRange.lowerBound]).uppercased()
+        }
+        return "SYSTEM ABORT"
+    }
+
+    /// The detail portion after the headline.
+    private var detail: String {
+        if let colonRange = reason.range(of: ": ") {
+            return String(reason[colonRange.upperBound...])
+        }
+        return reason
+    }
 
     var body: some View {
         HStack {
             Image(systemName: "exclamationmark.octagon.fill")
                 .foregroundStyle(.white)
             VStack(alignment: .leading, spacing: 2) {
-                Text("SYSTEM ABORTED BY JONES")
+                Text(headline)
                     .font(.headline)
                     .foregroundStyle(.white)
-                Text(reason)
+                Text(detail)
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.9))
             }

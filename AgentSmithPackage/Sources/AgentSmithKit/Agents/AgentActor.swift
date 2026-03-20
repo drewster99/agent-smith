@@ -512,33 +512,57 @@ public actor AgentActor {
         guard !pendingChannelMessages.isEmpty else { return }
         hasUnprocessedInput = true
 
+        // Collect all images across pending messages
+        var allImages: [LLMImageContent] = []
+        var allTextParts: [String] = []
+
         for message in pendingChannelMessages {
             let formatted = "[\(message.sender.displayName)]: \(message.content)"
 
-            // Convert image attachments to multimodal LLM content
-            let images: [LLMImageContent]? = {
-                let imageAttachments = message.attachments.filter(\.isImage)
-                guard !imageAttachments.isEmpty else { return nil }
-                return imageAttachments.compactMap { attachment in
-                    guard let data = attachment.data else { return nil }
-                    return LLMImageContent(data: data, mimeType: attachment.mimeType)
-                }
-            }()
+            let imageAttachments = message.attachments.filter(\.isImage)
+            for attachment in imageAttachments {
+                guard let data = attachment.data else { continue }
+                allImages.append(LLMImageContent(data: data, mimeType: attachment.mimeType))
+            }
 
-            // For non-image attachments, append a text description
             var textParts = [formatted]
             let nonImageAttachments = message.attachments.filter { !$0.isImage }
             for attachment in nonImageAttachments {
                 textParts.append("[Attached file: \(attachment.filename) (\(attachment.mimeType), \(attachment.formattedSize))]")
             }
 
+            allTextParts.append(textParts.joined(separator: "\n"))
+        }
+        pendingChannelMessages.removeAll()
+
+        let combinedText = allTextParts.joined(separator: "\n\n")
+        let images: [LLMImageContent]? = allImages.isEmpty ? nil : allImages
+
+        // If the last history entry is already a user message (e.g. a prior LLM call failed
+        // before producing an assistant response), merge into it to maintain the strict
+        // user/assistant alternation that some model APIs require.
+        if let lastIndex = conversationHistory.indices.last,
+           conversationHistory[lastIndex].role == .user,
+           case .text(let existingText) = conversationHistory[lastIndex].content {
+            let merged = existingText + "\n\n" + combinedText
+            // Combine images from both the existing message and new messages
+            let existingImages = conversationHistory[lastIndex].images
+            let mergedImages: [LLMImageContent]? = {
+                let combined = (existingImages ?? []) + (images ?? [])
+                return combined.isEmpty ? nil : combined
+            }()
+            conversationHistory[lastIndex] = LLMMessage(
+                role: .user,
+                text: merged,
+                images: mergedImages
+            )
+        } else {
             conversationHistory.append(LLMMessage(
                 role: .user,
-                text: textParts.joined(separator: "\n"),
+                text: combinedText,
                 images: images
             ))
         }
-        pendingChannelMessages.removeAll()
     }
 
     /// Prunes conversation history when approaching the context window limit.

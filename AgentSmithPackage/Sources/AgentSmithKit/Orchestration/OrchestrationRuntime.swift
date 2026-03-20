@@ -171,7 +171,13 @@ public actor OrchestrationRuntime {
 
             if !stalledTasks.isEmpty {
                 let taskList = stalledTasks
-                    .map { "- \($0.title) (id: \($0.id.uuidString))" }
+                    .map { task in
+                        var entry = "- \(task.title) (id: \(task.id.uuidString))"
+                        if !task.description.isEmpty {
+                            entry += "\n  Description: \(task.description)"
+                        }
+                        return entry
+                    }
                     .joined(separator: "\n")
                 parts.append("\(stalledTasks.count) task(s) were in progress when the system last stopped and have been reset to pending:\n\(taskList)")
             }
@@ -194,7 +200,10 @@ public actor OrchestrationRuntime {
                 \(parts.joined(separator: "\n\n"))
                 Send the user a single private message (recipient_id: "user") summarizing the situation \
                 and asking how they would like to proceed. \
-                Then stop — do not call any other tools or send any further messages until the user replies.
+                Then wait for the user to reply before taking action on any tasks. \
+                When the user asks you to continue or run a task, use `list_tasks` to get the full task \
+                details (including the description) before proceeding — do not ask the user for information \
+                that is already in the task.
                 """
         } else {
             // No tasks were running — surface any pending or recently failed tasks.
@@ -214,13 +223,25 @@ public actor OrchestrationRuntime {
                 var parts: [String] = []
                 if !pendingTasks.isEmpty {
                     let list = pendingTasks
-                        .map { "- \($0.title) (id: \($0.id.uuidString))" }
+                        .map { task in
+                            var entry = "- \(task.title) (id: \(task.id.uuidString))"
+                            if !task.description.isEmpty {
+                                entry += "\n  Description: \(task.description)"
+                            }
+                            return entry
+                        }
                         .joined(separator: "\n")
                     parts.append("The following task(s) are pending and waiting to be started:\n\(list)")
                 }
                 if !recentFailed.isEmpty {
                     let list = recentFailed
-                        .map { "- \($0.title) (id: \($0.id.uuidString))" }
+                        .map { task in
+                            var entry = "- \(task.title) (id: \(task.id.uuidString))"
+                            if !task.description.isEmpty {
+                                entry += "\n  Description: \(task.description)"
+                            }
+                            return entry
+                        }
                         .joined(separator: "\n")
                     parts.append("The following task(s) previously failed (most recent first):\n\(list)")
                 }
@@ -228,7 +249,10 @@ public actor OrchestrationRuntime {
                     \(parts.joined(separator: "\n\n"))
                     Send the user a single private message (recipient_id: "user") listing these tasks \
                     and asking what they would like to do. \
-                    Then stop — do not call any other tools or send any further messages until the user replies.
+                    Then wait for the user to reply before taking action on any tasks. \
+                    When the user asks you to continue or run a task, use `list_tasks` to get the full task \
+                    details (including the description) before proceeding — do not ask the user for information \
+                    that is already in the task.
                     """
             }
         }
@@ -308,7 +332,7 @@ public actor OrchestrationRuntime {
         ))
 
         await stopAll()
-        onAbort?(reason)
+        onAbort?("ABORT triggered by \(callerName): \(reason)")
     }
 
     /// Spawns a Brown+Jones pair. Terminates any existing Brown first (single Brown policy).
