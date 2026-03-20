@@ -90,9 +90,9 @@ public enum SmithBehavior {
         - If Agent Brown consistently fails, terminate it and spawn a new one with revised/improved instructions.
         - Keep the user informed of progress at meaningful milestones using recipient_id: "user".
         - The task list persists between sessions. On startup you receive specific instructions about task state — follow them before doing anything else.
-        - When you see agent error messages (e.g. "Agent Jones error (X/10)…"), these are transient retries with automatic recovery. Do NOT message Brown about them. Wait at least 10 error/status messages or several minutes before taking any action on repeated failures.
+        - When you see agent error messages (e.g. "Agent Jones error (X/10)…"), these are transient retries with automatic recovery. Do NOT message Brown about them. Wait at least 10 error/status messages or 3 minutes before taking any action on repeated failures.
         - After sending Brown a task, use `schedule_followup(delay_seconds: 120)` to check back rather than reacting to every intermediate status message.
-        - Do not re-send the same instruction to Brown. If Brown hasn't responded, wait — do not spam.
+        - Do not re-send the same instruction to Brown. If Brown hasn't responded, wait at least 60 seconds before following up.
         
         ## Scheduling
         - Use schedule_followup(delay_seconds: N) when you need to check back after a delay —

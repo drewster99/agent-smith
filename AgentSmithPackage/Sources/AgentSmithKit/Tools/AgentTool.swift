@@ -58,6 +58,18 @@ extension AgentTool {
     }
 }
 
+/// Canonical reasons used when draining pending tool requests due to system-level cancellations.
+/// Both the producer (OrchestrationRuntime drain sites) and consumer (AgentActor status filtering)
+/// reference these constants to avoid fragile hardcoded string matching.
+public enum SystemCancellationReason: String, CaseIterable, Sendable {
+    case agentTerminated = "Agent terminated"
+    case agentSelfTerminated = "Agent self-terminated"
+    case systemShuttingDown = "System shutting down"
+
+    /// Pre-computed set of all raw values for O(1) membership checks.
+    public static let allMessages: Set<String> = Set(allCases.map(\.rawValue))
+}
+
 /// Contextual information passed to tools during execution.
 public struct ToolContext: Sendable {
     public let agentID: UUID
@@ -70,7 +82,7 @@ public struct ToolContext: Sendable {
     public let terminateAgent: @Sendable (UUID, UUID) async -> Bool
     /// Emergency abort: stops all agents. Requires user interaction to restart.
     /// Second parameter is the caller's role for attribution.
-    public let abort: @Sendable (String, AgentRole) async -> Void
+    public let abort: @Sendable (String, AgentRole?) async -> Void
     /// Resolves an agent ID to its role, used for access-control checks.
     public let agentRoleForID: @Sendable (UUID) async -> AgentRole?
     /// Resolves a role to the currently active agent's UUID, used for role-based addressing.
@@ -90,7 +102,7 @@ public struct ToolContext: Sendable {
         taskStore: TaskStore,
         spawnBrown: @escaping @Sendable () async -> UUID?,
         terminateAgent: @escaping @Sendable (UUID, UUID) async -> Bool,
-        abort: @escaping @Sendable (String, AgentRole) async -> Void,
+        abort: @escaping @Sendable (String, AgentRole?) async -> Void,
         agentRoleForID: @escaping @Sendable (UUID) async -> AgentRole?,
         agentIDForRole: @escaping @Sendable (AgentRole) async -> UUID? = { _ in nil },
         onSelfTerminate: @escaping @Sendable () async -> Void = {},

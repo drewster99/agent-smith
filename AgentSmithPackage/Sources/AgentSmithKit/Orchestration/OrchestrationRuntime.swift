@@ -268,7 +268,7 @@ public actor OrchestrationRuntime {
         // Drain all pending tool-approval continuations before stopping agents so no Task is
         // left suspended forever waiting for a Jones that is about to be torn down.
         for (_, gate) in toolRequestGates {
-            await gate.drainAll(approved: false, message: "System shutting down")
+            await gate.drainAll(approved: false, message: SystemCancellationReason.systemShuttingDown.rawValue)
         }
         toolRequestGates.removeAll()
 
@@ -408,7 +408,7 @@ public actor OrchestrationRuntime {
         // Drain any pending approval requests before stopping so Brown's suspended tool
         // calls are unblocked rather than leaking as orphaned continuations.
         if let gate = toolRequestGates.removeValue(forKey: id) {
-            await gate.drainAll(approved: false, message: "Agent terminated")
+            await gate.drainAll(approved: false, message: SystemCancellationReason.agentTerminated.rawValue)
         }
 
         await agent.stop()
@@ -429,7 +429,11 @@ public actor OrchestrationRuntime {
                 // Jones IS the caller — let it finish its current turn so it can
                 // send follow-up messages. Unsubscribe from the channel to prevent
                 // interference with any future Brown agent's tool_request messages.
-                // Jones remains in `agents` so stopAll() can clean it up later.
+                //
+                // Cleanup path: once unsubscribed, Jones's message stream terminates,
+                // causing the `for await` in its run loop to exit. This triggers
+                // onSelfTerminate → handleAgentSelfTerminate, which removes Jones
+                // from `agents`/`agentRoles` and cleans up subscriptions.
                 await unsubscribeAgent(id: jonesID)
             }
             brownToJones.removeValue(forKey: id)
@@ -564,7 +568,7 @@ public actor OrchestrationRuntime {
 
         // Drain any pending approval requests so Brown's suspended continuations are not leaked.
         if let gate = toolRequestGates.removeValue(forKey: id) {
-            await gate.drainAll(approved: false, message: "Agent self-terminated")
+            await gate.drainAll(approved: false, message: SystemCancellationReason.agentSelfTerminated.rawValue)
         }
 
         agents.removeValue(forKey: id)
