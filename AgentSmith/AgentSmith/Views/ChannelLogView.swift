@@ -197,8 +197,13 @@ private struct MessageRow: View {
         }
     }
 
+    /// Maximum characters for tool output before the view layer truncates.
+    private static let outputTruncationLimit = 500
+
     private var outputIsTruncatable: Bool {
-        toolOutputMessage?.metadata?["truncatedContent"] != nil
+        if toolOutputMessage?.metadata?["truncatedContent"] != nil { return true }
+        guard let output = toolOutputMessage else { return false }
+        return output.content.count > Self.outputTruncationLimit
     }
 
     var body: some View {
@@ -314,6 +319,11 @@ private struct MessageRow: View {
                 }
                 if case .string(let truncated) = output.metadata?["truncatedContent"] {
                     return truncated
+                }
+                // View-layer fallback for long single-line outputs without backend truncation
+                if output.content.count > Self.outputTruncationLimit {
+                    let remaining = output.content.count - Self.outputTruncationLimit
+                    return String(output.content.prefix(Self.outputTruncationLimit)) + "… (\(remaining) more characters)"
                 }
                 return output.content
             }()

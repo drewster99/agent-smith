@@ -1006,13 +1006,29 @@ public actor AgentActor {
     }
 
     /// Truncates multi-line output to a limited number of lines, appending an ellipsis indicator if truncated.
+    private static let maxOutputCharacters = 500
+
     private static func truncateOutput(_ text: String, maxLines: Int) -> String {
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        if lines.count <= maxLines {
-            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lines = trimmed.split(separator: "\n", omittingEmptySubsequences: false)
+        var result = trimmed
+        var didTruncate = false
+
+        // Truncate by line count
+        if lines.count > maxLines {
+            result = lines.prefix(maxLines).joined(separator: "\n")
+            result += "\n… (\(lines.count - maxLines) more lines)"
+            didTruncate = true
         }
-        let kept = lines.prefix(maxLines).joined(separator: "\n")
-        return "\(kept)\n… (\(lines.count - maxLines) more lines)"
+
+        // Truncate by character count
+        if result.count > maxOutputCharacters {
+            let remaining = trimmed.count - maxOutputCharacters
+            result = String(result.prefix(maxOutputCharacters)) + "… (\(remaining) more characters)"
+            didTruncate = true
+        }
+
+        return didTruncate ? result : trimmed
     }
 
     /// Parses a JSON string into an AnyCodable dictionary for structural comparison.
