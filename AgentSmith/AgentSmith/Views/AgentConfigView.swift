@@ -1,5 +1,8 @@
 import SwiftUI
 import AgentSmithKit
+import os
+
+private let logger = Logger(subsystem: "com.agentsmith", category: "AgentConfig")
 
 /// Endpoint/model/key fields for configuring a single agent role's LLM.
 struct AgentConfigView: View {
@@ -334,10 +337,16 @@ struct AgentConfigView: View {
             }
         }
 
+        logger.debug("Model fetch: \(request.httpMethod ?? "GET", privacy: .public) \(modelsURL.absoluteString, privacy: .public)")
+        let headerSummary = request.allHTTPHeaderFields?.map { "\($0.key): \($0.value)" }.joined(separator: ", ") ?? "none"
+        logger.debug("  Headers: \(headerSummary, privacy: .private)")
+
         let (data, response) = try await URLSession.shared.data(for: request)
 
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let body = String(data: data, encoding: .utf8) ?? "(non-utf8)"
+            logger.error("Model fetch failed: HTTP \(code, privacy: .public) body=\(body, privacy: .public)")
             throw ModelFetchError.httpError(statusCode: code)
         }
 
