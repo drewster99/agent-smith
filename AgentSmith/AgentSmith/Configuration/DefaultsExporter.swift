@@ -11,6 +11,7 @@ enum DefaultsExporter {
     ///   - jonesConfig: Current LLM configuration for the Jones agent.
     ///   - pollIntervals: Current poll intervals keyed by role.
     ///   - maxToolCalls: Current max tool-calls-per-response keyed by role.
+    ///   - messageDebounceIntervals: Current message debounce intervals keyed by role.
     ///   - speechController: The live `SpeechController` whose properties are read.
     /// - Returns: Pretty-printed JSON `Data` representing the full `AppDefaults`.
     @MainActor
@@ -20,6 +21,7 @@ enum DefaultsExporter {
         jonesConfig: LLMConfiguration,
         pollIntervals: [AgentRole: TimeInterval],
         maxToolCalls: [AgentRole: Int],
+        messageDebounceIntervals: [AgentRole: TimeInterval],
         speechController: SpeechController
     ) throws -> Data {
         let llmConfigs: [AgentRole: LLMConfiguration] = [
@@ -33,7 +35,7 @@ enum DefaultsExporter {
             agentTuning[role] = AgentTuningDefaults(
                 pollInterval: pollIntervals[role] ?? 5,
                 maxToolCalls: maxToolCalls[role] ?? 100,
-                messageDebounceInterval: 1
+                messageDebounceInterval: messageDebounceIntervals[role] ?? 1
             )
         }
 

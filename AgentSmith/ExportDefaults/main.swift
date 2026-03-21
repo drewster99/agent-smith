@@ -93,16 +93,40 @@ let speech = SpeechDefaults(
     )
 )
 
-// MARK: - Read tuning defaults from UserDefaults (or use hardcoded)
+// MARK: - Read tuning defaults
 
-// These aren't currently persisted to UserDefaults by the app, so we use the
-// hardcoded defaults. If the app adds persistence for these later, this will
-// automatically pick them up.
-let agentTuning: [AgentRole: AgentTuningDefaults] = [
+// Try loading tuning values from the bundled defaults.json so this tool stays
+// in sync with the app's shipped configuration without duplicating constants.
+let bundledTuning: [AgentRole: AgentTuningDefaults]? = {
+    // When run from the build products directory, look for defaults.json in the
+    // main app bundle's Resources, or fall back to the source tree location.
+    let candidates: [URL] = [
+        Bundle.main.url(forResource: "defaults", withExtension: "json"),
+        URL(fileURLWithPath: CommandLine.arguments[0])
+            .deletingLastPathComponent()
+            .appendingPathComponent("../AgentSmith.app/Contents/Resources/defaults.json")
+    ].compactMap { $0 }
+
+    for url in candidates {
+        guard FileManager.default.fileExists(atPath: url.path) else { continue }
+        do {
+            let data = try Data(contentsOf: url)
+            let defaults = try JSONDecoder().decode(AppDefaults.self, from: data)
+            return defaults.agentTuning
+        } catch {
+            fputs("Warning: Failed to read bundled defaults from \(url.path): \(error)\n", stderr)
+        }
+    }
+    return nil
+}()
+
+let fallbackTuning: [AgentRole: AgentTuningDefaults] = [
     .smith: AgentTuningDefaults(pollInterval: 20, maxToolCalls: 100, messageDebounceInterval: 1),
     .brown: AgentTuningDefaults(pollInterval: 25, maxToolCalls: 100, messageDebounceInterval: 1),
     .jones: AgentTuningDefaults(pollInterval: 13, maxToolCalls: 100, messageDebounceInterval: 1)
 ]
+
+let agentTuning = bundledTuning ?? fallbackTuning
 
 // MARK: - Build and encode
 

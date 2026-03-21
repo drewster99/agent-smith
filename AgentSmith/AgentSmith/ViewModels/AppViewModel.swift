@@ -33,6 +33,10 @@ final class AppViewModel {
     var agentMaxToolCalls: [AgentRole: Int] = [
         .smith: 100, .brown: 100, .jones: 100
     ]
+    /// Message debounce intervals for each agent role (seconds).
+    var agentMessageDebounceIntervals: [AgentRole: TimeInterval] = [
+        .smith: 1, .brown: 1, .jones: 1
+    ]
 
     /// Per-role LLM configurations, editable from settings.
     var smithConfig = LLMConfiguration.smithDefault
@@ -64,6 +68,7 @@ final class AppViewModel {
             for (role, tuning) in bundled.agentTuning {
                 agentPollIntervals[role] = tuning.pollInterval
                 agentMaxToolCalls[role] = tuning.maxToolCalls
+                agentMessageDebounceIntervals[role] = tuning.messageDebounceInterval
             }
             speechController.applyBundledDefaults(bundled.speech)
         } catch {
@@ -139,7 +144,7 @@ final class AppViewModel {
             tuning[role] = AgentTuningConfig(
                 pollInterval: agentPollIntervals[role] ?? 5,
                 maxToolCalls: agentMaxToolCalls[role] ?? 100,
-                messageDebounceInterval: 1
+                messageDebounceInterval: agentMessageDebounceIntervals[role] ?? 1
             )
         }
 

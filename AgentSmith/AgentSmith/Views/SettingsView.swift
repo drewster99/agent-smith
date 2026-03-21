@@ -200,6 +200,7 @@ struct SettingsView: View {
                 jonesConfig: viewModel.jonesConfig,
                 pollIntervals: viewModel.agentPollIntervals,
                 maxToolCalls: viewModel.agentMaxToolCalls,
+                messageDebounceIntervals: viewModel.agentMessageDebounceIntervals,
                 speechController: viewModel.speechController
             )
         } catch {

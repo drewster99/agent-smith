@@ -322,7 +322,9 @@ final class SpeechController {
     }
 
     private func debugLog(_ text: String) {
+        #if DEBUG
         print("[Speech] \(text)")
+        #endif
     }
 
     // MARK: - Persistence
@@ -349,16 +351,14 @@ final class SpeechController {
             for category in AgentSoundCategory.allCases {
                 guard let catDefaults = agentDefaults.categories[category.storageKey] else { continue }
                 let catKey = "speech.\(key).\(category.storageKey)"
+                var config = soundConfig(for: role, category: category)
                 if ud.object(forKey: "\(catKey).sound") == nil {
-                    var config = soundConfig(for: role, category: category)
                     config.soundName = catDefaults.soundName
-                    setSoundConfigWithoutPersisting(config, for: role, category: category)
                 }
                 if ud.object(forKey: "\(catKey).speak") == nil {
-                    var config = soundConfig(for: role, category: category)
                     config.speakEnabled = catDefaults.speakEnabled
-                    setSoundConfigWithoutPersisting(config, for: role, category: category)
                 }
+                setSoundConfigWithoutPersisting(config, for: role, category: category)
             }
         }
 

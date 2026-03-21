@@ -21,4 +21,11 @@ public struct AgentTuningConfig: Sendable {
         self.maxToolCalls = maxToolCalls
         self.messageDebounceInterval = messageDebounceInterval
     }
+
+    /// Creates a runtime tuning config from the bundled defaults representation.
+    public init(from defaults: AgentTuningDefaults) {
+        self.pollInterval = defaults.pollInterval
+        self.maxToolCalls = defaults.maxToolCalls
+        self.messageDebounceInterval = defaults.messageDebounceInterval
+    }
 }
