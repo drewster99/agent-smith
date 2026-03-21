@@ -14,7 +14,7 @@ public struct OllamaProvider: LLMProvider {
     private let config: LLMConfiguration
     private let session: URLSession
 
-    public init(config: LLMConfiguration, session: URLSession = .shared) {
+    public init(config: LLMConfiguration, session: URLSession = llmURLSession) {
         self.config = config
         self.session = session
     }

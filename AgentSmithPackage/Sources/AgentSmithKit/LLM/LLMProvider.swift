@@ -12,3 +12,12 @@ public protocol LLMProvider: Sendable {
         tools: [LLMToolDefinition]
     ) async throws -> LLMResponse
 }
+
+/// A URLSession configured with a 10-minute request timeout for LLM API calls.
+/// Local models (Ollama) can take minutes to generate complex responses;
+/// the default 60-second URLSession timeout causes spurious failures.
+public let llmURLSession: URLSession = {
+    let config = URLSessionConfiguration.default
+    config.timeoutIntervalForRequest = 600
+    return URLSession(configuration: config)
+}()

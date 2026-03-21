@@ -29,7 +29,7 @@ public struct ShellTool: AgentTool {
             ]),
             "timeout": .dictionary([
                 "type": .string("integer"),
-                "description": .string("Timeout in seconds. Defaults to 30.")
+                "description": .string("Timeout in seconds. Defaults to 300.")
             ])
         ]),
         "required": .array([.string("command")])
@@ -177,7 +177,7 @@ public struct ShellTool: AgentTool {
         if case .int(let t) = arguments["timeout"] {
             timeoutSeconds = t
         } else {
-            timeoutSeconds = 30
+            timeoutSeconds = 300
         }
 
         let workingDir: String?
