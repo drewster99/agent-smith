@@ -97,11 +97,11 @@ struct MainView: View {
                 }
 
                 if viewModel.speechController.isGloballyEnabled {
-                    Button("Mute All", systemImage: "speaker.slash.fill") {
+                    Button("Mute All", systemImage: "speaker.wave.2.fill") {
                         viewModel.speechController.setGloballyEnabled(false)
                     }
                 } else {
-                    Button("Unmute All", systemImage: "speaker.wave.2.fill") {
+                    Button("Unmute All", systemImage: "speaker.slash.fill") {
                         viewModel.speechController.setGloballyEnabled(true)
                     }
                     .foregroundStyle(.secondary)

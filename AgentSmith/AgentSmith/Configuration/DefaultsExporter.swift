@@ -71,7 +71,8 @@ enum DefaultsExporter {
             security: SecuritySoundDefaults(
                 safeSoundName: speechController.securitySafeSoundName,
                 warnSoundName: speechController.securityWarnSoundName,
-                denySoundName: speechController.securityDenySoundName
+                denySoundName: speechController.securityDenySoundName,
+                abortSoundName: speechController.securityAbortSoundName
             )
         )
 

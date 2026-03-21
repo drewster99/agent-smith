@@ -89,7 +89,8 @@ let speech = SpeechDefaults(
     security: SecuritySoundDefaults(
         safeSoundName: readString("speech.security.safe"),
         warnSoundName: readString("speech.security.warn"),
-        denySoundName: readString("speech.security.deny")
+        denySoundName: readString("speech.security.deny"),
+        abortSoundName: readString("speech.security.abort")
     )
 )
 

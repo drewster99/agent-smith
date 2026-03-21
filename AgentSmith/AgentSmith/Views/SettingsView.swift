@@ -170,6 +170,15 @@ struct SettingsView: View {
                         ),
                         onPreview: { viewModel.speechController.previewSound(named: $0) }
                     )
+
+                    SoundPickerRow(
+                        label: "Abort",
+                        soundName: Binding(
+                            get: { viewModel.speechController.securityAbortSoundName },
+                            set: { viewModel.speechController.setSecurityAbortSound($0) }
+                        ),
+                        onPreview: { viewModel.speechController.previewSound(named: $0) }
+                    )
                 }
                 .padding(8)
             }

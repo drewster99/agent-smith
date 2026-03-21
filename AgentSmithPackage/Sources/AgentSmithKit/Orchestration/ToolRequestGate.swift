@@ -5,10 +5,13 @@ public struct SecurityDisposition: Sendable {
     public let approved: Bool
     /// Explanation — required when denied, recommended for medium-risk warnings.
     public let message: String?
+    /// True when this is a WARN denial — the request can be retried once for auto-approval.
+    public let isWarning: Bool
 
-    public init(approved: Bool, message: String? = nil) {
+    public init(approved: Bool, message: String? = nil, isWarning: Bool = false) {
         self.approved = approved
         self.message = message
+        self.isWarning = isWarning
     }
 }
 
@@ -25,7 +28,7 @@ public actor ToolRequestGate {
         await withCheckedContinuation { continuations[requestID] = $0 }
     }
 
-    /// Called by Jones' `SecurityDispositionTool` to unblock the waiting Brown tool call.
+    /// Called by Jones (via text response parsing) to unblock the waiting Brown tool call.
     public func resolve(requestID: UUID, disposition: SecurityDisposition) {
         continuations.removeValue(forKey: requestID)?.resume(returning: disposition)
     }

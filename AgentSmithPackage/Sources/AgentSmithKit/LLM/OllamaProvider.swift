@@ -31,8 +31,11 @@ public struct OllamaProvider: LLMProvider {
             request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
         }
 
-        let normalizedMessages = Self.normalizeMessages(messages)
-        let body = buildRequestBody(messages: normalizedMessages, tools: tools)
+        // Only normalize when no tools are in use — normalization converts tool results
+        // to user messages for backends that don't understand the "tool" role, but breaks
+        // the tool_call/tool_result pairing that Ollama requires when tools ARE defined.
+        let finalMessages = tools.isEmpty ? Self.normalizeMessages(messages) : messages
+        let body = buildRequestBody(messages: finalMessages, tools: tools)
         let requestData = try JSONSerialization.data(withJSONObject: body)
         request.httpBody = requestData
 

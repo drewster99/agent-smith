@@ -138,7 +138,7 @@ public actor OrchestrationRuntime {
                 llmConfig: smithConfig,
                 systemPrompt: SmithBehavior.systemPrompt,
                 toolNames: SmithBehavior.toolNames,
-                suppressesRawTextToChannel: true,
+                suppressesRawTextToChannel: false,
                 pollInterval: agentTuning[.smith]?.pollInterval ?? 20,
                 messageDebounceInterval: agentTuning[.smith]?.messageDebounceInterval ?? 1,
                 messageAcceptFilter: smithMessageFilter,
@@ -378,23 +378,13 @@ public actor OrchestrationRuntime {
         )
         await brownAgent.setToolRequestGate(gate)
 
-        // Jones needs Smith's UUID in its system prompt so it can call terminate_agent correctly.
-        // This should never be nil — spawnBrown is only reachable while Smith is running.
-        let smithIDForJones: UUID
-        if let id = smithID {
-            smithIDForJones = id
-        } else {
-            assertionFailure("spawnBrown called without an active Smith — Jones will receive an incorrect Smith UUID")
-            smithIDForJones = UUID()
-        }
-
         let jonesContext = makeToolContext(agentID: jonesID, role: .jones)
         let jonesAgent = AgentActor(
             id: jonesID,
             configuration: AgentConfiguration(
                 role: .jones,
                 llmConfig: jonesConfig,
-                systemPrompt: JonesBehavior.systemPrompt(brownID: brownID, smithID: smithIDForJones),
+                systemPrompt: JonesBehavior.systemPrompt,
                 toolNames: JonesBehavior.toolNames,
                 messageFilter: .toolRequestsOnly,
                 suppressesRawTextToChannel: true,
@@ -403,9 +393,10 @@ public actor OrchestrationRuntime {
                 maxToolCallsPerIteration: agentTuning[.jones]?.maxToolCalls ?? 100
             ),
             provider: makeProvider(config: jonesConfig),
-            tools: JonesBehavior.tools(gate: gate),
+            tools: [],
             toolContext: jonesContext
         )
+        await jonesAgent.setToolRequestGate(gate)
 
         agents[brownID] = brownAgent
         agents[jonesID] = jonesAgent

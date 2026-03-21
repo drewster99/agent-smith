@@ -12,11 +12,12 @@ struct ChannelLogView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(messages) { message in
-                        // Agent online announcements are internal coordination messages;
-                        // suppress them from the channel log display.
-                        if case .string(let kind) = message.metadata?["messageKind"], kind == "agent_online" {
+                        if shouldSuppress(message) {
+                            // Folded into a tool_request row — don't render standalone
+                        } else if case .string(let kind) = message.metadata?["messageKind"], kind == "agent_online" {
+                            // Agent online announcements are internal coordination messages
                         } else {
-                            MessageRow(message: message)
+                            MessageRow(message: message, allMessages: messages)
                                 .id(message.id)
                         }
                     }
@@ -38,10 +39,24 @@ struct ChannelLogView: View {
             }
         }
     }
+
+    /// Suppresses security reviews and tool outputs that are grouped into a parent tool_request row.
+    private func shouldSuppress(_ message: ChannelMessage) -> Bool {
+        guard let reqID = message.stringMetadata("requestID") else { return false }
+        let isFollowUp = message.metadata?["securityDisposition"] != nil
+            || message.stringMetadata("messageKind") == "tool_output"
+        guard isFollowUp else { return false }
+        // Only suppress if the parent tool_request exists in the messages array
+        return messages.contains { msg in
+            msg.stringMetadata("messageKind") == "tool_request"
+                && msg.stringMetadata("requestID") == reqID
+        }
+    }
 }
 
 private struct MessageRow: View {
     let message: ChannelMessage
+    let allMessages: [ChannelMessage]
 
     @State private var isExpanded = false
 
@@ -57,15 +72,20 @@ private struct MessageRow: View {
         }
     }
 
-    private var isToolMessage: Bool {
-        message.metadata?["tool"] != nil
+    private var messageKind: String? {
+        message.stringMetadata("messageKind")
     }
 
     private var isToolRequest: Bool {
-        if case .string(let kind) = message.metadata?["messageKind"] {
-            return kind == "tool_request"
-        }
-        return false
+        messageKind == "tool_request"
+    }
+
+    private var isToolOutput: Bool {
+        messageKind == "tool_output"
+    }
+
+    private var isSecurityReview: Bool {
+        message.metadata?["securityDisposition"] != nil
     }
 
     private var isErrorMessage: Bool {
@@ -80,6 +100,71 @@ private struct MessageRow: View {
         return true
     }
 
+    // MARK: - Tool request grouping
+
+    private var requestID: String? {
+        message.stringMetadata("requestID")
+    }
+
+    private var securityReviewMessage: ChannelMessage? {
+        guard let reqID = requestID else { return nil }
+        return allMessages.first { msg in
+            msg.stringMetadata("requestID") == reqID
+                && msg.metadata?["securityDisposition"] != nil
+        }
+    }
+
+    private var toolOutputMessage: ChannelMessage? {
+        guard let reqID = requestID else { return nil }
+        return allMessages.first { msg in
+            msg.stringMetadata("requestID") == reqID
+                && msg.stringMetadata("messageKind") == "tool_output"
+        }
+    }
+
+    private var dispositionIndicator: String? {
+        guard let review = securityReviewMessage,
+              case .string(let d) = review.metadata?["securityDisposition"] else { return nil }
+        switch d {
+        case "approved": return "\u{2705}"   // checkmark
+        case "warning": return "\u{26A0}\u{FE0F}" // warning
+        case "denied": return "\u{1F6AB}"    // prohibited
+        case "abort": return "\u{1F6D1}"     // stop sign
+        case "cancelled": return nil
+        default: return nil
+        }
+    }
+
+    private var dispositionComment: String? {
+        guard let review = securityReviewMessage,
+              case .string(let d) = review.metadata?["securityDisposition"] else { return nil }
+        switch d {
+        case "warning", "denied", "abort":
+            // Use the full disposition message from metadata (includes retry instruction for WARN)
+            if case .string(let msg) = review.metadata?["dispositionMessage"], !msg.isEmpty {
+                return msg
+            }
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    private var dispositionCommentColor: Color {
+        guard let review = securityReviewMessage,
+              case .string(let d) = review.metadata?["securityDisposition"] else { return .secondary }
+        switch d {
+        case "warning": return .yellow
+        case "denied": return .orange
+        case "abort": return .red
+        default: return .secondary
+        }
+    }
+
+    private var outputIsTruncatable: Bool {
+        toolOutputMessage?.metadata?["truncatedContent"] != nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             // Sender header: name, timestamp, and private indicator if applicable
@@ -92,7 +177,7 @@ private struct MessageRow: View {
                     Image(systemName: "lock.fill")
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
-                    Text("→ \(message.recipient?.displayName ?? "private")")
+                    Text("\u{2192} \(message.recipient?.displayName ?? "private")")
                         .font(AppFonts.channelTimestamp)
                         .foregroundStyle(recipientColor)
                 }
@@ -102,20 +187,16 @@ private struct MessageRow: View {
                     .foregroundStyle(.secondary)
             }
 
-            if isToolMessage {
-                DisclosureGroup(isExpanded: $isExpanded) {
-                    MarkdownText(content: message.content, baseFont: AppFonts.channelBody)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } label: {
-                    Text(toolSummary)
-                        .font(AppFonts.channelBody)
-                        .foregroundStyle(.secondary)
-                }
-                .onAppear {
-                    if isToolRequest {
-                        isExpanded = true
-                    }
-                }
+            if isToolRequest {
+                toolRequestBody
+            } else if isToolOutput {
+                // Standalone tool output (no parent tool_request found — edge case)
+                standaloneToolOutput
+            } else if isSecurityReview {
+                // Standalone security review (no parent tool_request found — edge case)
+                Text(message.content)
+                    .font(AppFonts.channelBody)
+                    .foregroundStyle(securityReviewColor)
             } else {
                 MarkdownText(content: message.content, baseFont: AppFonts.channelBody)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -138,17 +219,101 @@ private struct MessageRow: View {
         .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 
+    // MARK: - Tool request consolidated block
+
+    @ViewBuilder
+    private var toolRequestBody: some View {
+        // Line 1: "Tool: shell: pwd ✅"
+        HStack(spacing: 4) {
+            Text("Tool: \(message.content)")
+                .font(AppFonts.channelBody)
+                .foregroundStyle(.secondary)
+            if let indicator = dispositionIndicator {
+                Text(indicator)
+            }
+        }
+
+        // Disposition comment (for WARN/UNSAFE/ABORT)
+        if let comment = dispositionComment {
+            Text(comment)
+                .font(AppFonts.channelBody.italic())
+                .foregroundStyle(dispositionCommentColor)
+                .padding(.leading, 12)
+        }
+
+        // Tool output (if approved and executed)
+        if let output = toolOutputMessage {
+            let displayText: String = {
+                if isExpanded {
+                    return output.content
+                }
+                if case .string(let truncated) = output.metadata?["truncatedContent"] {
+                    return truncated
+                }
+                return output.content
+            }()
+            Text(displayText)
+                .font(AppFonts.channelBody.monospaced())
+                .foregroundStyle(.secondary)
+                .padding(.leading, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+            if outputIsTruncatable {
+                Text(isExpanded ? "Show less" : "Show more")
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+                    .padding(.leading, 12)
+                    .onTapGesture { isExpanded.toggle() }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var standaloneToolOutput: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            Text(message.content)
+                .font(AppFonts.channelBody.monospaced())
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+        } label: {
+            if case .string(let toolName) = message.metadata?["tool"] {
+                Text("Output: \(toolName)")
+                    .font(AppFonts.channelBody)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Output")
+                    .font(AppFonts.channelBody)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
     private static let timestampFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss.SS"
         return f
     }()
 
-    private var toolSummary: String {
-        if case .string(let toolName) = message.metadata?["tool"] {
-            return isToolRequest ? "Tool call requested: \(toolName)" : "Executing: \(toolName)"
+    private var securityReviewColor: Color {
+        guard case .string(let disposition) = message.metadata?["securityDisposition"] else {
+            return .secondary
         }
-        return isToolRequest ? "Tool call requested" : "Tool call"
+        switch disposition {
+        case "approved": return .green
+        case "warning": return .yellow
+        case "denied": return .orange
+        case "abort": return .red
+        default: return .secondary
+        }
+    }
+}
+
+// MARK: - ChannelMessage helper
+
+private extension ChannelMessage {
+    func stringMetadata(_ key: String) -> String? {
+        if case .string(let value) = metadata?[key] { return value }
+        return nil
     }
 }
 

@@ -49,6 +49,6 @@ public struct AcceptWorkTool: AgentTool {
             content: "Task '\(task.title)' completed. Assigned agents terminated."
         ))
 
-        return "Task accepted and agents terminated."
+        return "Task '\(task.title)' accepted and agents terminated. Now send the user a summary of the completed work using send_message(recipient_id: \"user\", ...)."
     }
 }

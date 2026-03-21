@@ -55,6 +55,7 @@ final class SpeechController {
     var securitySafeSoundName: String = ""
     var securityWarnSoundName: String = ""
     var securityDenySoundName: String = ""
+    var securityAbortSoundName: String = ""
 
     // MARK: - Private
 
@@ -212,6 +213,11 @@ final class SpeechController {
         UserDefaults.standard.set(name, forKey: "speech.security.deny")
     }
 
+    func setSecurityAbortSound(_ name: String) {
+        securityAbortSoundName = name
+        UserDefaults.standard.set(name, forKey: "speech.security.abort")
+    }
+
     // MARK: - Private: message routing
 
     private func handleAgentMessage(_ message: ChannelMessage, from role: AgentRole) {
@@ -262,6 +268,8 @@ final class SpeechController {
                 playSound(named: securityWarnSoundName)
             case "denied":
                 playSound(named: securityDenySoundName)
+            case "abort":
+                playSound(named: securityAbortSoundName)
             default:
                 break
             }
@@ -391,6 +399,9 @@ final class SpeechController {
         if ud.object(forKey: "speech.security.deny") == nil {
             securityDenySoundName = defaults.security.denySoundName
         }
+        if ud.object(forKey: "speech.security.abort") == nil {
+            securityAbortSoundName = defaults.security.abortSoundName
+        }
     }
 
     /// Sets the in-memory sound config without writing to UserDefaults.
@@ -439,6 +450,7 @@ final class SpeechController {
         securitySafeSoundName = UserDefaults.standard.string(forKey: "speech.security.safe") ?? ""
         securityWarnSoundName = UserDefaults.standard.string(forKey: "speech.security.warn") ?? ""
         securityDenySoundName = UserDefaults.standard.string(forKey: "speech.security.deny") ?? ""
+        securityAbortSoundName = UserDefaults.standard.string(forKey: "speech.security.abort") ?? ""
     }
 }
 

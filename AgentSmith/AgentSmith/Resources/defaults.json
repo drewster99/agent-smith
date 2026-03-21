@@ -132,6 +132,7 @@
       "voiceIdentifier" : ""
     },
     "security" : {
+      "abortSoundName" : "",
       "denySoundName" : "",
       "safeSoundName" : "",
       "warnSoundName" : ""

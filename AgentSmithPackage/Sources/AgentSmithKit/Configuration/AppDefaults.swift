@@ -146,10 +146,13 @@ public struct SecuritySoundDefaults: Codable, Sendable {
     public var warnSoundName: String
     /// Sound name for denied tool requests.
     public var denySoundName: String
+    /// Sound name for abort (emergency shutdown).
+    public var abortSoundName: String
 
-    public init(safeSoundName: String, warnSoundName: String, denySoundName: String) {
+    public init(safeSoundName: String, warnSoundName: String, denySoundName: String, abortSoundName: String = "") {
         self.safeSoundName = safeSoundName
         self.warnSoundName = warnSoundName
         self.denySoundName = denySoundName
+        self.abortSoundName = abortSoundName
     }
 }

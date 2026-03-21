@@ -187,13 +187,6 @@ public struct ShellTool: AgentTool {
             workingDir = nil
         }
 
-        // Post the command being executed to the channel for Jones to monitor
-        await context.channel.post(ChannelMessage(
-            sender: .agent(context.agentRole),
-            content: "Executing shell command: `\(command)`",
-            metadata: ["tool": .string("shell"), "command": .string(command)]
-        ))
-
         return try await runProcess(
             command: command,
             workingDirectory: workingDir,
