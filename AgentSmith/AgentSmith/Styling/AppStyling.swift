@@ -14,8 +14,8 @@ enum AppColors {
     static let errorBackground = Color.red.opacity(0.12)
     /// Subtle highlight for Smith→User private messages to draw attention to agent output.
     static let smithToUserBackground = Color.green.opacity(0.08)
-    /// Pink accent for new-task banners in the channel log.
-    static let taskCreatedAccent = Color.pink
+    /// Accent for new-task banners in the channel log.
+    static let taskCreatedAccent = Color.blue
 
     /// Returns the color for a given channel message sender.
     static func color(for sender: ChannelMessage.Sender) -> Color {

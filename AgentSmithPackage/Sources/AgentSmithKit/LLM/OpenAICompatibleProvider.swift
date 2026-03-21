@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let logger = Logger(subsystem: "com.agentsmith", category: "OpenAI")
 
 /// LLM provider for OpenAI-compatible APIs (OpenAI, Ollama, LM Studio, vLLM).
 public struct OpenAICompatibleProvider: LLMProvider {
@@ -25,13 +28,16 @@ public struct OpenAICompatibleProvider: LLMProvider {
         let body = buildRequestBody(messages: messages, tools: tools)
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
+        logger.debug("Request: POST \(url.absoluteString, privacy: .public) model=\(config.model, privacy: .public)")
+
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw LLMProviderError.invalidResponse
         }
         guard (200...299).contains(httpResponse.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? "unknown"
-            throw LLMProviderError.httpError(statusCode: httpResponse.statusCode, body: body)
+            let responseBody = String(data: data, encoding: .utf8) ?? "unknown"
+            logger.error("HTTP \(httpResponse.statusCode, privacy: .public) from \(url.absoluteString, privacy: .public) body=\(responseBody, privacy: .public)")
+            throw LLMProviderError.httpError(statusCode: httpResponse.statusCode, body: responseBody, url: url)
         }
 
         return try parseResponse(data: data)
@@ -152,15 +158,16 @@ public struct OpenAICompatibleProvider: LLMProvider {
 
 public enum LLMProviderError: Error, LocalizedError {
     case invalidResponse
-    case httpError(statusCode: Int, body: String)
+    case httpError(statusCode: Int, body: String, url: URL? = nil)
     case malformedResponse
 
     public var errorDescription: String? {
         switch self {
         case .invalidResponse:
             return "Response was not a valid HTTP response"
-        case .httpError(let code, let body):
-            return "HTTP \(code): \(body)"
+        case .httpError(let code, let body, let url):
+            let detail = body.isEmpty ? (url?.absoluteString ?? "empty body") : body
+            return "HTTP \(code): \(detail)"
         case .malformedResponse:
             return "Could not parse LLM response"
         }

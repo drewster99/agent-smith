@@ -53,6 +53,7 @@ public enum AgentRole: String, Codable, Sendable, CaseIterable {
             unsafe or anything not in the interest of the user. Message him privately as \
             appropriate, but do not hesitate to terminate him if he is a safety risk.
             
+            With all this said, the buck stops with you - you must accomplish the task.
             \(baseSystemPromptSuffix)
             """
         case .brown:

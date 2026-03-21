@@ -4,6 +4,9 @@ import AgentSmithKit
 /// Color-coded scrolling message stream with attachment display.
 struct ChannelLogView: View {
     var messages: [ChannelMessage]
+    var persistedHistoryCount: Int
+    var hasRestoredHistory: Bool
+    var onRestoreHistory: () -> Void
 
     @State private var isAtBottom = true
 
@@ -11,13 +14,32 @@ struct ChannelLogView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
+                    if persistedHistoryCount > 0 && !hasRestoredHistory {
+                        Button(action: onRestoreHistory) {
+                            Text("Restore full history (\(persistedHistoryCount) messages)")
+                                .font(.caption)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(.quaternary)
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.bottom, 4)
+                    }
+
                     ForEach(messages) { message in
                         if shouldSuppress(message) {
                             // Folded into a tool_request row — don't render standalone
                         } else if case .string(let kind) = message.metadata?["messageKind"], kind == "agent_online" {
                             // Agent online announcements are internal coordination messages
                         } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_created" {
-                            TaskCreatedBanner(title: message.content, timestamp: message.timestamp)
+                            TaskCreatedBanner(
+                                title: message.content,
+                                description: message.stringMetadata("taskDescription"),
+                                timestamp: message.timestamp
+                            )
                                 .id(message.id)
                         } else {
                             MessageRow(message: message, allMessages: messages)
@@ -96,6 +118,13 @@ private struct MessageRow: View {
         return false
     }
 
+    /// The security disposition string for this tool request's review, if any.
+    private var securityDisposition: String? {
+        guard let review = securityReviewMessage,
+              case .string(let d) = review.metadata?["securityDisposition"] else { return nil }
+        return d
+    }
+
     /// True when Smith sends a private message directly to the user — these deserve visual emphasis.
     private var isSmithToUser: Bool {
         guard case .agent(.smith) = message.sender else { return false }
@@ -130,6 +159,7 @@ private struct MessageRow: View {
               case .string(let d) = review.metadata?["securityDisposition"] else { return nil }
         switch d {
         case "approved": return "\u{2705}"   // checkmark
+        case "autoApproved": return "\u{2705}"  // checkmark (comment below explains auto-approval)
         case "warning": return "\u{26A0}\u{FE0F}" // warning
         case "denied": return "\u{1F6AB}"    // prohibited
         case "abort": return "\u{1F6D1}"     // stop sign
@@ -142,6 +172,8 @@ private struct MessageRow: View {
         guard let review = securityReviewMessage,
               case .string(let d) = review.metadata?["securityDisposition"] else { return nil }
         switch d {
+        case "autoApproved":
+            return "Auto-approved (identical WARN retry)"
         case "warning", "denied", "abort":
             // Use the full disposition message from metadata (includes retry instruction for WARN)
             if case .string(let msg) = review.metadata?["dispositionMessage"], !msg.isEmpty {
@@ -157,7 +189,8 @@ private struct MessageRow: View {
         guard let review = securityReviewMessage,
               case .string(let d) = review.metadata?["securityDisposition"] else { return .secondary }
         switch d {
-        case "warning": return .yellow
+        case "autoApproved": return .green
+        case "warning": return .orange
         case "denied": return .orange
         case "abort": return .red
         default: return .secondary
@@ -217,9 +250,30 @@ private struct MessageRow: View {
         .background({
             if isErrorMessage { return AppColors.errorBackground }
             if isSmithToUser { return AppColors.smithToUserBackground }
+            switch securityDisposition {
+            case "warning", "denied": return Color.orange.opacity(0.10)
+            case "abort": return AppColors.errorBackground
+            default: break
+            }
             return Color.clear
         }())
         .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+
+    /// Maximum characters to show for the tool call description before truncating.
+    private static let toolCallTruncationLimit = 200
+
+    /// Whether the tool call description is long enough to warrant truncation.
+    private var toolCallIsTruncatable: Bool {
+        message.content.count > Self.toolCallTruncationLimit
+    }
+
+    /// The tool call description, truncated if needed and not expanded.
+    private var toolCallDisplayText: String {
+        if !toolCallIsTruncatable || isExpanded {
+            return message.content
+        }
+        return String(message.content.prefix(Self.toolCallTruncationLimit)) + "…"
     }
 
     // MARK: - Tool request consolidated block
@@ -227,13 +281,21 @@ private struct MessageRow: View {
     @ViewBuilder
     private var toolRequestBody: some View {
         // Line 1: "Tool: shell: pwd ✅"
-        HStack(spacing: 4) {
-            Text("Tool: \(message.content)")
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text("Tool: \(toolCallDisplayText)")
                 .font(AppFonts.channelBody)
                 .foregroundStyle(.secondary)
             if let indicator = dispositionIndicator {
                 Text(indicator)
             }
+        }
+
+        if toolCallIsTruncatable {
+            Text(isExpanded ? "Show less" : "Show more")
+                .font(.caption)
+                .foregroundStyle(.blue)
+                .padding(.leading, 12)
+                .onTapGesture { isExpanded.toggle() }
         }
 
         // Disposition comment (for WARN/UNSAFE/ABORT)
@@ -303,7 +365,8 @@ private struct MessageRow: View {
         }
         switch disposition {
         case "approved": return .green
-        case "warning": return .yellow
+        case "autoApproved": return .green
+        case "warning": return .orange
         case "denied": return .orange
         case "abort": return .red
         default: return .secondary
@@ -323,6 +386,7 @@ private extension ChannelMessage {
 /// Visually distinct banner announcing a newly created task in the channel log.
 private struct TaskCreatedBanner: View {
     let title: String
+    let description: String?
     let timestamp: Date
 
     private let accentColor = AppColors.taskCreatedAccent
@@ -356,7 +420,16 @@ private struct TaskCreatedBanner: View {
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 10)
-                .padding(.bottom, 6)
+                .padding(.bottom, description != nil ? 2 : 6)
+
+            if let description {
+                Text(description)
+                    .font(AppFonts.channelBody.italic())
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 6)
+            }
 
             // Bottom rule
             accentColor.frame(height: 1).opacity(0.4)

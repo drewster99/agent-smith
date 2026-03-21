@@ -31,7 +31,12 @@ struct MainView: View {
                     )
                 }
 
-                ChannelLogView(messages: viewModel.messages)
+                ChannelLogView(
+                    messages: viewModel.messages,
+                    persistedHistoryCount: viewModel.persistedHistoryCount,
+                    hasRestoredHistory: viewModel.hasRestoredHistory,
+                    onRestoreHistory: { viewModel.restoreHistory() }
+                )
 
                 Divider()
 

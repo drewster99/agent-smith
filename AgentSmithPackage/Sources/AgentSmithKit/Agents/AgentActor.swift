@@ -293,7 +293,7 @@ public actor AgentActor {
                 consecutiveErrors += 1
 
                 let backoff = min(
-                    pow(2.0, Double(min(consecutiveErrors, 6))),
+                    pow(2.0, Double(min(consecutiveErrors - 1, 6))),
                     Self.maxBackoffSeconds
                 )
 
@@ -313,7 +313,14 @@ public actor AgentActor {
                     break
                 }
 
-                await idleWait(maxDuration: backoff)
+                // Use Task.sleep instead of idleWait — idleWait is interruptible by
+                // incoming channel messages (including the error message we just posted),
+                // which would cancel the backoff immediately.
+                do {
+                    try await Task.sleep(for: .seconds(backoff))
+                } catch {
+                    // Sleep cancelled (agent stopped) — fall through to loop guard
+                }
             }
         }
         await toolContext.onSelfTerminate()
@@ -479,7 +486,10 @@ public actor AgentActor {
         // Post approval/denial status so Smith can see the outcome without waiting for Brown's report.
         let statusContent: String
         let securityDisposition: String
-        if disposition.approved {
+        if disposition.approved && disposition.isAutoApproval {
+            statusContent = "Auto-approved (WARN retry)"
+            securityDisposition = "autoApproved"
+        } else if disposition.approved {
             statusContent = "Jones → \(configuration.role.displayName): SAFE"
             securityDisposition = "approved"
         } else if disposition.isWarning {
@@ -1022,7 +1032,7 @@ public actor AgentActor {
     private func resolveAutoApprovedRequests() async {
         guard let requestID = pendingAutoApproval, let gate = toolRequestGate else { return }
         pendingAutoApproval = nil
-        await gate.resolve(requestID: requestID, disposition: SecurityDisposition(approved: true))
+        await gate.resolve(requestID: requestID, disposition: SecurityDisposition(approved: true, isAutoApproval: true))
     }
 
     /// Prunes conversation history when approaching the context window limit.

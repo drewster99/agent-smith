@@ -7,11 +7,14 @@ public struct SecurityDisposition: Sendable {
     public let message: String?
     /// True when this is a WARN denial — the request can be retried once for auto-approval.
     public let isWarning: Bool
+    /// True when this approval was automatic (identical retry of a WARN'd request).
+    public let isAutoApproval: Bool
 
-    public init(approved: Bool, message: String? = nil, isWarning: Bool = false) {
+    public init(approved: Bool, message: String? = nil, isWarning: Bool = false, isAutoApproval: Bool = false) {
         self.approved = approved
         self.message = message
         self.isWarning = isWarning
+        self.isAutoApproval = isAutoApproval
     }
 }
 

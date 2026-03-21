@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let logger = Logger(subsystem: "com.agentsmith", category: "Ollama")
 
 /// LLM provider for Ollama's native API (POST /api/chat, GET /api/tags).
 ///
@@ -39,6 +42,7 @@ public struct OllamaProvider: LLMProvider {
         let requestData = try JSONSerialization.data(withJSONObject: body)
         request.httpBody = requestData
 
+        logger.debug("Request: POST \(url.absoluteString, privacy: .public) model=\(config.model, privacy: .public)")
         Self.logRequest(url: url, model: config.model, body: body, rawData: requestData)
 
         let (data, response) = try await session.data(for: request)
@@ -50,7 +54,8 @@ public struct OllamaProvider: LLMProvider {
 
         guard (200...299).contains(httpResponse.statusCode) else {
             let responseBody = String(data: data, encoding: .utf8) ?? "unknown"
-            throw LLMProviderError.httpError(statusCode: httpResponse.statusCode, body: responseBody)
+            logger.error("HTTP \(httpResponse.statusCode, privacy: .public) from \(url.absoluteString, privacy: .public) body=\(responseBody, privacy: .public)")
+            throw LLMProviderError.httpError(statusCode: httpResponse.statusCode, body: responseBody, url: url)
         }
 
         return try parseResponse(data: data)

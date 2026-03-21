@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let logger = Logger(subsystem: "com.agentsmith", category: "Anthropic")
 
 /// LLM provider for the Anthropic Messages API.
 public struct AnthropicProvider: LLMProvider {
@@ -14,7 +17,11 @@ public struct AnthropicProvider: LLMProvider {
         messages: [LLMMessage],
         tools: [LLMToolDefinition]
     ) async throws -> LLMResponse {
-        let url = config.endpoint.appendingPathComponent("messages")
+        // Normalize: accept both "https://api.anthropic.com" and ".../v1" as endpoint.
+        let base = config.endpoint.path.hasSuffix("/v1")
+            ? config.endpoint
+            : config.endpoint.appendingPathComponent("v1")
+        let url = base.appendingPathComponent("messages")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -24,13 +31,16 @@ public struct AnthropicProvider: LLMProvider {
         let body = buildRequestBody(messages: messages, tools: tools)
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
+        logger.debug("Request: POST \(url.absoluteString, privacy: .public) model=\(config.model, privacy: .public)")
+
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw LLMProviderError.invalidResponse
         }
         guard (200...299).contains(httpResponse.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? "unknown"
-            throw LLMProviderError.httpError(statusCode: httpResponse.statusCode, body: body)
+            let responseBody = String(data: data, encoding: .utf8) ?? "unknown"
+            logger.error("HTTP \(httpResponse.statusCode, privacy: .public) from \(url.absoluteString, privacy: .public) body=\(responseBody, privacy: .public)")
+            throw LLMProviderError.httpError(statusCode: httpResponse.statusCode, body: responseBody, url: url)
         }
 
         return try parseResponse(data: data)

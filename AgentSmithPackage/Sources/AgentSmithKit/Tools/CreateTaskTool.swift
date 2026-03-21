@@ -37,7 +37,8 @@ public struct CreateTaskTool: AgentTool {
             content: title,
             metadata: [
                 "messageKind": .string("task_created"),
-                "taskID": .string(task.id.uuidString)
+                "taskID": .string(task.id.uuidString),
+                "taskDescription": .string(description)
             ]
         ))
 

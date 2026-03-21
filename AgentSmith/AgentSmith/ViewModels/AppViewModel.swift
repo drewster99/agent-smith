@@ -8,6 +8,10 @@ import UniformTypeIdentifiers
 final class AppViewModel {
     var messages: [ChannelMessage] = []
     var tasks: [AgentTask] = []
+    /// Whether the user has restored the persisted history into the transcript.
+    var hasRestoredHistory = false
+    /// Number of messages loaded from disk at launch (available for restore).
+    var persistedHistoryCount = 0
     /// Set when a task action (archive, delete) is blocked; drives the error alert.
     var taskActionError: String? = nil
     var isRunning = false
@@ -77,8 +81,8 @@ final class AppViewModel {
 
         do {
             let savedMessages = try await persistenceManager.loadChannelLog()
-            messages = savedMessages
             allPersistedMessages = savedMessages
+            persistedHistoryCount = savedMessages.count
         } catch {
             print("[AgentSmith] Failed to load channel log: \(error)")
         }
@@ -371,6 +375,15 @@ final class AppViewModel {
         messages.removeAll()
         agentContexts.removeAll()
         agentTurns.removeAll()
+    }
+
+    /// Prepends the persisted history before the current live messages.
+    func restoreHistory() {
+        let currentMessages = messages
+        messages = allPersistedMessages.filter { persisted in
+            !currentMessages.contains { $0.id == persisted.id }
+        } + currentMessages
+        hasRestoredHistory = true
     }
 
     // MARK: - Attachments

@@ -223,14 +223,7 @@ struct AgentConfigView: View {
             content: {
                 ForEach(availableModels) { entry in
                     Button(action: { config.model = entry.modelName }) {
-                        HStack {
-                            Text(entry.menuLabel)
-                            if entry.isNew {
-                                Spacer()
-                                Text("New")
-                                    .foregroundStyle(.orange)
-                            }
-                        }
+                        Text(entry.newBadgeLabel)
                     }
                 }
             },
@@ -450,10 +443,15 @@ struct AgentConfigView: View {
         )
         let parser = ISO8601DateFormatter()
         parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = parser.date(from: truncated) { return date }
+        if let date = parser.date(from: truncated) {
+            logger.debug("parseISODate: '\(iso, privacy: .public)' -> \(date.description, privacy: .public)")
+            return date
+        }
         // Fall back for dates without fractional seconds
         parser.formatOptions = [.withInternetDateTime]
-        return parser.date(from: iso)
+        let date = parser.date(from: iso)
+        logger.debug("parseISODate: '\(iso, privacy: .public)' -> \(date?.description ?? "nil", privacy: .public)")
+        return date
     }
 }
 
@@ -521,6 +519,19 @@ private struct ModelPickerEntry: Identifiable {
         parts.append(primary)
         if !meta.isEmpty { parts.append(meta.joined(separator: " · ")) }
         return parts.joined(separator: "   ")
+    }
+
+    /// Attributed label for the picker menu, with a green right-aligned "(New)" badge.
+    /// The tab character pushes "(New)" to the right column in macOS menu items.
+    var newBadgeLabel: AttributedString {
+        var label = AttributedString(menuLabel)
+        if isNew {
+            label += AttributedString("\t")
+            var badge = AttributedString("(New)")
+            badge.foregroundColor = .green
+            label += badge
+        }
+        return label
     }
 }
 
