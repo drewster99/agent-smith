@@ -82,6 +82,9 @@ public enum SmithBehavior {
           Do not use it for normal workflow — use accept_work and request_changes instead.
 
         ## Guidelines:
+        - Before acting on any task — whether new, resumed, or from a prior session — ALWAYS call \
+        `list_tasks` first to read the full task details including the description. The task description \
+        contains the complete specification. Never ask the user for information that is already in the task.
         - Always create tasks before spawning agents so progress is tracked.
         - Give Agent Brown specific, actionable instructions with clear success criteria.
         - Always send Agent Brown's instructions as a private message (recipient_id: "brown"), not publicly.

@@ -201,6 +201,11 @@ public actor AgentActor {
                   kind == "tool_request" else { return }
         }
 
+        // Drop UI-only notification messages that no agent needs to process.
+        if case .string(let kind) = message.metadata?["messageKind"], kind == "task_created" {
+            return
+        }
+
         // Optional per-agent content filter — drops messages that shouldn't trigger a wake.
         if let filter = configuration.messageAcceptFilter, !filter(message) { return }
 

@@ -31,6 +31,16 @@ public struct CreateTaskTool: AgentTool {
         }
 
         let task = await context.taskStore.addTask(title: title, description: description)
+
+        await context.channel.post(ChannelMessage(
+            sender: .system,
+            content: title,
+            metadata: [
+                "messageKind": .string("task_created"),
+                "taskID": .string(task.id.uuidString)
+            ]
+        ))
+
         return "Task created: \(task.id) — \(title)"
     }
 }

@@ -22,6 +22,7 @@ public actor OrchestrationRuntime {
     private var llmConfigs: [AgentRole: LLMConfiguration]
     private var agentTuning: [AgentRole: AgentTuningConfig]
     private var monitoringTimer: MonitoringTimer?
+    private var powerManager: PowerAssertionManager?
     /// Maps Brown agent IDs to their active ToolRequestGate so we can drain pending approvals on shutdown.
     private var toolRequestGates: [UUID: ToolRequestGate] = [:]
     /// Maps each agent ID to its channel subscription IDs for proper cleanup.
@@ -88,6 +89,10 @@ public actor OrchestrationRuntime {
     public func start() async {
         guard smith == nil else { return }
         guard !aborted else { return }
+
+        let powerMgr = PowerAssertionManager(taskStore: taskStore)
+        await powerMgr.start()
+        powerManager = powerMgr
 
         let smithConfig = llmConfigs[.smith] ?? .ollamaDefault
         let provider = makeProvider(config: smithConfig)
@@ -281,6 +286,7 @@ public actor OrchestrationRuntime {
 
     /// Sends a user message (with optional attachments) privately to Smith.
     public func sendUserMessage(_ text: String, attachments: [Attachment] = []) async {
+        await powerManager?.activityOccurred()
         await channel.post(ChannelMessage(
             sender: .user,
             recipientID: smithID,
@@ -292,6 +298,9 @@ public actor OrchestrationRuntime {
 
     /// Stops all agents and the monitoring timer.
     public func stopAll() async {
+        await powerManager?.shutdown()
+        powerManager = nil
+
         await monitoringTimer?.stop()
         monitoringTimer = nil
 
@@ -582,8 +591,9 @@ public actor OrchestrationRuntime {
         )
     }
 
-    private func notifyProcessingStateChange(role: AgentRole, isProcessing: Bool) {
+    private func notifyProcessingStateChange(role: AgentRole, isProcessing: Bool) async {
         onProcessingStateChange?(role, isProcessing)
+        await powerManager?.activityOccurred()
     }
 
     /// Cleans up registry entries and channel subscriptions when an agent's run loop exits on its own.

@@ -16,6 +16,9 @@ struct ChannelLogView: View {
                             // Folded into a tool_request row — don't render standalone
                         } else if case .string(let kind) = message.metadata?["messageKind"], kind == "agent_online" {
                             // Agent online announcements are internal coordination messages
+                        } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_created" {
+                            TaskCreatedBanner(title: message.content, timestamp: message.timestamp)
+                                .id(message.id)
                         } else {
                             MessageRow(message: message, allMessages: messages)
                                 .id(message.id)
@@ -315,6 +318,59 @@ private extension ChannelMessage {
         if case .string(let value) = metadata?[key] { return value }
         return nil
     }
+}
+
+/// Visually distinct banner announcing a newly created task in the channel log.
+private struct TaskCreatedBanner: View {
+    let title: String
+    let timestamp: Date
+
+    private let accentColor = AppColors.taskCreatedAccent
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Top rule
+            accentColor.frame(height: 1).opacity(0.4)
+
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(accentColor)
+
+                Text("New Task")
+                    .font(AppFonts.channelSender)
+                    .foregroundStyle(accentColor)
+
+                Spacer()
+
+                Text(Self.timestampFormatter.string(from: timestamp))
+                    .font(AppFonts.channelTimestamp)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+
+            Text(title)
+                .font(AppFonts.channelBody.bold())
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 6)
+
+            // Bottom rule
+            accentColor.frame(height: 1).opacity(0.4)
+        }
+        .background(accentColor.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .padding(.vertical, 4)
+    }
+
+    private static let timestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SS"
+        return f
+    }()
 }
 
 /// Displays an attachment inline: images as thumbnails, other files as badges.
