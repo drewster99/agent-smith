@@ -7,9 +7,11 @@ public actor AgentActor {
     public let configuration: AgentConfiguration
     private let provider: any LLMProvider
     private let tools: [any AgentTool]
-    private let toolContext: ToolContext
+    // internal (not private) so AgentActor+Sanitize.swift can access it.
+    let toolContext: ToolContext
 
-    private var conversationHistory: [LLMMessage] = []
+    // internal (not private) so AgentActor+Sanitize.swift can access it.
+    var conversationHistory: [LLMMessage] = []
     private var isRunning = false
     private var runTask: Task<Void, Never>?
 
@@ -72,7 +74,8 @@ public actor AgentActor {
     /// Per-turn LLM call log for per-turn inspection.
     private var llmTurns: [LLMTurnRecord] = []
     /// Message count at the time of the previous LLM call — used to compute inputDelta.
-    private var lastTurnMessageCount: Int = 0
+    // internal (not private) so AgentActor+Sanitize.swift can access it.
+    var lastTurnMessageCount: Int = 0
     private static let maxTurnRecords = 30
 
     public init(
