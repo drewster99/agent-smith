@@ -280,6 +280,9 @@ public final class LLMKitManager {
                         if let cost = litellm.outputCostPerToken {
                             providerModels[i].outputCostPerMillionTokens = cost * 1_000_000
                         }
+                        if !litellm.supportsChatCompletions {
+                            providerModels[i].supportsChatCompletions = false
+                        }
                         litellm.mergeCapabilities(into: &providerModels[i].capabilities)
                     }
                 }
@@ -340,6 +343,13 @@ public final class LLMKitManager {
             guard let modelInfo = providerModels.first(where: { $0.modelID == config.modelID }) else {
                 configurations[index].isValid = false
                 configurations[index].validationError = "Model '\(config.modelID)' not found for this provider"
+                return
+            }
+
+            // Check model supports chat completions
+            if !modelInfo.supportsChatCompletions {
+                configurations[index].isValid = false
+                configurations[index].validationError = "Model '\(config.modelID)' does not support the chat completions endpoint"
                 return
             }
 

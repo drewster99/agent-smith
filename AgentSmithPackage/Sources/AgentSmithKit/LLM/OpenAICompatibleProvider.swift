@@ -139,9 +139,27 @@ public struct OpenAICompatibleProvider: LLMProvider {
             for raw in rawCalls {
                 guard let id = raw["id"] as? String,
                       let function = raw["function"] as? [String: Any],
-                      let name = function["name"] as? String,
-                      let arguments = function["arguments"] as? String
-                else { continue }
+                      let name = function["name"] as? String
+                else {
+                    logger.warning("Skipping malformed tool_call entry: missing id, function, or name")
+                    continue
+                }
+
+                let arguments: String
+                if let argsObj = function["arguments"] {
+                    if let argsString = argsObj as? String {
+                        arguments = argsString
+                    } else if let argsData = try? JSONSerialization.data(withJSONObject: argsObj),
+                              let argsString = String(data: argsData, encoding: .utf8) {
+                        arguments = argsString
+                    } else {
+                        logger.warning("Could not serialize tool_call arguments for \(name, privacy: .public), defaulting to {}")
+                        arguments = "{}"
+                    }
+                } else {
+                    arguments = "{}"
+                }
+
                 toolCalls.append(LLMToolCall(id: id, name: name, arguments: arguments))
             }
         }

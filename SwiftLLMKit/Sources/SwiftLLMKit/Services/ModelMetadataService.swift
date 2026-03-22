@@ -181,7 +181,8 @@ public actor ModelMetadataService {
                     supportsVideoInput: modelDict["supports_video_input"] as? Bool ?? false,
                     supportsResponseSchema: modelDict["supports_response_schema"] as? Bool ?? false,
                     supportsParallelToolCalls: modelDict["supports_parallel_tool_calls"] as? Bool ?? false,
-                    mode: modelDict["mode"] as? String
+                    mode: modelDict["mode"] as? String,
+                    supportedEndpoints: modelDict["supported_endpoints"] as? [String]
                 )
 
                 index[key] = entry
@@ -259,6 +260,14 @@ public struct LiteLLMEntry: Sendable {
     public let supportsResponseSchema: Bool
     public let supportsParallelToolCalls: Bool
     public let mode: String?
+    /// API endpoints this model supports (e.g. `["/v1/chat/completions"]`, `["/v1/realtime"]`).
+    public let supportedEndpoints: [String]?
+
+    /// Whether this model supports the standard chat completions endpoint.
+    public var supportsChatCompletions: Bool {
+        guard let endpoints = supportedEndpoints else { return true }
+        return endpoints.contains("/v1/chat/completions")
+    }
 
     /// Merges this LiteLLM entry's capabilities into an existing `ModelCapabilities`,
     /// filling in only fields that are currently `false`.

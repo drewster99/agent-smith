@@ -67,8 +67,8 @@ public actor AgentActor {
 
     /// Tracks consecutive LLM errors for exponential backoff.
     private var consecutiveErrors = 0
-    private static let maxConsecutiveErrors = 10
-    private static let maxBackoffSeconds: Double = 60
+    private static let maxConsecutiveErrors = 50
+    private static let maxBackoffSeconds: Double = 180
     private var maxToolCallsPerIteration: Int
 
     /// Per-turn LLM call log for per-turn inspection.
@@ -296,7 +296,7 @@ public actor AgentActor {
                 consecutiveErrors += 1
 
                 let backoff = min(
-                    pow(2.0, Double(min(consecutiveErrors - 1, 6))),
+                    pow(2.0, Double(min(consecutiveErrors - 1, 10))),
                     Self.maxBackoffSeconds
                 )
 

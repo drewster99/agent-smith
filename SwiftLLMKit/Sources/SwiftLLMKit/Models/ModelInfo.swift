@@ -27,6 +27,8 @@ public struct ModelInfo: Codable, Identifiable, Sendable, Equatable {
     public var inputCostPerMillionTokens: Double?
     /// Output cost in USD per million tokens.
     public var outputCostPerMillionTokens: Double?
+    /// Whether this model supports `/v1/chat/completions`. Defaults to `true` unless LiteLLM says otherwise.
+    public var supportsChatCompletions: Bool
 
     public init(
         providerID: String,
@@ -39,7 +41,8 @@ public struct ModelInfo: Codable, Identifiable, Sendable, Equatable {
         sizeLabel: String? = nil,
         quantizationLabel: String? = nil,
         inputCostPerMillionTokens: Double? = nil,
-        outputCostPerMillionTokens: Double? = nil
+        outputCostPerMillionTokens: Double? = nil,
+        supportsChatCompletions: Bool = true
     ) {
         self.providerID = providerID
         self.modelID = modelID
@@ -52,6 +55,7 @@ public struct ModelInfo: Codable, Identifiable, Sendable, Equatable {
         self.quantizationLabel = quantizationLabel
         self.inputCostPerMillionTokens = inputCostPerMillionTokens
         self.outputCostPerMillionTokens = outputCostPerMillionTokens
+        self.supportsChatCompletions = supportsChatCompletions
     }
 
     /// Whether the model was created/modified within the last 90 days.
