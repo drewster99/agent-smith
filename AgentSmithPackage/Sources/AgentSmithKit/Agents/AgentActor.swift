@@ -273,8 +273,18 @@ public actor AgentActor {
                     .map { $0.definition(for: configuration.role) }
                 toolContext.onProcessingStateChange(true)
                 defer { toolContext.onProcessingStateChange(false) }
+
+                // Inject per-turn task context for Smith so it always knows current task state.
+                var messagesForLLM = conversationHistory
+                if configuration.role == .smith {
+                    let taskSuffix = await buildTaskContextSuffix()
+                    if !taskSuffix.isEmpty {
+                        messagesForLLM.append(LLMMessage(role: .system, text: taskSuffix))
+                    }
+                }
+
                 let response = try await provider.send(
-                    messages: conversationHistory,
+                    messages: messagesForLLM,
                     tools: toolDefinitions
                 )
                 guard isRunning else { break }
@@ -296,7 +306,7 @@ public actor AgentActor {
                 consecutiveErrors += 1
 
                 let backoff = min(
-                    pow(2.0, Double(min(consecutiveErrors - 1, 10))),
+                    3.0 * pow(2.0, Double(min(consecutiveErrors - 1, 10))),
                     Self.maxBackoffSeconds
                 )
 
@@ -1131,5 +1141,32 @@ public actor AgentActor {
                 content: "Context pruned for \(roleName): removed \(prunedCount) old messages."
             ))
         }
+    }
+
+    // MARK: - Per-turn task context (Smith only)
+
+    /// Builds a system prompt suffix summarizing all active tasks for Smith's situational awareness.
+    private func buildTaskContextSuffix() async -> String {
+        let allTasks = await toolContext.taskStore.allTasks()
+        let activeTasks = allTasks.filter { $0.disposition == .active }
+        guard !activeTasks.isEmpty else {
+            return "[Current task state: No active tasks. Use list_tasks to check for tasks in other dispositions.]"
+        }
+
+        var lines: [String] = ["[Current task state as of this turn:]"]
+        for task in activeTasks {
+            var entry = "• \(task.title) (id: \(task.id.uuidString)) — status: \(task.status.rawValue)"
+            if !task.description.isEmpty {
+                let descPreview = task.description.prefix(200)
+                entry += "\n  Description: \(descPreview)\(task.description.count > 200 ? "…" : "")"
+            }
+            if let result = task.result, !result.isEmpty {
+                let resultPreview = result.prefix(200)
+                entry += "\n  Result: \(resultPreview)\(result.count > 200 ? "…" : "")"
+            }
+            lines.append(entry)
+        }
+        lines.append("Use list_tasks to fetch full details including complete descriptions and results.")
+        return lines.joined(separator: "\n")
     }
 }

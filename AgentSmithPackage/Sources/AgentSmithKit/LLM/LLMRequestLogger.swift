@@ -11,13 +11,13 @@ public enum LLMRequestLogger {
     /// Log all LLM requests/responses for Agent Smith.
     public static let logSmith = true
     /// Log all LLM requests/responses for Agent Brown.
-    public static let logBrown = false
+    public static let logBrown = true
     /// Log all LLM requests/responses for Agent Jones.
-    public static let logJones = false
+    public static let logJones = true
     /// Log model list fetches (provider API calls).
-    public static let logModelFetch = false
+    public static let logModelFetch = true
     /// Log LiteLLM metadata fetches.
-    public static let logLiteLLM = false
+    public static let logLiteLLM = true
 
     // MARK: - Log directory
 
