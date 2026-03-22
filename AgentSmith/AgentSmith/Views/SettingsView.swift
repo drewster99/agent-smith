@@ -202,32 +202,41 @@ struct SettingsView: View {
             agentAssignmentRow(
                 role: .smith,
                 label: "Agent Smith (Orchestrator)",
+                description: "Receives user requests, creates tasks, delegates work to Brown, and coordinates the overall workflow.",
                 color: AppColors.smithAgent
             )
             agentAssignmentRow(
                 role: .brown,
                 label: "Agent Brown (Executor)",
+                description: "Executes tasks assigned by Smith using shell commands, file operations, and other tools. All actions are reviewed by Jones.",
                 color: AppColors.brownAgent
             )
             agentAssignmentRow(
                 role: .jones,
                 label: "Agent Jones (Safety Monitor)",
+                description: "Reviews every tool call Brown attempts and approves, warns, or blocks based on safety analysis.",
                 color: AppColors.jonesAgent
             )
         }
     }
 
-    private func agentAssignmentRow(role: AgentRole, label: String, color: Color) -> some View {
+    private func agentAssignmentRow(role: AgentRole, label: String, description: String, color: Color) -> some View {
         let currentConfigID = viewModel.agentAssignments[role]
         let currentConfig = currentConfigID.flatMap { id in
             viewModel.llmKit.configurations.first { $0.id == id }
         }
 
         return GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 Label(label, systemImage: "person.circle")
                     .font(AppFonts.sectionHeader)
                     .foregroundStyle(color)
+
+                Text(description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Divider()
 
                 HStack {
                     Picker("Configuration", selection: Binding(
@@ -261,23 +270,19 @@ struct SettingsView: View {
                     )
                     HStack(spacing: 8) {
                         Text(config.modelID)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                         Text("temp \(String(format: "%.1f", config.temperature))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                         Text("max \(formatTokenCount(config.maxOutputTokens))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                         if let info = modelInfo {
                             pricingLabel(for: info)
                         }
                     }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
             }
-            .padding(4)
+            .padding(6)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity)
     }
 
     /// Compact pricing label showing input/output cost per million tokens.
