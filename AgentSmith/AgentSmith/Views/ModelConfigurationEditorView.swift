@@ -104,12 +104,18 @@ struct ModelConfigurationEditorView: View {
                 TextField("4096", value: $maxOutputTokens, format: .number)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 120)
+                    .onChange(of: maxOutputTokens) { _, newValue in
+                        maxOutputTokens = max(1, newValue)
+                    }
             }
 
             LabeledContent("Max Context Tokens") {
                 TextField("128000", value: $maxContextTokens, format: .number)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 120)
+                    .onChange(of: maxContextTokens) { _, newValue in
+                        maxContextTokens = max(1, newValue)
+                    }
             }
         }
     }
@@ -121,6 +127,9 @@ struct ModelConfigurationEditorView: View {
                     TextField("0 = disabled", value: $thinkingBudget, format: .number)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 120)
+                        .onChange(of: thinkingBudget) { _, newValue in
+                            thinkingBudget = max(0, newValue)
+                        }
 
                     Button("1K") { thinkingBudget = 1_024 }
                         .buttonStyle(.bordered)
@@ -262,6 +271,7 @@ struct ModelConfigurationEditorView: View {
     }
 
     private func save() {
+        let effectiveThinkingBudget: Int? = (selectedProviderType == .anthropic && thinkingBudget > 0) ? thinkingBudget : nil
         let config = ModelConfiguration(
             id: existingConfig?.id ?? UUID(),
             name: name,
@@ -270,7 +280,7 @@ struct ModelConfigurationEditorView: View {
             temperature: temperature,
             maxOutputTokens: maxOutputTokens,
             maxContextTokens: maxContextTokens,
-            thinkingBudget: thinkingBudget > 0 ? thinkingBudget : nil,
+            thinkingBudget: effectiveThinkingBudget,
             streaming: streaming
         )
         onSave(config)

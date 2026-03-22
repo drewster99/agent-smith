@@ -15,6 +15,8 @@ final class AppViewModel {
     var persistedHistoryCount = 0
     /// Set when a task action (archive, delete) is blocked; drives the error alert.
     var taskActionError: String? = nil
+    /// Set when a load/decode operation fails during startup; drives the error alert.
+    var startupError: String?
     var isRunning = false
     var isAborted = false
     var abortReason = ""
@@ -84,7 +86,7 @@ final class AppViewModel {
             if llmKit.providers.isEmpty {
                 for provider in bundled.providers {
                     let apiKey = bundled.providerAPIKeys[provider.id] ?? ""
-                    llmKit.addProvider(provider, apiKey: apiKey)
+                    try llmKit.addProvider(provider, apiKey: apiKey)
                 }
                 for config in bundled.modelConfigurations {
                     llmKit.addConfiguration(config)
@@ -92,7 +94,9 @@ final class AppViewModel {
                 agentAssignments = bundled.agentAssignments
             }
         } catch {
-            print("[AgentSmith] No bundled defaults (using hardcoded): \(error)")
+            let msg = "No bundled defaults (using hardcoded): \(error)"
+            print("[AgentSmith] \(msg)")
+            startupError = msg
         }
 
         // Load persisted agent assignments
@@ -100,7 +104,9 @@ final class AppViewModel {
             do {
                 agentAssignments = try JSONDecoder().decode([AgentRole: UUID].self, from: saved)
             } catch {
-                print("[AgentSmith] Failed to decode agent assignments: \(error)")
+                let msg = "Failed to decode agent assignments: \(error)"
+                print("[AgentSmith] \(msg)")
+                startupError = msg
             }
         }
 
@@ -109,7 +115,9 @@ final class AppViewModel {
             allPersistedMessages = savedMessages
             persistedHistoryCount = savedMessages.count
         } catch {
-            print("[AgentSmith] Failed to load channel log: \(error)")
+            let msg = "Failed to load channel log: \(error)"
+            print("[AgentSmith] \(msg)")
+            startupError = msg
         }
 
         do {
@@ -143,7 +151,9 @@ final class AppViewModel {
                 }
             }
         } catch {
-            print("[AgentSmith] Failed to load tasks: \(error)")
+            let msg = "Failed to load tasks: \(error)"
+            print("[AgentSmith] \(msg)")
+            startupError = msg
         }
 
         // Refresh model catalog (YYYYMMDD-gated)
@@ -169,7 +179,7 @@ final class AppViewModel {
                 temperature: modelConfig.temperature,
                 maxTokens: modelConfig.maxOutputTokens,
                 contextWindowSize: modelConfig.maxContextTokens,
-                providerType: provider.apiType.toLegacy,
+                providerType: provider.apiType,
                 thinkingBudget: modelConfig.thinkingBudget
             )
         }
@@ -324,14 +334,16 @@ final class AppViewModel {
     // MARK: - Task actions
 
     func archiveTask(id: UUID) async {
-        let succeeded = await taskStore?.archive(id: id) ?? true
+        guard let taskStore else { return }
+        let succeeded = await taskStore.archive(id: id)
         if !succeeded {
             taskActionError = "This task is in progress and cannot be archived."
         }
     }
 
     func deleteTask(id: UUID) async {
-        let succeeded = await taskStore?.softDelete(id: id) ?? true
+        guard let taskStore else { return }
+        let succeeded = await taskStore.softDelete(id: id)
         if !succeeded {
             taskActionError = "This task is in progress and cannot be deleted."
         }
@@ -346,7 +358,8 @@ final class AppViewModel {
     }
 
     func permanentlyDeleteTask(id: UUID) async {
-        let succeeded = await taskStore?.permanentlyDelete(id: id) ?? true
+        guard let taskStore else { return }
+        let succeeded = await taskStore.permanentlyDelete(id: id)
         if !succeeded {
             taskActionError = "This task is in progress and cannot be permanently deleted."
         }
@@ -492,6 +505,16 @@ final class AppViewModel {
     }
 
     // MARK: - Persistence
+
+    /// Whether all agent roles have valid assigned configurations.
+    var allAgentConfigsValid: Bool {
+        AgentRole.allCases.allSatisfy { role in
+            guard let configID = agentAssignments[role],
+                  let config = llmKit.configurations.first(where: { $0.id == configID }),
+                  config.isValid else { return false }
+            return true
+        }
+    }
 
     /// Saves agent assignments to UserDefaults.
     func persistAgentAssignments() {

@@ -1,20 +1,5 @@
 import Foundation
-
-/// Selects which LLM API protocol to use for a given endpoint.
-public enum ProviderType: String, Codable, Sendable, CaseIterable, Equatable {
-    case anthropic
-    case openAICompatible
-    case ollama
-
-    /// Human-readable name for display.
-    public var displayName: String {
-        switch self {
-        case .anthropic: return "Anthropic"
-        case .openAICompatible: return "OpenAI Compatible"
-        case .ollama: return "Ollama"
-        }
-    }
-}
+import SwiftLLMKit
 
 /// Configuration for connecting to an LLM endpoint.
 public struct LLMConfiguration: Codable, Sendable, Equatable {

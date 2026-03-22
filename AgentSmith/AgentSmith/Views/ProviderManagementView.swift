@@ -175,6 +175,14 @@ private struct ProviderEditorSheet: View {
         .onChange(of: state.apiType) { _, newType in
             applyDefaultEndpoint(for: newType)
         }
+        .alert("Save Error", isPresented: Binding(
+            get: { saveError != nil },
+            set: { if !$0 { saveError = nil } }
+        ), actions: {
+            Button("OK") { saveError = nil }
+        }, message: {
+            Text(saveError ?? "")
+        })
     }
 
     private var endpointPresetMenu: some View {
@@ -226,6 +234,8 @@ private struct ProviderEditorSheet: View {
         }
     }
 
+    @State private var saveError: String?
+
     private func save() {
         guard let endpoint = URL(string: state.endpointString) else { return }
         let provider = ModelProvider(
@@ -234,12 +244,16 @@ private struct ProviderEditorSheet: View {
             apiType: state.apiType,
             endpoint: endpoint
         )
-        switch state.mode {
-        case .add:
-            llmKit.addProvider(provider, apiKey: state.apiKey)
-        case .edit:
-            llmKit.updateProvider(provider, apiKey: state.apiKey)
+        do {
+            switch state.mode {
+            case .add:
+                try llmKit.addProvider(provider, apiKey: state.apiKey)
+            case .edit:
+                try llmKit.updateProvider(provider, apiKey: state.apiKey)
+            }
+            onDismiss()
+        } catch {
+            saveError = error.localizedDescription
         }
-        onDismiss()
     }
 }

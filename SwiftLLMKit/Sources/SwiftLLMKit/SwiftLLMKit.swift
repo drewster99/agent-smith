@@ -21,7 +21,7 @@ private let logger = Logger(subsystem: "SwiftLLMKit", category: "SwiftLLMKit")
 /// ```
 @Observable
 @MainActor
-public final class LLMKitManager: Sendable {
+public final class LLMKitManager {
     // MARK: - Published State
 
     /// All registered providers.
@@ -32,6 +32,8 @@ public final class LLMKitManager: Sendable {
     public private(set) var configurations: [ModelConfiguration] = []
     /// Whether a model refresh is in progress.
     public private(set) var isRefreshing: Bool = false
+    /// Most recent persistence error, if any. Observable so UI can show an alert/banner.
+    public var persistenceError: String?
 
     // MARK: - Services
 
@@ -68,72 +70,82 @@ public final class LLMKitManager: Sendable {
 
     /// Loads providers, configurations, and cached models from disk.
     public func load() {
+        persistenceError = nil
         do {
             providers = try storage.loadProviders()
         } catch {
-            logger.error("Failed to load providers: \(error.localizedDescription, privacy: .public)")
+            let msg = "Failed to load providers: \(error.localizedDescription)"
+            logger.error("\(msg, privacy: .public)")
+            persistenceError = msg
         }
         do {
             configurations = try storage.loadConfigurations()
         } catch {
-            logger.error("Failed to load configurations: \(error.localizedDescription, privacy: .public)")
+            let msg = "Failed to load configurations: \(error.localizedDescription)"
+            logger.error("\(msg, privacy: .public)")
+            persistenceError = msg
         }
         do {
             models = try storage.loadModelCatalog()
         } catch {
-            logger.error("Failed to load model catalog: \(error.localizedDescription, privacy: .public)")
+            let msg = "Failed to load model catalog: \(error.localizedDescription)"
+            logger.error("\(msg, privacy: .public)")
+            persistenceError = msg
         }
     }
 
     /// Persists current state to disk.
     public func save() {
+        persistenceError = nil
         do {
             try storage.saveProviders(providers)
         } catch {
-            logger.error("Failed to save providers: \(error.localizedDescription, privacy: .public)")
+            let msg = "Failed to save providers: \(error.localizedDescription)"
+            logger.error("\(msg, privacy: .public)")
+            persistenceError = msg
         }
         do {
             try storage.saveConfigurations(configurations)
         } catch {
-            logger.error("Failed to save configurations: \(error.localizedDescription, privacy: .public)")
+            let msg = "Failed to save configurations: \(error.localizedDescription)"
+            logger.error("\(msg, privacy: .public)")
+            persistenceError = msg
         }
         do {
             try storage.saveModelCatalog(models)
         } catch {
-            logger.error("Failed to save model catalog: \(error.localizedDescription, privacy: .public)")
+            let msg = "Failed to save model catalog: \(error.localizedDescription)"
+            logger.error("\(msg, privacy: .public)")
+            persistenceError = msg
         }
     }
 
     // MARK: - Provider CRUD
 
     /// Adds a new provider and stores its API key in Keychain.
-    public func addProvider(_ provider: ModelProvider, apiKey: String) {
-        providers.append(provider)
+    ///
+    /// - Throws: If the Keychain operation fails. The provider is not persisted on failure.
+    public func addProvider(_ provider: ModelProvider, apiKey: String) throws {
         if !apiKey.isEmpty {
-            do {
-                try keychain.save(apiKey: apiKey, forProviderID: provider.id)
-            } catch {
-                logger.error("Failed to save API key: \(error.localizedDescription, privacy: .public)")
-            }
+            try keychain.save(apiKey: apiKey, forProviderID: provider.id)
         }
+        providers.append(provider)
         saveProviders()
     }
 
     /// Updates an existing provider. If `apiKey` is non-nil, updates the Keychain.
-    public func updateProvider(_ provider: ModelProvider, apiKey: String?) {
+    ///
+    /// - Throws: If the Keychain operation fails. The provider is not updated on failure.
+    public func updateProvider(_ provider: ModelProvider, apiKey: String?) throws {
         guard let index = providers.firstIndex(where: { $0.id == provider.id }) else { return }
-        providers[index] = provider
         if let apiKey {
-            do {
-                if apiKey.isEmpty {
-                    try keychain.delete(forProviderID: provider.id)
-                } else {
-                    try keychain.save(apiKey: apiKey, forProviderID: provider.id)
-                }
-            } catch {
-                logger.error("Failed to update API key: \(error.localizedDescription, privacy: .public)")
+            if apiKey.isEmpty {
+                try keychain.delete(forProviderID: provider.id)
+            } else {
+                try keychain.save(apiKey: apiKey, forProviderID: provider.id)
             }
         }
+        providers[index] = provider
         saveProviders()
     }
 
@@ -296,9 +308,23 @@ public final class LLMKitManager: Sendable {
         let config = configurations[index]
 
         // Check provider exists
-        guard providers.contains(where: { $0.id == config.providerID }) else {
+        guard let provider = providers.first(where: { $0.id == config.providerID }) else {
             configurations[index].isValid = false
             configurations[index].validationError = "Provider '\(config.providerID)' not found"
+            return
+        }
+
+        // Temperature bounds
+        guard (0...2).contains(config.temperature) else {
+            configurations[index].isValid = false
+            configurations[index].validationError = "Temperature must be between 0 and 2"
+            return
+        }
+
+        // Thinking budget is Anthropic-only
+        if let budget = config.thinkingBudget, budget > 0, provider.apiType != .anthropic {
+            configurations[index].isValid = false
+            configurations[index].validationError = "Thinking budget is only supported for Anthropic providers"
             return
         }
 
@@ -317,8 +343,12 @@ public final class LLMKitManager: Sendable {
                 configurations[index].validationError = "Max output tokens (\(config.maxOutputTokens)) exceeds model limit (\(modelMax))"
                 return
             }
+        } else {
+            // Models not yet loaded — allow starting but warn the user
+            configurations[index].isValid = true
+            configurations[index].validationError = "Models not yet loaded — will re-validate after refresh"
+            return
         }
-        // If no models fetched yet for this provider, don't invalidate — models may load later
 
         configurations[index].isValid = true
         configurations[index].validationError = nil
@@ -408,24 +438,33 @@ public final class LLMKitManager: Sendable {
     private func saveProviders() {
         do {
             try storage.saveProviders(providers)
+            persistenceError = nil
         } catch {
-            logger.error("Failed to save providers: \(error.localizedDescription, privacy: .public)")
+            let msg = "Failed to save providers: \(error.localizedDescription)"
+            logger.error("\(msg, privacy: .public)")
+            persistenceError = msg
         }
     }
 
     private func saveConfigurations() {
         do {
             try storage.saveConfigurations(configurations)
+            persistenceError = nil
         } catch {
-            logger.error("Failed to save configurations: \(error.localizedDescription, privacy: .public)")
+            let msg = "Failed to save configurations: \(error.localizedDescription)"
+            logger.error("\(msg, privacy: .public)")
+            persistenceError = msg
         }
     }
 
     private func saveModelCatalog() {
         do {
             try storage.saveModelCatalog(models)
+            persistenceError = nil
         } catch {
-            logger.error("Failed to save model catalog: \(error.localizedDescription, privacy: .public)")
+            let msg = "Failed to save model catalog: \(error.localizedDescription)"
+            logger.error("\(msg, privacy: .public)")
+            persistenceError = msg
         }
     }
 }

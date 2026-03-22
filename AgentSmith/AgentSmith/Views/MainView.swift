@@ -28,7 +28,7 @@ struct MainView: View {
                         reason: viewModel.abortReason,
                         onReset: {
                             viewModel.resetAbort()
-                            if allAgentConfigsValid {
+                            if viewModel.allAgentConfigsValid {
                                 Task { await viewModel.start() }
                             } else {
                                 showValidationSheet = true
@@ -97,7 +97,7 @@ struct MainView: View {
                 } else if viewModel.isAborted {
                     Button("Reset & Restart", systemImage: "arrow.clockwise.circle.fill") {
                         viewModel.resetAbort()
-                        if allAgentConfigsValid {
+                        if viewModel.allAgentConfigsValid {
                             Task { await viewModel.start() }
                         } else {
                             showValidationSheet = true
@@ -106,7 +106,7 @@ struct MainView: View {
                     .foregroundStyle(.orange)
                 } else {
                     Button("Start", systemImage: "play.circle.fill") {
-                        if allAgentConfigsValid {
+                        if viewModel.allAgentConfigsValid {
                             Task { await viewModel.start() }
                         } else {
                             showValidationSheet = true
@@ -155,17 +155,6 @@ struct MainView: View {
         }
     }
 
-    /// Whether all agent roles have valid assigned configurations.
-    private var allAgentConfigsValid: Bool {
-        for role in AgentRole.allCases {
-            guard let configID = viewModel.agentAssignments[role],
-                  let config = viewModel.llmKit.configurations.first(where: { $0.id == configID }),
-                  config.isValid else {
-                return false
-            }
-        }
-        return true
-    }
 }
 
 /// Banner displayed when an agent triggers an emergency abort.

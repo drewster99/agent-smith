@@ -5,6 +5,11 @@ import Foundation
 /// SwiftLLMKit sets the URL, auth headers, and base body parameters.
 /// The consuming app adds `messages`, `tools`, `system`, etc. to `baseBody`
 /// and serializes it as the request's HTTP body.
+///
+/// - Note: Marked `@unchecked Sendable` because `baseBody` uses `[String: Any]`.
+///   This is safe because all creation and consumption happens on `@MainActor`
+///   (`LLMKitManager.prepareRequest()` → `AppViewModel`). The struct is a
+///   short-lived transfer object that does not cross isolation boundaries.
 public struct PreparedRequest: @unchecked Sendable {
     /// URLRequest with URL, HTTP method, and auth headers already configured.
     public let urlRequest: URLRequest

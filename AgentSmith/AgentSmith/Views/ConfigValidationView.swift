@@ -41,15 +41,14 @@ struct ConfigValidationView: View {
         .frame(minWidth: 400)
     }
 
+    /// Whether all agent roles have valid assigned configurations.
     private var allValid: Bool {
-        for role in AgentRole.allCases {
+        AgentRole.allCases.allSatisfy { role in
             guard let configID = agentAssignments[role],
                   let config = llmKit.configurations.first(where: { $0.id == configID }),
-                  config.isValid else {
-                return false
-            }
+                  config.isValid else { return false }
+            return true
         }
-        return true
     }
 
     private func agentRow(role: AgentRole, label: String, color: Color) -> some View {

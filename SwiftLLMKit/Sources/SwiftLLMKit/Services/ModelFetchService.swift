@@ -56,7 +56,7 @@ public struct ModelFetchService: Sendable {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             let body = String(data: data, encoding: .utf8) ?? "(non-utf8)"
-            logger.error("Model fetch failed: HTTP \(code, privacy: .public) body=\(body, privacy: .public)")
+            logger.error("Model fetch failed: HTTP \(code, privacy: .public) body=\(body, privacy: .private)")
             throw ModelFetchError.httpError(statusCode: code)
         }
 
