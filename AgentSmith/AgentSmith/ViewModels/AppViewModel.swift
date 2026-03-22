@@ -19,6 +19,8 @@ final class AppViewModel {
     var startupError: String?
     /// Set to true after `loadPersistedState()` finishes. Drives the startup validation check.
     var hasLoadedPersistedState = false
+    /// The user's preferred nickname, shown in the UI and injected into system prompts.
+    var nickname: String = ""
     var isRunning = false
     var isAborted = false
     var abortReason = ""
@@ -71,6 +73,10 @@ final class AppViewModel {
 
     /// Loads persisted messages, tasks, and LLM configs from disk. Call on app launch.
     func loadPersistedState() async {
+        // Load nickname early so display names and prompts pick it up.
+        nickname = UserDefaults.standard.string(forKey: "userNickname") ?? ""
+        AgentRole.userNickname = nickname
+
         // Configure verbose logging for SwiftLLMKit fetch services
         ModelFetchService.verboseLogging = LLMRequestLogger.logModelFetch
         ModelMetadataService.verboseLogging = LLMRequestLogger.logLiteLLM
@@ -522,6 +528,12 @@ final class AppViewModel {
                   config.isValid else { return false }
             return true
         }
+    }
+
+    /// Saves the nickname to UserDefaults and syncs it to the static used by system prompts.
+    func persistNickname() {
+        UserDefaults.standard.set(nickname, forKey: "userNickname")
+        AgentRole.userNickname = nickname
     }
 
     /// Saves agent assignments to UserDefaults.

@@ -30,7 +30,8 @@ public struct CreateTaskTool: AgentTool {
             throw ToolCallError.missingRequiredArgument("description")
         }
 
-        let task = await context.taskStore.addTask(title: title, description: description)
+        let fullDescription = description + "\n\nReport the detailed results to the user using `task_complete`."
+        let task = await context.taskStore.addTask(title: title, description: fullDescription)
 
         await context.channel.post(ChannelMessage(
             sender: .system,

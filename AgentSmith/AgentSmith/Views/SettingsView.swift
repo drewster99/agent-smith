@@ -13,6 +13,13 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
+            Tab("Account", systemImage: "person.crop.circle") {
+                ScrollView {
+                    accountTab
+                        .padding()
+                }
+            }
+
             Tab("Providers", systemImage: "server.rack") {
                 ScrollView {
                     ProviderManagementView(llmKit: viewModel.llmKit)
@@ -46,8 +53,30 @@ struct SettingsView: View {
             availableVoices = AVSpeechSynthesisVoice.speechVoices()
                 .sorted { $0.name < $1.name }
         }
+        .onChange(of: viewModel.nickname) {
+            viewModel.persistNickname()
+        }
         .onChange(of: viewModel.agentAssignments) {
             viewModel.persistAgentAssignments()
+        }
+    }
+
+    // MARK: - Account Tab
+
+    private var accountTab: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Account")
+                .font(AppFonts.sectionHeader)
+
+            LabeledContent("What should I call you?") {
+                TextField("Your name or nickname", text: $viewModel.nickname)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 250)
+            }
+
+            Text("This name is shown in the channel log and included in agent system prompts.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -240,10 +269,10 @@ struct SettingsView: View {
 
                 HStack {
                     Picker("Configuration", selection: Binding(
-                        get: { viewModel.agentAssignments[role] ?? UUID() },
+                        get: { viewModel.agentAssignments[role] },
                         set: { viewModel.agentAssignments[role] = $0 }
                     )) {
-                        Text("None").tag(UUID())
+                        Text("None").tag(UUID?.none)
                         ForEach(viewModel.llmKit.configurations) { config in
                             HStack {
                                 Text(config.name)
@@ -251,7 +280,7 @@ struct SettingsView: View {
                                     Image(systemName: "exclamationmark.triangle.fill")
                                 }
                             }
-                            .tag(config.id)
+                            .tag(Optional(config.id))
                         }
                     }
                     .labelsHidden()
@@ -307,7 +336,7 @@ struct SettingsView: View {
             // User
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
-                    Label("User", systemImage: "person.circle")
+                    Label(viewModel.nickname.isEmpty ? "User" : viewModel.nickname, systemImage: "person.circle")
                         .font(AppFonts.sectionHeader)
                         .foregroundStyle(.blue)
 

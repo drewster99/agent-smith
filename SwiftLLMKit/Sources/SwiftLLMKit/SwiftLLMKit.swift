@@ -96,28 +96,29 @@ public final class LLMKitManager {
 
     /// Persists current state to disk.
     public func save() {
-        persistenceError = nil
+        var errors: [String] = []
         do {
             try storage.saveProviders(providers)
         } catch {
             let msg = "Failed to save providers: \(error.localizedDescription)"
             logger.error("\(msg, privacy: .public)")
-            persistenceError = msg
+            errors.append(msg)
         }
         do {
             try storage.saveConfigurations(configurations)
         } catch {
             let msg = "Failed to save configurations: \(error.localizedDescription)"
             logger.error("\(msg, privacy: .public)")
-            persistenceError = msg
+            errors.append(msg)
         }
         do {
             try storage.saveModelCatalog(models)
         } catch {
             let msg = "Failed to save model catalog: \(error.localizedDescription)"
             logger.error("\(msg, privacy: .public)")
-            persistenceError = msg
+            errors.append(msg)
         }
+        persistenceError = errors.isEmpty ? nil : errors.joined(separator: "; ")
     }
 
     // MARK: - Provider CRUD
@@ -183,14 +184,14 @@ public final class LLMKitManager {
     /// Adds a new model configuration.
     public func addConfiguration(_ config: ModelConfiguration) {
         configurations.append(config)
-        saveConfigurations()
+        validateConfigurations()
     }
 
     /// Updates an existing model configuration.
     public func updateConfiguration(_ config: ModelConfiguration) {
         guard let index = configurations.firstIndex(where: { $0.id == config.id }) else { return }
         configurations[index] = config
-        saveConfigurations()
+        validateConfigurations()
     }
 
     /// Deletes a model configuration.
@@ -214,7 +215,7 @@ public final class LLMKitManager {
             streaming: original.streaming
         )
         configurations.append(newConfig)
-        saveConfigurations()
+        validateConfigurations()
         return newConfig
     }
 

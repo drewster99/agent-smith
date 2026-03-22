@@ -226,8 +226,6 @@ public func formatTokenCount(_ count: Int) -> String {
 public func formatCostPerMillion(_ cost: Double) -> String {
     if cost < 0.01 {
         return String(format: "$%.4f", cost)
-    } else if cost < 1 {
-        return String(format: "$%.2f", cost)
     } else {
         return String(format: "$%.2f", cost)
     }

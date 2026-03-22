@@ -5,11 +5,13 @@ public enum MessageRecipient: Sendable {
     case agent(AgentRole)
     case user
 
-    /// Display name shown in the channel log (e.g. "Smith", "User").
+    /// Display name shown in the channel log (e.g. "Smith", or the user's nickname).
     public var displayName: String {
         switch self {
         case .agent(let role): return role.displayName
-        case .user: return "User"
+        case .user:
+            let nickname = AgentRole.userNickname
+            return nickname.isEmpty ? "User" : nickname
         }
     }
 }
@@ -109,7 +111,9 @@ public struct ChannelMessage: Identifiable, Codable, Sendable {
         public var displayName: String {
             switch self {
             case .agent(let role): return role.displayName
-            case .user: return "User"
+            case .user:
+                let nickname = AgentRole.userNickname
+                return nickname.isEmpty ? "User" : nickname
             case .system: return "System"
             }
         }

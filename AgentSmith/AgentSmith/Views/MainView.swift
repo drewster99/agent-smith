@@ -6,6 +6,7 @@ import AgentSmithKit
 struct MainView: View {
     @Bindable var viewModel: AppViewModel
     @State private var showValidationSheet = false
+    @State private var showWelcomeSheet = false
 
     var body: some View {
         NavigationSplitView {
@@ -140,14 +141,25 @@ struct MainView: View {
         }
         .navigationTitle("Agent Smith")
         .onChange(of: viewModel.hasLoadedPersistedState) { _, loaded in
-            if loaded && !viewModel.allAgentConfigsValid {
+            guard loaded else { return }
+            if viewModel.nickname.isEmpty {
+                showWelcomeSheet = true
+            } else if !viewModel.allAgentConfigsValid {
                 showValidationSheet = true
             }
         }
+        .sheet(isPresented: $showWelcomeSheet, onDismiss: {
+            if !viewModel.allAgentConfigsValid {
+                showValidationSheet = true
+            }
+        }) {
+            WelcomeSheet(viewModel: viewModel, onDismiss: {
+                showWelcomeSheet = false
+            })
+        }
         .sheet(isPresented: $showValidationSheet) {
             ConfigValidationView(
-                llmKit: viewModel.llmKit,
-                agentAssignments: viewModel.agentAssignments,
+                viewModel: viewModel,
                 onStart: {
                     showValidationSheet = false
                     Task { await viewModel.start() }
@@ -203,5 +215,46 @@ private struct AbortBanner: View {
         }
         .padding(10)
         .background(.red.gradient)
+    }
+}
+
+/// First-launch sheet asking the user for their preferred name.
+private struct WelcomeSheet: View {
+    @Bindable var viewModel: AppViewModel
+    let onDismiss: () -> Void
+    @State private var nameInput = ""
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "hand.wave.fill")
+                .font(.system(size: 40))
+                .foregroundStyle(.blue)
+
+            Text("Welcome to Agent Smith")
+                .font(.title2.bold())
+
+            Text("What should I call you?")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            TextField("Your name or nickname", text: $nameInput)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 250)
+                .onSubmit { save() }
+
+            Button("Continue") { save() }
+                .keyboardShortcut(.defaultAction)
+                .disabled(nameInput.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+        .padding(30)
+        .frame(minWidth: 350)
+    }
+
+    private func save() {
+        let trimmed = nameInput.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        viewModel.nickname = trimmed
+        viewModel.persistNickname()
+        onDismiss()
     }
 }

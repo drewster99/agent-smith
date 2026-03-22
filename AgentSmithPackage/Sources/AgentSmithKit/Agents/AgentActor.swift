@@ -1145,7 +1145,8 @@ public actor AgentActor {
 
     // MARK: - Per-turn task context (Smith only)
 
-    /// Builds a system prompt suffix summarizing all active tasks for Smith's situational awareness.
+    /// Builds a system prompt suffix summarizing active tasks for Smith's situational awareness.
+    /// Includes up to 5 in-progress tasks with previews; remaining tasks are summarized as a count.
     private func buildTaskContextSuffix() async -> String {
         let allTasks = await toolContext.taskStore.allTasks()
         let activeTasks = allTasks.filter { $0.disposition == .active }
@@ -1153,8 +1154,9 @@ public actor AgentActor {
             return "[Current task state: No active tasks. Use list_tasks to check for tasks in other dispositions.]"
         }
 
+        let maxInlined = 5
         var lines: [String] = ["[Current task state as of this turn:]"]
-        for task in activeTasks {
+        for task in activeTasks.prefix(maxInlined) {
             var entry = "• \(task.title) (id: \(task.id.uuidString)) — status: \(task.status.rawValue)"
             if !task.description.isEmpty {
                 let descPreview = task.description.prefix(200)
@@ -1165,6 +1167,10 @@ public actor AgentActor {
                 entry += "\n  Result: \(resultPreview)\(result.count > 200 ? "…" : "")"
             }
             lines.append(entry)
+        }
+        let remaining = activeTasks.count - maxInlined
+        if remaining > 0 {
+            lines.append("…plus \(remaining) more active task\(remaining == 1 ? "" : "s"). Use list_tasks to fetch additional details.")
         }
         lines.append("Use list_tasks to fetch full details including complete descriptions and results.")
         return lines.joined(separator: "\n")

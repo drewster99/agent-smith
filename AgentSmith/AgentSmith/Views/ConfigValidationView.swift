@@ -4,8 +4,7 @@ import AgentSmithKit
 
 /// Startup gate that validates all agent configurations before allowing the system to start.
 struct ConfigValidationView: View {
-    let llmKit: LLMKitManager
-    let agentAssignments: [AgentRole: UUID]
+    let viewModel: AppViewModel
     let onStart: () -> Void
     let onOpenSettings: () -> Void
 
@@ -33,7 +32,7 @@ struct ConfigValidationView: View {
                 Button("Open Settings") { onOpenSettings() }
                 Button("Start") { onStart() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(!allValid)
+                    .disabled(!viewModel.allAgentConfigsValid)
             }
             .padding(.top, 8)
         }
@@ -41,19 +40,9 @@ struct ConfigValidationView: View {
         .frame(minWidth: 400)
     }
 
-    /// Whether all agent roles have valid assigned configurations.
-    private var allValid: Bool {
-        AgentRole.allCases.allSatisfy { role in
-            guard let configID = agentAssignments[role],
-                  let config = llmKit.configurations.first(where: { $0.id == configID }),
-                  config.isValid else { return false }
-            return true
-        }
-    }
-
     private func agentRow(role: AgentRole, label: String, color: Color) -> some View {
-        let configID = agentAssignments[role]
-        let config = configID.flatMap { id in llmKit.configurations.first { $0.id == id } }
+        let configID = viewModel.agentAssignments[role]
+        let config = configID.flatMap { id in viewModel.llmKit.configurations.first { $0.id == id } }
 
         return GroupBox {
             HStack {

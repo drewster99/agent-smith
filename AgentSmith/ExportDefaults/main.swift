@@ -36,7 +36,7 @@ func readString(_ key: String) -> String {
 
 // Agent assignments
 var agentAssignments: [AgentRole: UUID] = [:]
-if let data = UserDefaults.standard.data(forKey: "agentAssignments") {
+if let data = ud.data(forKey: "agentAssignments") {
     do {
         agentAssignments = try JSONDecoder().decode([AgentRole: UUID].self, from: data)
     } catch {
