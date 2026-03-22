@@ -23,6 +23,10 @@ public struct ModelInfo: Codable, Identifiable, Sendable, Equatable {
     public var sizeLabel: String?
     /// Quantization level, e.g. "Q4_K_M" (Ollama).
     public var quantizationLabel: String?
+    /// Input cost in USD per million tokens.
+    public var inputCostPerMillionTokens: Double?
+    /// Output cost in USD per million tokens.
+    public var outputCostPerMillionTokens: Double?
 
     public init(
         providerID: String,
@@ -33,7 +37,9 @@ public struct ModelInfo: Codable, Identifiable, Sendable, Equatable {
         maxOutputTokens: Int? = nil,
         capabilities: ModelCapabilities = ModelCapabilities(),
         sizeLabel: String? = nil,
-        quantizationLabel: String? = nil
+        quantizationLabel: String? = nil,
+        inputCostPerMillionTokens: Double? = nil,
+        outputCostPerMillionTokens: Double? = nil
     ) {
         self.providerID = providerID
         self.modelID = modelID
@@ -44,6 +50,8 @@ public struct ModelInfo: Codable, Identifiable, Sendable, Equatable {
         self.capabilities = capabilities
         self.sizeLabel = sizeLabel
         self.quantizationLabel = quantizationLabel
+        self.inputCostPerMillionTokens = inputCostPerMillionTokens
+        self.outputCostPerMillionTokens = outputCostPerMillionTokens
     }
 
     /// Whether the model was created/modified within the last 90 days.

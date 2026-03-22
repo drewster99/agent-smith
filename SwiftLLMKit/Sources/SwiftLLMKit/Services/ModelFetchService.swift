@@ -179,6 +179,17 @@ public func formatTokenCount(_ count: Int) -> String {
     return "\(count)"
 }
 
+/// Formats a per-million-token cost as a compact dollar string, e.g. "$3.00", "$0.28".
+public func formatCostPerMillion(_ cost: Double) -> String {
+    if cost < 0.01 {
+        return String(format: "$%.4f", cost)
+    } else if cost < 1 {
+        return String(format: "$%.2f", cost)
+    } else {
+        return String(format: "$%.2f", cost)
+    }
+}
+
 // MARK: - Errors
 
 /// Errors from model list fetching.

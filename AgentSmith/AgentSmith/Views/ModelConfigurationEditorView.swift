@@ -200,6 +200,11 @@ struct ModelConfigurationEditorView: View {
                         Text(model.capabilities.enabledLabels.joined(separator: ", "))
                             .foregroundStyle(.secondary)
                     }
+                    if let inCost = model.inputCostPerMillionTokens,
+                       let outCost = model.outputCostPerMillionTokens {
+                        Text("\(formatCostPerMillion(inCost))/\(formatCostPerMillion(outCost)) per M")
+                            .foregroundStyle(.green)
+                    }
                 }
                 .font(.caption)
             }
@@ -239,6 +244,15 @@ struct ModelConfigurationEditorView: View {
                             .background(.quaternary)
                             .clipShape(RoundedRectangle(cornerRadius: 3))
                     }
+                }
+            }
+            if let inCost = info.inputCostPerMillionTokens,
+               let outCost = info.outputCostPerMillionTokens {
+                HStack(spacing: 2) {
+                    Text("Cost:")
+                        .foregroundStyle(.secondary)
+                    Text("\(formatCostPerMillion(inCost)) in / \(formatCostPerMillion(outCost)) out per M")
+                        .foregroundStyle(.green)
                 }
             }
         }

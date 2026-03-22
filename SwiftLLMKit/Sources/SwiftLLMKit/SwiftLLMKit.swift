@@ -274,6 +274,12 @@ public final class LLMKitManager {
                         if providerModels[i].maxOutputTokens == nil {
                             providerModels[i].maxOutputTokens = litellm.maxOutputTokens
                         }
+                        if let cost = litellm.inputCostPerToken {
+                            providerModels[i].inputCostPerMillionTokens = cost * 1_000_000
+                        }
+                        if let cost = litellm.outputCostPerToken {
+                            providerModels[i].outputCostPerMillionTokens = cost * 1_000_000
+                        }
                         litellm.mergeCapabilities(into: &providerModels[i].capabilities)
                     }
                 }

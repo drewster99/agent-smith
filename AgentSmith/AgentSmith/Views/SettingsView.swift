@@ -127,6 +127,7 @@ struct SettingsView: View {
 
     private func configRow(_ config: ModelConfiguration) -> some View {
         let provider = viewModel.llmKit.providers.first { $0.id == config.providerID }
+        let modelInfo = viewModel.llmKit.modelInfo(providerID: config.providerID, modelID: config.modelID)
         return GroupBox {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -161,6 +162,9 @@ struct SettingsView: View {
                             Text("think \(formatTokenCount(budget))")
                                 .font(.caption)
                                 .foregroundStyle(.purple)
+                        }
+                        if let info = modelInfo {
+                            pricingLabel(for: info)
                         }
                     }
                 }
@@ -197,17 +201,17 @@ struct SettingsView: View {
 
             agentAssignmentRow(
                 role: .smith,
-                label: "Smith (Orchestrator)",
+                label: "Agent Smith (Orchestrator)",
                 color: AppColors.smithAgent
             )
             agentAssignmentRow(
                 role: .brown,
-                label: "Brown (Executor)",
+                label: "Agent Brown (Executor)",
                 color: AppColors.brownAgent
             )
             agentAssignmentRow(
                 role: .jones,
-                label: "Jones (Safety Monitor)",
+                label: "Agent Jones (Safety Monitor)",
                 color: AppColors.jonesAgent
             )
         }
@@ -251,6 +255,10 @@ struct SettingsView: View {
                 }
 
                 if let config = currentConfig {
+                    let modelInfo = viewModel.llmKit.modelInfo(
+                        providerID: config.providerID,
+                        modelID: config.modelID
+                    )
                     HStack(spacing: 8) {
                         Text(config.modelID)
                             .font(.caption)
@@ -261,10 +269,25 @@ struct SettingsView: View {
                         Text("max \(formatTokenCount(config.maxOutputTokens))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        if let info = modelInfo {
+                            pricingLabel(for: info)
+                        }
                     }
                 }
             }
             .padding(4)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// Compact pricing label showing input/output cost per million tokens.
+    @ViewBuilder
+    private func pricingLabel(for info: ModelInfo) -> some View {
+        if let inCost = info.inputCostPerMillionTokens,
+           let outCost = info.outputCostPerMillionTokens {
+            Text("\(formatCostPerMillion(inCost))/\(formatCostPerMillion(outCost)) per M")
+                .font(.caption)
+                .foregroundStyle(.green)
         }
     }
 

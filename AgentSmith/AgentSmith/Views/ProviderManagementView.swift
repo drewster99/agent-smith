@@ -193,6 +193,10 @@ private struct ProviderEditorSheet: View {
                         state.endpointString = "https://api.anthropic.com"
                         state.apiType = .anthropic
                     }
+                    Button("DeepSeek") {
+                        state.endpointString = "https://api.deepseek.com"
+                        state.apiType = .openAICompatible
+                    }
                     Button("OpenAI") {
                         state.endpointString = "https://api.openai.com/v1"
                         state.apiType = .openAICompatible

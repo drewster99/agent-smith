@@ -24,9 +24,9 @@ struct ConfigValidationView: View {
                 .multilineTextAlignment(.center)
 
             VStack(spacing: 8) {
-                agentRow(role: .smith, label: "Smith (Orchestrator)", color: AppColors.smithAgent)
-                agentRow(role: .brown, label: "Brown (Executor)", color: AppColors.brownAgent)
-                agentRow(role: .jones, label: "Jones (Safety Monitor)", color: AppColors.jonesAgent)
+                agentRow(role: .smith, label: "Agent Smith (Orchestrator)", color: AppColors.smithAgent)
+                agentRow(role: .brown, label: "Agent Brown (Executor)", color: AppColors.brownAgent)
+                agentRow(role: .jones, label: "Agent Jones (Safety Monitor)", color: AppColors.jonesAgent)
             }
 
             HStack(spacing: 12) {

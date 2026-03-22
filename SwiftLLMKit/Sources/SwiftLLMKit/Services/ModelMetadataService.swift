@@ -169,6 +169,8 @@ public actor ModelMetadataService {
                 let entry = LiteLLMEntry(
                     maxInputTokens: modelDict["max_input_tokens"] as? Int,
                     maxOutputTokens: modelDict["max_output_tokens"] as? Int,
+                    inputCostPerToken: modelDict["input_cost_per_token"] as? Double,
+                    outputCostPerToken: modelDict["output_cost_per_token"] as? Double,
                     supportsToolUse: modelDict["supports_function_calling"] as? Bool ?? false,
                     supportsVision: modelDict["supports_vision"] as? Bool ?? false,
                     supportsReasoning: modelDict["supports_reasoning"] as? Bool ?? false,
@@ -242,6 +244,10 @@ public actor ModelMetadataService {
 public struct LiteLLMEntry: Sendable {
     public let maxInputTokens: Int?
     public let maxOutputTokens: Int?
+    /// Cost per single token for input, in USD.
+    public let inputCostPerToken: Double?
+    /// Cost per single token for output, in USD.
+    public let outputCostPerToken: Double?
     public let supportsToolUse: Bool
     public let supportsVision: Bool
     public let supportsReasoning: Bool
