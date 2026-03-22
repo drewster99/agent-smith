@@ -45,7 +45,7 @@ struct ModelConfigurationEditorView: View {
             }
         }
         .padding(20)
-        .frame(minWidth: 500, minHeight: 450)
+        .frame(minWidth: 600, minHeight: 450)
         .onAppear { populateFromExisting() }
     }
 
@@ -218,45 +218,32 @@ struct ModelConfigurationEditorView: View {
     }
 
     private func modelInfoBar(for info: ModelInfo) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
             if let maxOut = info.maxOutputTokens {
                 let exceeds = maxOutputTokens > maxOut
-                HStack(spacing: 2) {
-                    Text("Max output:")
-                        .foregroundStyle(.secondary)
-                    Text(formatTokenCount(maxOut))
-                        .foregroundStyle(exceeds ? .red : .primary)
-                }
+                Text("Max output: \(formatTokenCount(maxOut))")
+                    .foregroundStyle(exceeds ? .red : .secondary)
             }
             if let maxIn = info.maxInputTokens {
-                HStack(spacing: 2) {
-                    Text("Context:")
-                        .foregroundStyle(.secondary)
-                    Text(formatTokenCount(maxIn))
-                }
+                Text("Context: \(formatTokenCount(maxIn))")
+                    .foregroundStyle(.secondary)
             }
-            if !info.capabilities.enabledLabels.isEmpty {
-                HStack(spacing: 2) {
-                    ForEach(info.capabilities.enabledLabels, id: \.self) { label in
-                        Text(label)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(.quaternary)
-                            .clipShape(RoundedRectangle(cornerRadius: 3))
-                    }
-                }
+            ForEach(info.capabilities.enabledLabels, id: \.self) { label in
+                Text(label)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(.quaternary)
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
             }
             if let inCost = info.inputCostPerMillionTokens,
                let outCost = info.outputCostPerMillionTokens {
-                HStack(spacing: 2) {
-                    Text("Cost:")
-                        .foregroundStyle(.secondary)
-                    Text("\(formatCostPerMillion(inCost)) in / \(formatCostPerMillion(outCost)) out per M")
-                        .foregroundStyle(.green)
-                }
+                Text("\(formatCostPerMillion(inCost)) in / \(formatCostPerMillion(outCost)) out per M")
+                    .foregroundStyle(.green)
             }
         }
         .font(.caption)
+        .lineLimit(1)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: - Actions
