@@ -9,6 +9,9 @@ private let logger = Logger(subsystem: "SwiftLLMKit", category: "ModelMetadata")
 /// and provides lookup by model ID. Uses conditional HTTP requests
 /// (ETag/Last-Modified) to avoid redundant downloads.
 public actor ModelMetadataService {
+    /// When true, full LiteLLM fetch responses are logged to `$TMPDIR/SwiftLLMKit-Logs/`.
+    public nonisolated(unsafe) static var verboseLogging = false
+
     private let storageDirectory: URL
     private let userDefaults: UserDefaults
     private let userDefaultsSuiteName: String
@@ -105,6 +108,11 @@ public actor ModelMetadataService {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw ModelMetadataError.invalidResponse
+        }
+
+        if Self.verboseLogging {
+            logger.debug("LiteLLM fetch: HTTP \(http.statusCode) bytes=\(data.count)")
+            ModelFetchService.logData(label: "LiteLLM", data: data)
         }
 
         if http.statusCode == 304 {

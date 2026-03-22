@@ -26,14 +26,23 @@ public struct OpenAICompatibleProvider: LLMProvider {
         }
 
         let body = buildRequestBody(messages: messages, tools: tools)
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let requestData = try JSONSerialization.data(withJSONObject: body)
+        request.httpBody = requestData
 
         logger.debug("Request: POST \(url.absoluteString, privacy: .public) model=\(config.model, privacy: .public)")
+        if config.verboseLogging {
+            LLMRequestLogger.logRequest(label: "OpenAI", url: url, model: config.model, body: body, rawData: requestData)
+        }
 
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw LLMProviderError.invalidResponse
         }
+
+        if config.verboseLogging {
+            LLMRequestLogger.logResponse(label: "OpenAI", statusCode: httpResponse.statusCode, data: data)
+        }
+
         guard (200...299).contains(httpResponse.statusCode) else {
             let responseBody = String(data: data, encoding: .utf8) ?? "unknown"
             logger.error("HTTP \(httpResponse.statusCode, privacy: .public) from \(url.absoluteString, privacy: .public) body=\(responseBody, privacy: .public)")

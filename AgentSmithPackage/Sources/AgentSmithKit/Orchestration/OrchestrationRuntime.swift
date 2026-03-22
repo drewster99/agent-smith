@@ -94,7 +94,8 @@ public actor OrchestrationRuntime {
         await powerMgr.start()
         powerManager = powerMgr
 
-        let smithConfig = llmConfigs[.smith] ?? .ollamaDefault
+        var smithConfig = llmConfigs[.smith] ?? .ollamaDefault
+        smithConfig.verboseLogging = LLMRequestLogger.logSmith
         let provider = makeProvider(config: smithConfig)
 
         let id = UUID()
@@ -359,8 +360,10 @@ public actor OrchestrationRuntime {
             _ = await terminateAgent(id: existingBrownID)
         }
 
-        let brownConfig = llmConfigs[.brown] ?? .ollamaDefault
-        let jonesConfig = llmConfigs[.jones] ?? .ollamaDefault
+        var brownConfig = llmConfigs[.brown] ?? .ollamaDefault
+        brownConfig.verboseLogging = LLMRequestLogger.logBrown
+        var jonesConfig = llmConfigs[.jones] ?? .ollamaDefault
+        jonesConfig.verboseLogging = LLMRequestLogger.logJones
 
         let brownID = UUID()
         let jonesID = UUID()

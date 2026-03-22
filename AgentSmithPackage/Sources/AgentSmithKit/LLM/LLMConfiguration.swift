@@ -15,6 +15,9 @@ public struct LLMConfiguration: Codable, Sendable, Equatable {
     /// Anthropic extended thinking token budget. Only relevant when `providerType` is `.anthropic`.
     /// When set and > 0, the provider includes a `thinking` block in the request body.
     public var thinkingBudget: Int?
+    /// When true, full request/response JSON is logged to `$TMPDIR/AgentSmith-LLM-Logs/`.
+    /// Not persisted — set programmatically at runtime.
+    public var verboseLogging: Bool = false
 
     private enum CodingKeys: String, CodingKey {
         case endpoint, apiKey, model, temperature, maxTokens, contextWindowSize, providerType, thinkingBudget

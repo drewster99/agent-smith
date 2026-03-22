@@ -43,14 +43,18 @@ public struct OllamaProvider: LLMProvider {
         request.httpBody = requestData
 
         logger.debug("Request: POST \(url.absoluteString, privacy: .public) model=\(config.model, privacy: .public)")
-        Self.logRequest(url: url, model: config.model, body: body, rawData: requestData)
+        if config.verboseLogging {
+            LLMRequestLogger.logRequest(label: "Ollama", url: url, model: config.model, body: body, rawData: requestData)
+        }
 
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw LLMProviderError.invalidResponse
         }
 
-        Self.logResponse(statusCode: httpResponse.statusCode, data: data)
+        if config.verboseLogging {
+            LLMRequestLogger.logResponse(label: "Ollama", statusCode: httpResponse.statusCode, data: data)
+        }
 
         guard (200...299).contains(httpResponse.statusCode) else {
             let responseBody = String(data: data, encoding: .utf8) ?? "unknown"
@@ -206,84 +210,6 @@ public struct OllamaProvider: LLMProvider {
     }
 
     // MARK: - Debug logging
-
-    private static let logDirectory: URL = {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("AgentSmith-LLM-Logs")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }()
-
-    /// Creates a fresh formatter per call to avoid thread-safety issues with `DateFormatter`.
-    private static func timestamp() -> String {
-        let f = DateFormatter()
-        f.dateFormat = "HH-mm-ss.SSS"
-        return f.string(from: Date())
-    }
-
-    private static func logRequest(url: URL, model: String, body: [String: Any], rawData: Data) {
-        let stamp = timestamp()
-        let prefix = "\(stamp)_\(model.replacingOccurrences(of: "/", with: "_"))"
-
-        // Log tool definitions separately for readability
-        let toolCount = (body["tools"] as? [[String: Any]])?.count ?? 0
-        let messageCount = (body["messages"] as? [[String: Any]])?.count ?? 0
-        print("[OllamaProvider] REQUEST \(stamp) → \(url.absoluteString) model=\(model) messages=\(messageCount) tools=\(toolCount)")
-
-        // Write full request body
-        if let pretty = try? JSONSerialization.data(withJSONObject: body, options: [.prettyPrinted, .sortedKeys]),
-           let prettyString = String(data: pretty, encoding: .utf8) {
-            let file = logDirectory.appendingPathComponent("\(prefix)_request.json")
-            try? prettyString.write(to: file, atomically: true, encoding: .utf8)
-            print("[OllamaProvider]   Full request logged to \(file.path)")
-        }
-    }
-
-    private static func logResponse(statusCode: Int, data: Data) {
-        let stamp = timestamp()
-        let size = data.count
-
-        // Parse for summary
-        var summary = "status=\(statusCode) bytes=\(size)"
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let message = json["message"] as? [String: Any] {
-            let hasContent = (message["content"] as? String).map { !$0.isEmpty } ?? false
-            let toolCallCount = (message["tool_calls"] as? [[String: Any]])?.count ?? 0
-            summary += " hasContent=\(hasContent) toolCalls=\(toolCallCount)"
-
-            // Log the raw tool_calls structure if present
-            if toolCallCount > 0, let toolCalls = message["tool_calls"] {
-                if let tcData = try? JSONSerialization.data(withJSONObject: toolCalls, options: .prettyPrinted),
-                   let tcString = String(data: tcData, encoding: .utf8) {
-                    print("[OllamaProvider]   tool_calls: \(tcString)")
-                }
-            }
-
-            // Log first 500 chars of content if it looks like it might contain text-formatted tool calls
-            if let content = message["content"] as? String, !content.isEmpty {
-                let preview = String(content.prefix(500))
-                let looksLikeToolCall = content.contains("<function_calls>") ||
-                    content.contains("<invoke") ||
-                    content.contains("```tool_code")
-                if looksLikeToolCall {
-                    print("[OllamaProvider]   ⚠️ Content appears to contain text-formatted tool calls:")
-                    print("[OllamaProvider]   \(preview)")
-                }
-            }
-        }
-        print("[OllamaProvider] RESPONSE \(stamp) \(summary)")
-
-        // Write full response
-        let file = logDirectory.appendingPathComponent("\(stamp)_response.json")
-        if let pretty = try? JSONSerialization.data(withJSONObject: JSONSerialization.jsonObject(with: data), options: [.prettyPrinted, .sortedKeys]),
-           let prettyString = String(data: pretty, encoding: .utf8) {
-            try? prettyString.write(to: file, atomically: true, encoding: .utf8)
-            print("[OllamaProvider]   Full response logged to \(file.path)")
-        } else {
-            // Fall back to raw data if it's not valid JSON
-            try? data.write(to: file)
-            print("[OllamaProvider]   Raw response logged to \(file.path)")
-        }
-    }
 
     // MARK: - Response parsing
 

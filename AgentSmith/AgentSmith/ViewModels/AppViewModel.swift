@@ -69,6 +69,10 @@ final class AppViewModel {
 
     /// Loads persisted messages, tasks, and LLM configs from disk. Call on app launch.
     func loadPersistedState() async {
+        // Configure verbose logging for SwiftLLMKit fetch services
+        ModelFetchService.verboseLogging = LLMRequestLogger.logModelFetch
+        ModelMetadataService.verboseLogging = LLMRequestLogger.logLiteLLM
+
         // Load SwiftLLMKit state (providers, configs, cached models)
         llmKit.load()
 

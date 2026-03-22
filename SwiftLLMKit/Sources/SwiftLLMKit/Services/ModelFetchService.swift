@@ -5,6 +5,9 @@ private let logger = Logger(subsystem: "SwiftLLMKit", category: "ModelFetch")
 
 /// Queries provider APIs for available model lists.
 public struct ModelFetchService: Sendable {
+    /// When true, full request/response JSON is logged to `$TMPDIR/SwiftLLMKit-Logs/`.
+    public nonisolated(unsafe) static var verboseLogging = false
+
     public init() {}
 
     /// Fetches available models from a provider endpoint.
@@ -50,6 +53,9 @@ public struct ModelFetchService: Sendable {
         }
 
         logger.debug("Model fetch: GET \(modelsURL.absoluteString, privacy: .public)")
+        if Self.verboseLogging {
+            Self.log("REQUEST GET \(modelsURL.absoluteString) provider=\(provider.name)")
+        }
 
         let (data, response) = try await URLSession.shared.data(for: request)
 
@@ -57,7 +63,14 @@ public struct ModelFetchService: Sendable {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             let body = String(data: data, encoding: .utf8) ?? "(non-utf8)"
             logger.error("Model fetch failed: HTTP \(code, privacy: .public) body=\(body, privacy: .private)")
+            if Self.verboseLogging {
+                Self.logData(label: "ModelFetch_error", data: data)
+            }
             throw ModelFetchError.httpError(statusCode: code)
+        }
+
+        if Self.verboseLogging {
+            Self.logData(label: "ModelFetch_\(provider.name)", data: data)
         }
 
         switch provider.apiType {
@@ -160,6 +173,36 @@ public struct ModelFetchService: Sendable {
         }
         parser.formatOptions = [.withInternetDateTime]
         return parser.date(from: iso)
+    }
+
+    // MARK: - Verbose logging helpers
+
+    private static let logDirectory: URL = {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("SwiftLLMKit-Logs")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
+    private static func log(_ message: String) {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SSS"
+        print("[ModelFetch] \(f.string(from: Date())) \(message)")
+    }
+
+    static func logData(label: String, data: Data) {
+        let f = DateFormatter()
+        f.dateFormat = "HH-mm-ss.SSS"
+        let stamp = f.string(from: Date())
+        let safeLabel = label.replacingOccurrences(of: " ", with: "_")
+        let file = logDirectory.appendingPathComponent("\(stamp)_\(safeLabel)_response.json")
+        if let parsed = try? JSONSerialization.jsonObject(with: data),
+           let pretty = try? JSONSerialization.data(withJSONObject: parsed, options: [.prettyPrinted, .sortedKeys]),
+           let prettyString = String(data: pretty, encoding: .utf8) {
+            try? prettyString.write(to: file, atomically: true, encoding: .utf8)
+        } else {
+            try? data.write(to: file)
+        }
+        print("[ModelFetch] \(stamp) Response logged to \(file.path)")
     }
 }
 
