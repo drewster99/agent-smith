@@ -205,7 +205,7 @@ public actor OrchestrationRuntime {
                     }
                     return entry
                 }.joined(separator: "\n")
-                parts.append("\(awaitingReviewTasks.count) task(s) are awaiting your review:\n\(taskList)\nReview each and call `accept_work` or `request_changes`.")
+                parts.append("\(awaitingReviewTasks.count) task(s) are awaiting your review:\n\(taskList)\nReview each and call `review_work`.")
             }
 
             initialInstruction = """

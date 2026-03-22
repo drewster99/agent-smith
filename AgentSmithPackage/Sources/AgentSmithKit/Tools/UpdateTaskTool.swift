@@ -3,7 +3,7 @@ import Foundation
 /// Allows Smith to update a task's status.
 public struct UpdateTaskTool: AgentTool {
     public let name = "update_task"
-    public let toolDescription = "Manually update a task's status. For normal workflow, use accept_work and request_changes instead. This is an escape hatch for manual corrections (e.g., marking a stuck task as failed)."
+    public let toolDescription = "Manually update a task's status. For normal workflow, use review_work instead. This is an escape hatch for manual corrections (e.g., marking a stuck task as failed)."
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),

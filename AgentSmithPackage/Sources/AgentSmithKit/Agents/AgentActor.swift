@@ -404,7 +404,7 @@ public actor AgentActor {
             if let tool = tools.first(where: { $0.name == call.name }) {
                 let taskLifecycleTools: Set<String> = [
                     "task_acknowledged", "task_update", "task_complete", "reply_to_user",
-                    "send_message"
+                    "message_user", "message_brown"
                 ]
                 if configuration.requiresToolApproval && !taskLifecycleTools.contains(call.name) {
                     result = await executeWithApproval(call, tool: tool)
@@ -415,7 +415,7 @@ public actor AgentActor {
                 result = "Unknown tool: \(call.name)"
             }
 
-            if call.name == "send_message" { sentMessage = true }
+            if call.name == "message_user" || call.name == "message_brown" { sentMessage = true }
             if call.name == "spawn_brown" { spawnedBrown = true }
             if call.name == "task_complete" { calledTaskComplete = true }
 

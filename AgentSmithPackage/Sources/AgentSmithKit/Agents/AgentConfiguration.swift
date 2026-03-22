@@ -15,7 +15,7 @@ public struct AgentConfiguration: Sendable {
     public var llmConfig: LLMConfiguration
     public var systemPrompt: String
     public var toolNames: [String]
-    /// When `true`, all tool calls except `send_message` are held for Jones' approval before execution.
+    /// When `true`, all tool calls except messaging and task-lifecycle tools are held for Jones' approval before execution.
     public var requiresToolApproval: Bool
     /// Restricts which channel messages are delivered to this agent's LLM loop.
     public var messageFilter: MessageFilter

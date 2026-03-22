@@ -125,10 +125,10 @@ struct AgentActorTests {
         #expect(tasks[0].title == "Test task")
     }
 
-    // MARK: - SendMessageTool
+    // MARK: - MessageUserTool
 
-    @Test("SendMessageTool posts to channel")
-    func sendMessagePostsToChannel() async throws {
+    @Test("MessageUserTool posts to channel")
+    func messageUserPostsToChannel() async throws {
         let channel = MessageChannel()
         let context = ToolContext(
             agentID: UUID(),
@@ -140,7 +140,7 @@ struct AgentActorTests {
             abort: { _, _ in },
             agentRoleForID: { _ in nil }
         )
-        let tool = SendMessageTool()
+        let tool = MessageUserTool()
 
         _ = try await tool.execute(
             arguments: ["message": .string("Hello world")],

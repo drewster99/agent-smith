@@ -3,7 +3,7 @@ import Foundation
 /// Allows Smith to spawn a new Brown+Jones agent pair.
 public struct SpawnBrownTool: AgentTool {
     public let name = "spawn_brown"
-    public let toolDescription = "Spawn a new Brown agent (a Jones data archival agent starts alongside it automatically). Returns the Brown agent's ID. Send task instructions separately via send_message. Optionally provide a task_id to associate the spawned agent with a task."
+    public let toolDescription = "Spawn a new Brown agent (a Jones data archival agent starts alongside it automatically). Returns the Brown agent's ID. Send task instructions separately via message_brown. Optionally provide a task_id to associate the spawned agent with a task."
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
@@ -43,6 +43,6 @@ public struct SpawnBrownTool: AgentTool {
             await context.taskStore.assignAgent(taskID: taskID, agentID: brownID)
         }
 
-        return "Brown agent spawned: \(brownID). Send it task instructions via send_message with recipient_id."
+        return "Brown agent spawned: \(brownID). Send it task instructions via message_brown."
     }
 }
