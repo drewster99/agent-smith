@@ -1,9 +1,11 @@
 import SwiftUI
+import SwiftLLMKit
 import AgentSmithKit
 
 /// Primary app view: sidebar with tasks, detail with channel log and input.
 struct MainView: View {
     @Bindable var viewModel: AppViewModel
+    @State private var showValidationSheet = false
 
     var body: some View {
         NavigationSplitView {
@@ -26,7 +28,11 @@ struct MainView: View {
                         reason: viewModel.abortReason,
                         onReset: {
                             viewModel.resetAbort()
-                            Task { await viewModel.start() }
+                            if allAgentConfigsValid {
+                                Task { await viewModel.start() }
+                            } else {
+                                showValidationSheet = true
+                            }
                         }
                     )
                 }
@@ -91,12 +97,20 @@ struct MainView: View {
                 } else if viewModel.isAborted {
                     Button("Reset & Restart", systemImage: "arrow.clockwise.circle.fill") {
                         viewModel.resetAbort()
-                        Task { await viewModel.start() }
+                        if allAgentConfigsValid {
+                            Task { await viewModel.start() }
+                        } else {
+                            showValidationSheet = true
+                        }
                     }
                     .foregroundStyle(.orange)
                 } else {
                     Button("Start", systemImage: "play.circle.fill") {
-                        Task { await viewModel.start() }
+                        if allAgentConfigsValid {
+                            Task { await viewModel.start() }
+                        } else {
+                            showValidationSheet = true
+                        }
                     }
                     .foregroundStyle(.green)
                 }
@@ -125,6 +139,32 @@ struct MainView: View {
             }
         }
         .navigationTitle("Agent Smith")
+        .sheet(isPresented: $showValidationSheet) {
+            ConfigValidationView(
+                llmKit: viewModel.llmKit,
+                agentAssignments: viewModel.agentAssignments,
+                onStart: {
+                    showValidationSheet = false
+                    Task { await viewModel.start() }
+                },
+                onOpenSettings: {
+                    showValidationSheet = false
+                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                }
+            )
+        }
+    }
+
+    /// Whether all agent roles have valid assigned configurations.
+    private var allAgentConfigsValid: Bool {
+        for role in AgentRole.allCases {
+            guard let configID = viewModel.agentAssignments[role],
+                  let config = viewModel.llmKit.configurations.first(where: { $0.id == configID }),
+                  config.isValid else {
+                return false
+            }
+        }
+        return true
     }
 }
 

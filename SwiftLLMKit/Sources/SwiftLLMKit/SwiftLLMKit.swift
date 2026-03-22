@@ -1,0 +1,449 @@
+import Foundation
+import os
+
+private let logger = Logger(subsystem: "SwiftLLMKit", category: "SwiftLLMKit")
+
+/// Central manager for LLM providers, model discovery, and configuration.
+///
+/// Provides CRUD for providers (with Keychain-stored API keys), model catalog
+/// management (provider APIs + LiteLLM metadata enrichment), and configuration
+/// management (provider + model + user settings). Also prepares authenticated
+/// URLRequests for the app to complete with messages/tools.
+///
+/// Usage:
+/// ```swift
+/// let kit = LLMKitManager(
+///     appIdentifier: Bundle.main.bundleIdentifier ?? "com.example.app",
+///     keychainServicePrefix: "com.example.SwiftLLMKit"
+/// )
+/// kit.load()
+/// await kit.refreshIfNeeded()
+/// ```
+@Observable
+@MainActor
+public final class LLMKitManager: Sendable {
+    // MARK: - Published State
+
+    /// All registered providers.
+    public private(set) var providers: [ModelProvider] = []
+    /// All known models across all providers.
+    public private(set) var models: [ModelInfo] = []
+    /// All user-defined model configurations.
+    public private(set) var configurations: [ModelConfiguration] = []
+    /// Whether a model refresh is in progress.
+    public private(set) var isRefreshing: Bool = false
+
+    // MARK: - Services
+
+    private let storage: StorageManager
+    private let keychain: KeychainService
+    private let fetchService: ModelFetchService
+    private let metadataService: ModelMetadataService
+
+    // MARK: - Init
+
+    /// Creates a new SwiftLLMKit instance.
+    /// - Parameters:
+    ///   - appIdentifier: Typically `Bundle.main.bundleIdentifier`.
+    ///   - keychainServicePrefix: Reverse-DNS prefix for Keychain entries.
+    public init(
+        appIdentifier: String,
+        keychainServicePrefix: String
+    ) {
+        let storage = StorageManager(appIdentifier: appIdentifier)
+        self.storage = storage
+        self.keychain = KeychainService(
+            keychainServicePrefix: keychainServicePrefix,
+            appIdentifier: appIdentifier
+        )
+        self.fetchService = ModelFetchService()
+        let suiteName = "SwiftLLMKit.\(appIdentifier)"
+        self.metadataService = ModelMetadataService(
+            storageDirectory: storage.baseDirectory,
+            userDefaultsSuiteName: suiteName
+        )
+    }
+
+    // MARK: - Persistence
+
+    /// Loads providers, configurations, and cached models from disk.
+    public func load() {
+        do {
+            providers = try storage.loadProviders()
+        } catch {
+            logger.error("Failed to load providers: \(error.localizedDescription, privacy: .public)")
+        }
+        do {
+            configurations = try storage.loadConfigurations()
+        } catch {
+            logger.error("Failed to load configurations: \(error.localizedDescription, privacy: .public)")
+        }
+        do {
+            models = try storage.loadModelCatalog()
+        } catch {
+            logger.error("Failed to load model catalog: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Persists current state to disk.
+    public func save() {
+        do {
+            try storage.saveProviders(providers)
+        } catch {
+            logger.error("Failed to save providers: \(error.localizedDescription, privacy: .public)")
+        }
+        do {
+            try storage.saveConfigurations(configurations)
+        } catch {
+            logger.error("Failed to save configurations: \(error.localizedDescription, privacy: .public)")
+        }
+        do {
+            try storage.saveModelCatalog(models)
+        } catch {
+            logger.error("Failed to save model catalog: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    // MARK: - Provider CRUD
+
+    /// Adds a new provider and stores its API key in Keychain.
+    public func addProvider(_ provider: ModelProvider, apiKey: String) {
+        providers.append(provider)
+        if !apiKey.isEmpty {
+            do {
+                try keychain.save(apiKey: apiKey, forProviderID: provider.id)
+            } catch {
+                logger.error("Failed to save API key: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        saveProviders()
+    }
+
+    /// Updates an existing provider. If `apiKey` is non-nil, updates the Keychain.
+    public func updateProvider(_ provider: ModelProvider, apiKey: String?) {
+        guard let index = providers.firstIndex(where: { $0.id == provider.id }) else { return }
+        providers[index] = provider
+        if let apiKey {
+            do {
+                if apiKey.isEmpty {
+                    try keychain.delete(forProviderID: provider.id)
+                } else {
+                    try keychain.save(apiKey: apiKey, forProviderID: provider.id)
+                }
+            } catch {
+                logger.error("Failed to update API key: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        saveProviders()
+    }
+
+    /// Deletes a provider. Throws if any configuration references it.
+    public func deleteProvider(id: String) throws {
+        let referencingConfigs = configurations.filter { $0.providerID == id }
+        if !referencingConfigs.isEmpty {
+            let names = referencingConfigs.map(\.name).joined(separator: ", ")
+            throw SwiftLLMKitError.providerInUse(
+                providerID: id,
+                configNames: names
+            )
+        }
+
+        providers.removeAll { $0.id == id }
+        models.removeAll { $0.providerID == id }
+
+        do {
+            try keychain.delete(forProviderID: id)
+        } catch {
+            logger.error("Failed to delete API key: \(error.localizedDescription, privacy: .public)")
+        }
+
+        saveProviders()
+        saveModelCatalog()
+    }
+
+    /// Retrieves the API key for a provider from Keychain.
+    public func apiKey(for providerID: String) -> String? {
+        keychain.apiKey(forProviderID: providerID)
+    }
+
+    // MARK: - Configuration CRUD
+
+    /// Adds a new model configuration.
+    public func addConfiguration(_ config: ModelConfiguration) {
+        configurations.append(config)
+        saveConfigurations()
+    }
+
+    /// Updates an existing model configuration.
+    public func updateConfiguration(_ config: ModelConfiguration) {
+        guard let index = configurations.firstIndex(where: { $0.id == config.id }) else { return }
+        configurations[index] = config
+        saveConfigurations()
+    }
+
+    /// Deletes a model configuration.
+    public func deleteConfiguration(id: UUID) {
+        configurations.removeAll { $0.id == id }
+        saveConfigurations()
+    }
+
+    /// Creates a duplicate of an existing configuration with a new ID and "(Copy)" suffix.
+    @discardableResult
+    public func duplicateConfiguration(id: UUID) -> ModelConfiguration? {
+        guard let original = configurations.first(where: { $0.id == id }) else { return nil }
+        let newConfig = ModelConfiguration(
+            name: "\(original.name) (Copy)",
+            providerID: original.providerID,
+            modelID: original.modelID,
+            temperature: original.temperature,
+            maxOutputTokens: original.maxOutputTokens,
+            maxContextTokens: original.maxContextTokens,
+            thinkingBudget: original.thinkingBudget,
+            streaming: original.streaming
+        )
+        configurations.append(newConfig)
+        saveConfigurations()
+        return newConfig
+    }
+
+    // MARK: - Model Catalog
+
+    /// Returns models available for a specific provider.
+    public func models(for providerID: String) -> [ModelInfo] {
+        models.filter { $0.providerID == providerID }
+    }
+
+    /// Returns info for a specific model by provider and model ID.
+    public func modelInfo(providerID: String, modelID: String) -> ModelInfo? {
+        models.first { $0.providerID == providerID && $0.modelID == modelID }
+    }
+
+    // MARK: - Refresh
+
+    /// Refreshes model lists if the YYYYMMDD gate allows.
+    public func refreshIfNeeded() async {
+        let needsMetadataRefresh = await metadataService.needsRefresh()
+        if !needsMetadataRefresh && !models.isEmpty {
+            // Already loaded and up to date
+            return
+        }
+        await performRefresh()
+    }
+
+    /// Always performs a full refresh.
+    public func forceRefresh() async {
+        await performRefresh()
+    }
+
+    private func performRefresh() async {
+        isRefreshing = true
+        defer { isRefreshing = false }
+
+        // 1. Refresh LiteLLM metadata
+        await metadataService.forceRefresh()
+
+        // 2. Fetch models from each provider
+        var allModels: [ModelInfo] = []
+        for provider in providers {
+            let apiKey = keychain.apiKey(forProviderID: provider.id)
+            do {
+                var providerModels = try await fetchService.fetchModels(
+                    from: provider,
+                    apiKey: apiKey
+                )
+
+                // 3. Enrich with LiteLLM metadata
+                for i in providerModels.indices {
+                    if let litellm = await metadataService.metadata(for: providerModels[i].modelID) {
+                        // Provider data is authoritative; LiteLLM fills gaps
+                        if providerModels[i].maxInputTokens == nil {
+                            providerModels[i].maxInputTokens = litellm.maxInputTokens
+                        }
+                        if providerModels[i].maxOutputTokens == nil {
+                            providerModels[i].maxOutputTokens = litellm.maxOutputTokens
+                        }
+                        litellm.mergeCapabilities(into: &providerModels[i].capabilities)
+                    }
+                }
+
+                allModels.append(contentsOf: providerModels)
+            } catch {
+                logger.error("Failed to fetch models from \(provider.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                // Keep any previously cached models for this provider
+                let cached = models.filter { $0.providerID == provider.id }
+                allModels.append(contentsOf: cached)
+            }
+        }
+
+        models = allModels
+        saveModelCatalog()
+
+        // 4. Re-validate configurations against the updated catalog
+        validateConfigurations()
+    }
+
+    // MARK: - Validation
+
+    /// Validates all configurations against current providers and models.
+    public func validateConfigurations() {
+        for i in configurations.indices {
+            validateConfiguration(at: i)
+        }
+        saveConfigurations()
+    }
+
+    private func validateConfiguration(at index: Int) {
+        let config = configurations[index]
+
+        // Check provider exists
+        guard providers.contains(where: { $0.id == config.providerID }) else {
+            configurations[index].isValid = false
+            configurations[index].validationError = "Provider '\(config.providerID)' not found"
+            return
+        }
+
+        // Check model exists in that provider's models
+        let providerModels = models.filter { $0.providerID == config.providerID }
+        if !providerModels.isEmpty {
+            guard let modelInfo = providerModels.first(where: { $0.modelID == config.modelID }) else {
+                configurations[index].isValid = false
+                configurations[index].validationError = "Model '\(config.modelID)' not found for this provider"
+                return
+            }
+
+            // Check maxOutputTokens doesn't exceed model's reported max
+            if let modelMax = modelInfo.maxOutputTokens, config.maxOutputTokens > modelMax {
+                configurations[index].isValid = false
+                configurations[index].validationError = "Max output tokens (\(config.maxOutputTokens)) exceeds model limit (\(modelMax))"
+                return
+            }
+        }
+        // If no models fetched yet for this provider, don't invalidate — models may load later
+
+        configurations[index].isValid = true
+        configurations[index].validationError = nil
+    }
+
+    // MARK: - Request Preparation
+
+    /// Prepares an authenticated URLRequest stub for the given configuration.
+    ///
+    /// The returned `PreparedRequest` contains the URL, auth headers, and base body
+    /// parameters (model, temperature, max_tokens, thinking, stream). The app adds
+    /// messages/tools to the body and sends the request.
+    public func prepareRequest(for configurationID: UUID) throws -> PreparedRequest {
+        guard let config = configurations.first(where: { $0.id == configurationID }) else {
+            throw SwiftLLMKitError.configurationNotFound(id: configurationID)
+        }
+        guard let provider = providers.first(where: { $0.id == config.providerID }) else {
+            throw SwiftLLMKitError.providerNotFound(id: config.providerID)
+        }
+
+        let apiKey = keychain.apiKey(forProviderID: provider.id)
+
+        // Build URL
+        let url: URL
+        switch provider.apiType {
+        case .anthropic:
+            let base = provider.endpoint.path.hasSuffix("/v1")
+                ? provider.endpoint
+                : provider.endpoint.appendingPathComponent("v1")
+            url = base.appendingPathComponent("messages")
+        case .openAICompatible:
+            url = provider.endpoint.appendingPathComponent("chat/completions")
+        case .ollama:
+            url = provider.endpoint.appendingPathComponent("chat")
+        }
+
+        // Build URLRequest with headers
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        switch provider.apiType {
+        case .anthropic:
+            if let apiKey {
+                request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            }
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        case .openAICompatible:
+            if let apiKey, !apiKey.isEmpty {
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+        case .ollama:
+            if let apiKey, !apiKey.isEmpty {
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+        }
+
+        // Build base body
+        var body: [String: Any] = [
+            "model": config.modelID,
+            "temperature": config.temperature,
+            "stream": config.streaming
+        ]
+
+        switch provider.apiType {
+        case .anthropic:
+            body["max_tokens"] = config.maxOutputTokens
+            if let budget = config.thinkingBudget, budget > 0 {
+                body["thinking"] = ["type": "enabled", "budget_tokens": budget] as [String: Any]
+            }
+        case .openAICompatible:
+            body["max_tokens"] = config.maxOutputTokens
+        case .ollama:
+            body["options"] = ["num_predict": config.maxOutputTokens] as [String: Any]
+        }
+
+        return PreparedRequest(
+            urlRequest: request,
+            baseBody: body,
+            providerType: provider.apiType,
+            streaming: config.streaming
+        )
+    }
+
+    // MARK: - Private persistence helpers
+
+    private func saveProviders() {
+        do {
+            try storage.saveProviders(providers)
+        } catch {
+            logger.error("Failed to save providers: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func saveConfigurations() {
+        do {
+            try storage.saveConfigurations(configurations)
+        } catch {
+            logger.error("Failed to save configurations: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func saveModelCatalog() {
+        do {
+            try storage.saveModelCatalog(models)
+        } catch {
+            logger.error("Failed to save model catalog: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+}
+
+/// Errors thrown by SwiftLLMKit operations.
+public enum SwiftLLMKitError: Error, LocalizedError {
+    case providerInUse(providerID: String, configNames: String)
+    case configurationNotFound(id: UUID)
+    case providerNotFound(id: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .providerInUse(_, let names):
+            return "Cannot delete provider — it is referenced by configurations: \(names)"
+        case .configurationNotFound(let id):
+            return "Configuration not found: \(id)"
+        case .providerNotFound(let id):
+            return "Provider not found: \(id)"
+        }
+    }
+}

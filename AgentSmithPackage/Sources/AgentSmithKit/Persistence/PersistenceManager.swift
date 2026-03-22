@@ -64,26 +64,6 @@ public actor PersistenceManager {
         return try JSONDecoder().decode([AgentTask].self, from: data)
     }
 
-    // MARK: - LLM Configurations
-
-    /// Saves per-role LLM configurations to disk.
-    public func saveLLMConfigs(_ configs: [AgentRole: LLMConfiguration]) throws {
-        try ensureDirectories()
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .prettyPrinted
-        let data = try encoder.encode(configs)
-        let url = baseDirectory.appendingPathComponent("llm_configs.json")
-        try data.write(to: url, options: .atomic)
-    }
-
-    /// Loads per-role LLM configurations from disk.
-    public func loadLLMConfigs() throws -> [AgentRole: LLMConfiguration]? {
-        let url = baseDirectory.appendingPathComponent("llm_configs.json")
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        let data = try Data(contentsOf: url)
-        return try JSONDecoder().decode([AgentRole: LLMConfiguration].self, from: data)
-    }
-
     // MARK: - Attachments
 
     /// Saves attachment file data to disk. Call this when the user adds an attachment.

@@ -1,44 +1,30 @@
 import Foundation
 import AgentSmithKit
+import SwiftLLMKit
 
-/// CLI tool that reads the user's current AgentSmith settings from
-/// UserDefaults and persisted config files, then outputs a `defaults.json`
+/// CLI tool that reads the user's current AgentSmith settings and outputs a `defaults.json`
 /// to stdout (or a file path passed as the first argument).
 ///
 /// Usage:
 ///   ExportDefaults                              # prints to stdout
 ///   ExportDefaults path/to/defaults.json        # writes to file
 
-// MARK: - Read persisted LLM configs
+// MARK: - Read SwiftLLMKit state
 
-guard let appSupportBase = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-    fputs("Error: Could not locate Application Support directory\n", stderr)
-    exit(1)
-}
-let appSupportDir = appSupportBase.appendingPathComponent("AgentSmith", isDirectory: true)
-let llmConfigsURL = appSupportDir.appendingPathComponent("llm_configs.json")
+let appIdentifier = "com.nuclearcyborg.AgentSmith"
 
-var smithLLM = LLMConfiguration.smithDefault
-var brownLLM = LLMConfiguration.brownDefault
-var jonesLLM = LLMConfiguration.jonesDefault
-
-if FileManager.default.fileExists(atPath: llmConfigsURL.path) {
-    do {
-        let data = try Data(contentsOf: llmConfigsURL)
-        let configs = try JSONDecoder().decode([AgentRole: LLMConfiguration].self, from: data)
-        if let s = configs[.smith] { smithLLM = s }
-        if let b = configs[.brown] { brownLLM = b }
-        if let j = configs[.jones] { jonesLLM = j }
-    } catch {
-        fputs("Warning: Failed to read LLM configs from \(llmConfigsURL.path): \(error)\n", stderr)
-    }
+let (exportProviders, exportConfigs) = await MainActor.run {
+    let kit = LLMKitManager(
+        appIdentifier: appIdentifier,
+        keychainServicePrefix: "com.agentsmith.SwiftLLMKit"
+    )
+    kit.load()
+    return (kit.providers, kit.configurations)
 }
 
-// MARK: - Read UserDefaults for speech settings
+// MARK: - Read UserDefaults for speech and assignment settings
 
-// Attempt to load the app's UserDefaults by bundle identifier.
-// If the bundle identifier doesn't match, this will return an empty defaults suite.
-let ud = UserDefaults(suiteName: "com.nuclearcyborg.AgentSmith") ?? .standard
+let ud = UserDefaults(suiteName: appIdentifier) ?? .standard
 
 func readBool(_ key: String, default defaultValue: Bool) -> Bool {
     ud.object(forKey: key) as? Bool ?? defaultValue
@@ -48,10 +34,19 @@ func readString(_ key: String) -> String {
     ud.string(forKey: key) ?? ""
 }
 
+// Agent assignments
+var agentAssignments: [AgentRole: UUID] = [:]
+if let data = UserDefaults.standard.data(forKey: "agentAssignments") {
+    do {
+        agentAssignments = try JSONDecoder().decode([AgentRole: UUID].self, from: data)
+    } catch {
+        fputs("Warning: Failed to decode agent assignments: \(error)\n", stderr)
+    }
+}
+
 // Speech settings
 let globalEnabled = readBool("speech.globalEnabled", default: true)
 
-// Sound category storage keys (must match AgentSoundCategory.storageKey)
 let categoryKeys = ["toUser", "toAgent", "public", "tool", "error"]
 
 var agentSpeechDefaults: [AgentRole: AgentSpeechDefaults] = [:]
@@ -96,11 +91,7 @@ let speech = SpeechDefaults(
 
 // MARK: - Read tuning defaults
 
-// Try loading tuning values from the bundled defaults.json so this tool stays
-// in sync with the app's shipped configuration without duplicating constants.
 let bundledTuning: [AgentRole: AgentTuningDefaults]? = {
-    // When run from the build products directory, look for defaults.json in the
-    // main app bundle's Resources, or fall back to the source tree location.
     let candidates: [URL] = [
         Bundle.main.url(forResource: "defaults", withExtension: "json"),
         URL(fileURLWithPath: CommandLine.arguments[0])
@@ -132,7 +123,10 @@ let agentTuning = bundledTuning ?? fallbackTuning
 // MARK: - Build and encode
 
 let appDefaults = AppDefaults(
-    llmConfigs: [.smith: smithLLM, .brown: brownLLM, .jones: jonesLLM],
+    providers: exportProviders,
+    providerAPIKeys: [:],
+    modelConfigurations: exportConfigs,
+    agentAssignments: agentAssignments,
     agentTuning: agentTuning,
     speech: speech
 )

@@ -10,9 +10,13 @@ let package = Package(
     products: [
         .library(name: "AgentSmithKit", targets: ["AgentSmithKit"])
     ],
+    dependencies: [
+        .package(path: "../SwiftLLMKit")
+    ],
     targets: [
         .target(
             name: "AgentSmithKit",
+            dependencies: ["SwiftLLMKit"],
             path: "Sources/AgentSmithKit"
         ),
         .testTarget(

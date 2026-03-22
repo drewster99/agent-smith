@@ -1,4 +1,9 @@
 {
+  "agentAssignments" : {
+    "brown" : "B0000002-0000-0000-0000-000000000002",
+    "jones" : "B0000003-0000-0000-0000-000000000003",
+    "smith" : "B0000001-0000-0000-0000-000000000001"
+  },
   "agentTuning" : {
     "brown" : {
       "maxToolCalls" : 100,
@@ -16,111 +21,81 @@
       "pollInterval" : 20
     }
   },
-  "llmConfigs" : {
-    "brown" : {
-      "apiKey" : "",
-      "contextWindowSize" : 128000,
-      "endpoint" : "https://ollama.com/api",
-      "maxTokens" : 32768,
-      "model" : "deepseek-v3.2",
-      "providerType" : "ollama",
+  "modelConfigurations" : [
+    {
+      "id" : "B0000001-0000-0000-0000-000000000001",
+      "isValid" : true,
+      "maxContextTokens" : 128000,
+      "maxOutputTokens" : 32768,
+      "modelID" : "nemotron-3-nano:30b",
+      "name" : "Smith Default",
+      "providerID" : "ollama-cloud",
+      "streaming" : true,
+      "temperature" : 0.1
+    },
+    {
+      "id" : "B0000002-0000-0000-0000-000000000002",
+      "isValid" : true,
+      "maxContextTokens" : 128000,
+      "maxOutputTokens" : 32768,
+      "modelID" : "deepseek-v3.2",
+      "name" : "Brown Default",
+      "providerID" : "ollama-cloud",
+      "streaming" : true,
       "temperature" : 0.3
     },
-    "jones" : {
-      "apiKey" : "",
-      "contextWindowSize" : 128000,
-      "endpoint" : "https://ollama.com/api",
-      "maxTokens" : 32768,
-      "model" : "gpt-oss:20b",
-      "providerType" : "ollama",
-      "temperature" : 0.1
-    },
-    "smith" : {
-      "apiKey" : "",
-      "contextWindowSize" : 128000,
-      "endpoint" : "https://ollama.com/api",
-      "maxTokens" : 32768,
-      "model" : "nemotron-3-nano:30b",
-      "providerType" : "ollama",
+    {
+      "id" : "B0000003-0000-0000-0000-000000000003",
+      "isValid" : true,
+      "maxContextTokens" : 128000,
+      "maxOutputTokens" : 32768,
+      "modelID" : "gpt-oss:20b",
+      "name" : "Jones Default",
+      "providerID" : "ollama-cloud",
+      "streaming" : true,
       "temperature" : 0.1
     }
-  },
+  ],
+  "providerAPIKeys" : {},
+  "providers" : [
+    {
+      "apiType" : "ollama",
+      "endpoint" : "https://ollama.com/api",
+      "id" : "ollama-cloud",
+      "name" : "Ollama (cloud)"
+    }
+  ],
   "speech" : {
     "agents" : {
       "brown" : {
         "categories" : {
-          "error" : {
-            "soundName" : "",
-            "speakEnabled" : false
-          },
-          "public" : {
-            "soundName" : "",
-            "speakEnabled" : false
-          },
-          "toAgent" : {
-            "soundName" : "",
-            "speakEnabled" : false
-          },
-          "tool" : {
-            "soundName" : "",
-            "speakEnabled" : false
-          },
-          "toUser" : {
-            "soundName" : "",
-            "speakEnabled" : false
-          }
+          "error" : { "soundName" : "", "speakEnabled" : false },
+          "public" : { "soundName" : "", "speakEnabled" : false },
+          "toAgent" : { "soundName" : "", "speakEnabled" : false },
+          "tool" : { "soundName" : "", "speakEnabled" : false },
+          "toUser" : { "soundName" : "", "speakEnabled" : false }
         },
         "enabled" : false,
         "voiceIdentifier" : ""
       },
       "jones" : {
         "categories" : {
-          "error" : {
-            "soundName" : "",
-            "speakEnabled" : false
-          },
-          "public" : {
-            "soundName" : "",
-            "speakEnabled" : false
-          },
-          "toAgent" : {
-            "soundName" : "",
-            "speakEnabled" : false
-          },
-          "tool" : {
-            "soundName" : "",
-            "speakEnabled" : false
-          },
-          "toUser" : {
-            "soundName" : "",
-            "speakEnabled" : false
-          }
+          "error" : { "soundName" : "", "speakEnabled" : false },
+          "public" : { "soundName" : "", "speakEnabled" : false },
+          "toAgent" : { "soundName" : "", "speakEnabled" : false },
+          "tool" : { "soundName" : "", "speakEnabled" : false },
+          "toUser" : { "soundName" : "", "speakEnabled" : false }
         },
         "enabled" : false,
         "voiceIdentifier" : ""
       },
       "smith" : {
         "categories" : {
-          "error" : {
-            "soundName" : "",
-            "speakEnabled" : false
-          },
-          "public" : {
-            "soundName" : "",
-            "speakEnabled" : false
-          },
-          "toAgent" : {
-            "soundName" : "",
-            "speakEnabled" : false
-          },
-          "tool" : {
-            "soundName" : "",
-            "speakEnabled" : false
-          },
-          "toUser" : {
-            "soundName" : "",
-            "speakEnabled" : false
-          }
+          "error" : { "soundName" : "", "speakEnabled" : false },
+          "public" : { "soundName" : "", "speakEnabled" : false },
+          "toAgent" : { "soundName" : "", "speakEnabled" : false },
+          "tool" : { "soundName" : "", "speakEnabled" : false },
+          "toUser" : { "soundName" : "", "speakEnabled" : false }
         },
         "enabled" : false,
         "voiceIdentifier" : ""
@@ -143,5 +118,5 @@
       "voiceIdentifier" : ""
     }
   },
-  "version" : 1
+  "version" : 2
 }

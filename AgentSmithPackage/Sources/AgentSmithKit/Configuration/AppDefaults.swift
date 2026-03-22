@@ -1,4 +1,5 @@
 import Foundation
+import SwiftLLMKit
 
 /// Top-level Codable struct representing the bundled `defaults.json` schema.
 ///
@@ -6,22 +7,35 @@ import Foundation
 /// (set by the user in the UI) always take precedence over these values.
 public struct AppDefaults: Codable, Sendable {
     /// Schema version — bump when the JSON format changes.
-    public var version: Int = 1
-    /// Per-role LLM endpoint configurations.
-    public var llmConfigs: [AgentRole: LLMConfiguration]
+    public var version: Int = 2
+    /// Registered LLM providers (connection details; API keys live in Keychain).
+    public var providers: [ModelProvider]
+    /// API keys for providers, keyed by provider ID. Only used in bundled defaults
+    /// to bootstrap first-launch state — at runtime keys live in Keychain.
+    public var providerAPIKeys: [String: String]
+    /// User-defined model configurations.
+    public var modelConfigurations: [ModelConfiguration]
+    /// Maps each agent role to a `ModelConfiguration.id`.
+    public var agentAssignments: [AgentRole: UUID]
     /// Per-role agent tuning parameters (poll intervals, tool-call limits, etc.).
     public var agentTuning: [AgentRole: AgentTuningDefaults]
     /// Speech and sound configuration.
     public var speech: SpeechDefaults
 
     public init(
-        version: Int = 1,
-        llmConfigs: [AgentRole: LLMConfiguration],
+        version: Int = 2,
+        providers: [ModelProvider] = [],
+        providerAPIKeys: [String: String] = [:],
+        modelConfigurations: [ModelConfiguration] = [],
+        agentAssignments: [AgentRole: UUID] = [:],
         agentTuning: [AgentRole: AgentTuningDefaults],
         speech: SpeechDefaults
     ) {
         self.version = version
-        self.llmConfigs = llmConfigs
+        self.providers = providers
+        self.providerAPIKeys = providerAPIKeys
+        self.modelConfigurations = modelConfigurations
+        self.agentAssignments = agentAssignments
         self.agentTuning = agentTuning
         self.speech = speech
     }

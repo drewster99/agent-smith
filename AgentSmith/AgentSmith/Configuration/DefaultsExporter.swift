@@ -1,35 +1,19 @@
 import Foundation
 import AgentSmithKit
+import SwiftLLMKit
 
 /// Builds an `AppDefaults` from live application state and encodes it to pretty-printed JSON.
 enum DefaultsExporter {
     /// Constructs an `AppDefaults` snapshot from the current runtime configuration.
-    ///
-    /// - Parameters:
-    ///   - smithConfig: Current LLM configuration for the Smith agent.
-    ///   - brownConfig: Current LLM configuration for the Brown agent.
-    ///   - jonesConfig: Current LLM configuration for the Jones agent.
-    ///   - pollIntervals: Current poll intervals keyed by role.
-    ///   - maxToolCalls: Current max tool-calls-per-response keyed by role.
-    ///   - messageDebounceIntervals: Current message debounce intervals keyed by role.
-    ///   - speechController: The live `SpeechController` whose properties are read.
-    /// - Returns: Pretty-printed JSON `Data` representing the full `AppDefaults`.
     @MainActor
     static func exportCurrentSettings(
-        smithConfig: LLMConfiguration,
-        brownConfig: LLMConfiguration,
-        jonesConfig: LLMConfiguration,
+        llmKit: LLMKitManager,
+        agentAssignments: [AgentRole: UUID],
         pollIntervals: [AgentRole: TimeInterval],
         maxToolCalls: [AgentRole: Int],
         messageDebounceIntervals: [AgentRole: TimeInterval],
         speechController: SpeechController
     ) throws -> Data {
-        let llmConfigs: [AgentRole: LLMConfiguration] = [
-            .smith: smithConfig,
-            .brown: brownConfig,
-            .jones: jonesConfig
-        ]
-
         var agentTuning: [AgentRole: AgentTuningDefaults] = [:]
         for role in AgentRole.allCases {
             agentTuning[role] = AgentTuningDefaults(
@@ -77,7 +61,10 @@ enum DefaultsExporter {
         )
 
         let appDefaults = AppDefaults(
-            llmConfigs: llmConfigs,
+            providers: llmKit.providers,
+            providerAPIKeys: [:],
+            modelConfigurations: llmKit.configurations,
+            agentAssignments: agentAssignments,
             agentTuning: agentTuning,
             speech: speech
         )

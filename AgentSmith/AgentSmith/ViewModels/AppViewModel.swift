@@ -1,5 +1,6 @@
 import SwiftUI
 import AgentSmithKit
+import SwiftLLMKit
 import UniformTypeIdentifiers
 
 /// Bridges the orchestration runtime to the SwiftUI UI.
@@ -42,10 +43,14 @@ final class AppViewModel {
         .smith: 1, .brown: 1, .jones: 1
     ]
 
-    /// Per-role LLM configurations, editable from settings.
-    var smithConfig = LLMConfiguration.smithDefault
-    var brownConfig = LLMConfiguration.brownDefault
-    var jonesConfig = LLMConfiguration.jonesDefault
+    /// SwiftLLMKit instance managing providers, models, and configurations.
+    let llmKit = LLMKitManager(
+        appIdentifier: Bundle.main.bundleIdentifier ?? "com.agentsmith",
+        keychainServicePrefix: "com.agentsmith.SwiftLLMKit"
+    )
+
+    /// Maps each agent role to a `ModelConfiguration.id`.
+    var agentAssignments: [AgentRole: UUID] = [:]
 
     let speechController = SpeechController()
 
@@ -62,21 +67,41 @@ final class AppViewModel {
 
     /// Loads persisted messages, tasks, and LLM configs from disk. Call on app launch.
     func loadPersistedState() async {
-        // Load bundled defaults first — these provide baseline values that are
-        // overridden by any persisted UserDefaults or file-based configs below.
+        // Load SwiftLLMKit state (providers, configs, cached models)
+        llmKit.load()
+
+        // Load bundled defaults — these provide baseline values for tuning and speech.
         do {
             let bundled = try DefaultsLoader.loadBundledDefaults()
-            if let smith = bundled.llmConfigs[.smith] { smithConfig = smith }
-            if let brown = bundled.llmConfigs[.brown] { brownConfig = brown }
-            if let jones = bundled.llmConfigs[.jones] { jonesConfig = jones }
             for (role, tuning) in bundled.agentTuning {
                 agentPollIntervals[role] = tuning.pollInterval
                 agentMaxToolCalls[role] = tuning.maxToolCalls
                 agentMessageDebounceIntervals[role] = tuning.messageDebounceInterval
             }
             speechController.applyBundledDefaults(bundled.speech)
+
+            // Apply bundled provider/config/assignment defaults if no persisted state exists
+            if llmKit.providers.isEmpty {
+                for provider in bundled.providers {
+                    let apiKey = bundled.providerAPIKeys[provider.id] ?? ""
+                    llmKit.addProvider(provider, apiKey: apiKey)
+                }
+                for config in bundled.modelConfigurations {
+                    llmKit.addConfiguration(config)
+                }
+                agentAssignments = bundled.agentAssignments
+            }
         } catch {
             print("[AgentSmith] No bundled defaults (using hardcoded): \(error)")
+        }
+
+        // Load persisted agent assignments
+        if let saved = UserDefaults.standard.data(forKey: "agentAssignments") {
+            do {
+                agentAssignments = try JSONDecoder().decode([AgentRole: UUID].self, from: saved)
+            } catch {
+                print("[AgentSmith] Failed to decode agent assignments: \(error)")
+            }
         }
 
         do {
@@ -121,15 +146,34 @@ final class AppViewModel {
             print("[AgentSmith] Failed to load tasks: \(error)")
         }
 
-        do {
-            if let configs = try await persistenceManager.loadLLMConfigs() {
-                if let smith = configs[.smith] { smithConfig = smith }
-                if let brown = configs[.brown] { brownConfig = brown }
-                if let jones = configs[.jones] { jonesConfig = jones }
+        // Refresh model catalog (YYYYMMDD-gated)
+        await llmKit.refreshIfNeeded()
+        llmKit.validateConfigurations()
+    }
+
+    /// Resolves agent assignments into `LLMConfiguration` values the runtime understands.
+    private func resolvedLLMConfigs() -> [AgentRole: LLMConfiguration] {
+        var configs: [AgentRole: LLMConfiguration] = [:]
+        for role in AgentRole.allCases {
+            guard let configID = agentAssignments[role],
+                  let modelConfig = llmKit.configurations.first(where: { $0.id == configID }),
+                  let provider = llmKit.providers.first(where: { $0.id == modelConfig.providerID })
+            else {
+                continue
             }
-        } catch {
-            print("[AgentSmith] Failed to load LLM configs: \(error)")
+            let apiKey = llmKit.apiKey(for: provider.id) ?? ""
+            configs[role] = LLMConfiguration(
+                endpoint: provider.endpoint,
+                apiKey: apiKey,
+                model: modelConfig.modelID,
+                temperature: modelConfig.temperature,
+                maxTokens: modelConfig.maxOutputTokens,
+                contextWindowSize: modelConfig.maxContextTokens,
+                providerType: provider.apiType.toLegacy,
+                thinkingBudget: modelConfig.thinkingBudget
+            )
         }
+        return configs
     }
 
     /// Starts the system with current LLM configs.
@@ -137,11 +181,7 @@ final class AppViewModel {
         guard !isRunning else { return }
         guard !isAborted else { return }
 
-        let configs: [AgentRole: LLMConfiguration] = [
-            .smith: smithConfig,
-            .brown: brownConfig,
-            .jones: jonesConfig
-        ]
+        let configs = resolvedLLMConfigs()
 
         var tuning: [AgentRole: AgentTuningConfig] = [:]
         for role in AgentRole.allCases {
@@ -451,6 +491,18 @@ final class AppViewModel {
         pendingAttachments.removeAll { $0.id == id }
     }
 
+    // MARK: - Persistence
+
+    /// Saves agent assignments to UserDefaults.
+    func persistAgentAssignments() {
+        do {
+            let data = try JSONEncoder().encode(agentAssignments)
+            UserDefaults.standard.set(data, forKey: "agentAssignments")
+        } catch {
+            print("[AgentSmith] Failed to encode agent assignments: \(error)")
+        }
+    }
+
     // MARK: - Private
 
     /// Polls each agent's conversation history every 2 seconds while the system is running.
@@ -494,22 +546,6 @@ final class AppViewModel {
                 try await persistenceManager.saveTasks(tasksToSave)
             } catch {
                 print("[AgentSmith] Failed to persist tasks: \(error)")
-            }
-        }
-    }
-
-    /// Saves LLM configurations to disk so they survive app restart.
-    func persistLLMConfigs() {
-        let configs: [AgentRole: LLMConfiguration] = [
-            .smith: smithConfig,
-            .brown: brownConfig,
-            .jones: jonesConfig
-        ]
-        Task.detached { [persistenceManager] in
-            do {
-                try await persistenceManager.saveLLMConfigs(configs)
-            } catch {
-                print("[AgentSmith] Failed to persist LLM configs: \(error)")
             }
         }
     }

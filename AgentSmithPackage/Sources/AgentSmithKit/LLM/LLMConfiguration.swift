@@ -27,9 +27,12 @@ public struct LLMConfiguration: Codable, Sendable, Equatable {
     public var contextWindowSize: Int
     /// Which API protocol this endpoint speaks.
     public var providerType: ProviderType
+    /// Anthropic extended thinking token budget. Only relevant when `providerType` is `.anthropic`.
+    /// When set and > 0, the provider includes a `thinking` block in the request body.
+    public var thinkingBudget: Int?
 
     private enum CodingKeys: String, CodingKey {
-        case endpoint, apiKey, model, temperature, maxTokens, contextWindowSize, providerType
+        case endpoint, apiKey, model, temperature, maxTokens, contextWindowSize, providerType, thinkingBudget
     }
 
     public init(
@@ -39,7 +42,8 @@ public struct LLMConfiguration: Codable, Sendable, Equatable {
         temperature: Double = 0.7,
         maxTokens: Int = 4096,
         contextWindowSize: Int = 128_000,
-        providerType: ProviderType = .openAICompatible
+        providerType: ProviderType = .openAICompatible,
+        thinkingBudget: Int? = nil
     ) {
         self.endpoint = endpoint
         self.apiKey = apiKey
@@ -48,6 +52,7 @@ public struct LLMConfiguration: Codable, Sendable, Equatable {
         self.maxTokens = maxTokens
         self.contextWindowSize = contextWindowSize
         self.providerType = providerType
+        self.thinkingBudget = thinkingBudget
     }
 
     /// Backward-compatible decoder: old JSON without `providerType` defaults to `.openAICompatible`.
@@ -60,6 +65,7 @@ public struct LLMConfiguration: Codable, Sendable, Equatable {
         maxTokens = try container.decode(Int.self, forKey: .maxTokens)
         contextWindowSize = try container.decode(Int.self, forKey: .contextWindowSize)
         providerType = try container.decodeIfPresent(ProviderType.self, forKey: .providerType) ?? .openAICompatible
+        thinkingBudget = try container.decodeIfPresent(Int.self, forKey: .thinkingBudget)
     }
 
     // MARK: - Defaults

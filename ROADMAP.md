@@ -2,8 +2,27 @@
 
 ## Planned
 
-### Save API keys to Keychain
+### Save API keys to Keychain ✅
 API keys (e.g. Anthropic, OpenAI-compatible provider keys) are currently stored in plain text (UserDefaults or configuration files). Move all API key storage to the macOS Keychain using the Security framework (`SecItemAdd`/`SecItemCopyMatching`). This improves security by keeping secrets out of plist files and app defaults exports.
+
+**Implemented:** As part of the SwiftLLMKit package rework. `KeychainService` wraps `SecItemAdd`/`SecItemUpdate`/`SecItemCopyMatching`/`SecItemDelete` with service scoped to `<keychainServicePrefix>.<appBundleID>` and account = provider ID. API keys are stored/retrieved when adding/editing providers and read at request preparation time. The old plaintext `apiKey` field in `LLMConfiguration` is still used at the provider-send level but populated from Keychain at runtime.
+
+### Model configuration rework — SwiftLLMKit package ✅
+Switching models previously required 5-6 manual steps. Created a reusable Swift package (`SwiftLLMKit`) with a three-tier architecture: Providers (connection details + Keychain API keys), Models (metadata entities enriched with LiteLLM data), and Model Configurations (provider + model + user settings). The package also prepares URLRequests with provider-appropriate auth and base parameters.
+
+**Key components:**
+- `LLMKitManager` (@Observable main class) — provider/config/model CRUD, refresh lifecycle, validation, persistence
+- `KeychainService` — Keychain wrapper for API key storage
+- `ModelFetchService` — queries Ollama/Anthropic/OpenAI APIs for model lists
+- `ModelMetadataService` — LiteLLM metadata cache with YYYYMMDD refresh gate and conditional HTTP (ETag/Last-Modified)
+- `StorageManager` — file-based persistence in Application Support
+- Tab-based SettingsView (Providers, Configurations, Agent Assignments, Audio)
+- `ConfigValidationView` — startup gate verifying all agent configs are valid
+- `AnthropicProvider` updated to support extended thinking (`thinkingBudget`)
+- `AppDefaults` schema v2 with providers, model configurations, and agent assignments
+
+### Auto-start when all agents have valid configurations
+When all three agent roles have valid, assigned configurations on launch, skip the manual "Start" button and begin the orchestration runtime automatically. Currently the user must always click Start even when nothing has changed.
 
 ### Copy button for channel messages
 Text selection in the channel log is limited to one line at a time because each line is a separate SwiftUI `Text` view. Add a copy button (or context menu item) to each message row that copies the full message content to the clipboard, so users can easily grab multi-line output without fighting the selection model.

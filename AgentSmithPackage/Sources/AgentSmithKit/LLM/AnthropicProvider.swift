@@ -73,6 +73,13 @@ public struct AnthropicProvider: LLMProvider {
             body["system"] = systemPrompt
         }
 
+        if let budget = config.thinkingBudget, budget > 0 {
+            body["thinking"] = [
+                "type": "enabled",
+                "budget_tokens": budget
+            ] as [String: Any]
+        }
+
         if !tools.isEmpty {
             body["tools"] = tools.map { tool in
                 [
@@ -187,6 +194,12 @@ public struct AnthropicProvider: LLMProvider {
         for block in contentBlocks {
             guard let type = block["type"] as? String else { continue }
             switch type {
+            case "thinking":
+                // Extended thinking block — log but don't include in response text.
+                // The thinking content is internal reasoning, not user-facing output.
+                if let thinking = block["thinking"] as? String {
+                    logger.debug("Thinking block (\(thinking.count) chars)")
+                }
             case "text":
                 text = block["text"] as? String
             case "tool_use":
