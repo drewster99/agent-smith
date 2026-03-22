@@ -530,6 +530,14 @@ final class AppViewModel {
         }
     }
 
+    /// Deletes a model configuration and unassigns any agent roles that reference it.
+    func deleteConfiguration(id: UUID) {
+        for (role, configID) in agentAssignments where configID == id {
+            agentAssignments[role] = nil
+        }
+        llmKit.deleteConfiguration(id: id)
+    }
+
     /// Saves the nickname to UserDefaults and syncs it to the static used by system prompts.
     func persistNickname() {
         UserDefaults.standard.set(nickname, forKey: "userNickname")

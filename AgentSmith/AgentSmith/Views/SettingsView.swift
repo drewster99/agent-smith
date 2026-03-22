@@ -207,7 +207,7 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.borderless)
                 Button(role: .destructive, action: {
-                    viewModel.llmKit.deleteConfiguration(id: config.id)
+                    viewModel.deleteConfiguration(id: config.id)
                 }, label: {
                     Image(systemName: "trash")
                 })

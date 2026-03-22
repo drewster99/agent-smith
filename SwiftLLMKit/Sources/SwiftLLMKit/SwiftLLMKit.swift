@@ -197,7 +197,7 @@ public final class LLMKitManager {
     /// Deletes a model configuration.
     public func deleteConfiguration(id: UUID) {
         configurations.removeAll { $0.id == id }
-        saveConfigurations()
+        validateConfigurations()
     }
 
     /// Creates a duplicate of an existing configuration with a new ID and "(Copy)" suffix.

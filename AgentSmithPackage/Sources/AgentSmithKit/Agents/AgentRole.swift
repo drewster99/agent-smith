@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// The role an agent plays in the system.
 public enum AgentRole: String, Codable, Sendable, CaseIterable {
@@ -6,9 +7,14 @@ public enum AgentRole: String, Codable, Sendable, CaseIterable {
     case brown
     case jones
 
-    /// The user's preferred nickname, set at launch. Used in system prompts and display labels.
-    /// Accessed from multiple isolation domains; writes happen only at app startup on MainActor.
-    public nonisolated(unsafe) static var userNickname: String = ""
+    /// Thread-safe storage for the user's preferred nickname.
+    private static let _userNickname = Mutex("")
+
+    /// The user's preferred nickname, used in system prompts and display labels.
+    public static var userNickname: String {
+        get { _userNickname.withLock { $0 } }
+        set { _userNickname.withLock { $0 = newValue } }
+    }
 
     /// Human-readable name for display.
     public var displayName: String {

@@ -35,7 +35,7 @@ public struct ModelConfiguration: Codable, Identifiable, Sendable, Equatable {
         maxContextTokens: Int = 128_000,
         thinkingBudget: Int? = nil,
         streaming: Bool = true,
-        isValid: Bool = false,
+        isValid: Bool = true,
         validationError: String? = nil
     ) {
         self.id = id
