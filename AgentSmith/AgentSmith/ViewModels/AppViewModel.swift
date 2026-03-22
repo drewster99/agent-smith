@@ -17,6 +17,8 @@ final class AppViewModel {
     var taskActionError: String? = nil
     /// Set when a load/decode operation fails during startup; drives the error alert.
     var startupError: String?
+    /// Set to true after `loadPersistedState()` finishes. Drives the startup validation check.
+    var hasLoadedPersistedState = false
     var isRunning = false
     var isAborted = false
     var abortReason = ""
@@ -163,6 +165,8 @@ final class AppViewModel {
         // Refresh model catalog (YYYYMMDD-gated)
         await llmKit.refreshIfNeeded()
         llmKit.validateConfigurations()
+
+        hasLoadedPersistedState = true
     }
 
     /// Resolves agent assignments into `LLMConfiguration` values the runtime understands.

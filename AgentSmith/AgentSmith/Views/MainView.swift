@@ -139,6 +139,11 @@ struct MainView: View {
             }
         }
         .navigationTitle("Agent Smith")
+        .onChange(of: viewModel.hasLoadedPersistedState) { _, loaded in
+            if loaded && !viewModel.allAgentConfigsValid {
+                showValidationSheet = true
+            }
+        }
         .sheet(isPresented: $showValidationSheet) {
             ConfigValidationView(
                 llmKit: viewModel.llmKit,
