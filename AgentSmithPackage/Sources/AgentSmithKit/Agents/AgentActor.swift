@@ -349,6 +349,20 @@ public actor AgentActor {
             ))
         }
 
+        // For Smith, treat any non-empty text as an implicit message_user.
+        var implicitMessageSent = false
+        if configuration.role == .smith,
+           let text = response.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !text.isEmpty {
+            await toolContext.channel.post(ChannelMessage(
+                sender: .agent(configuration.role),
+                recipientID: OrchestrationRuntime.userID,
+                recipient: .user,
+                content: text
+            ))
+            implicitMessageSent = true
+        }
+
         let toolCalls = response.toolCalls
         if toolCalls.isEmpty {
             // Text-only response — record and wait for new input
@@ -435,7 +449,7 @@ public actor AgentActor {
         // After sending a message, stop and wait for a reply rather than continuing to act.
         // This prevents agents from looping by sending the same message repeatedly before
         // anyone has had a chance to respond.
-        if sentMessage {
+        if sentMessage || implicitMessageSent {
             hasUnprocessedInput = false
             return
         }

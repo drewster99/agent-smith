@@ -144,7 +144,7 @@ public actor OrchestrationRuntime {
                 llmConfig: smithConfig,
                 systemPrompt: SmithBehavior.systemPrompt,
                 toolNames: SmithBehavior.toolNames,
-                suppressesRawTextToChannel: false,
+                suppressesRawTextToChannel: true,
                 pollInterval: agentTuning[.smith]?.pollInterval ?? 20,
                 messageDebounceInterval: agentTuning[.smith]?.messageDebounceInterval ?? 1,
                 messageAcceptFilter: smithMessageFilter,
