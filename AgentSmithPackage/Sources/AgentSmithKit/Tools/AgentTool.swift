@@ -94,6 +94,8 @@ public struct ToolContext: Sendable {
     public let onProcessingStateChange: @Sendable (Bool) -> Void
     /// Schedules a deferred wake-up for the agent after the given number of seconds.
     public let scheduleFollowUp: @Sendable (TimeInterval) async -> Void
+    /// Signals a full system restart for a new task. Called by create_task.
+    public let restartForNewTask: @Sendable (UUID) async -> Void
 
     public init(
         agentID: UUID,
@@ -107,7 +109,8 @@ public struct ToolContext: Sendable {
         agentIDForRole: @escaping @Sendable (AgentRole) async -> UUID? = { _ in nil },
         onSelfTerminate: @escaping @Sendable () async -> Void = {},
         onProcessingStateChange: @escaping @Sendable (Bool) -> Void = { _ in },
-        scheduleFollowUp: @escaping @Sendable (TimeInterval) async -> Void = { _ in }
+        scheduleFollowUp: @escaping @Sendable (TimeInterval) async -> Void = { _ in },
+        restartForNewTask: @escaping @Sendable (UUID) async -> Void = { _ in }
     ) {
         self.agentID = agentID
         self.agentRole = agentRole
@@ -121,5 +124,6 @@ public struct ToolContext: Sendable {
         self.onSelfTerminate = onSelfTerminate
         self.onProcessingStateChange = onProcessingStateChange
         self.scheduleFollowUp = scheduleFollowUp
+        self.restartForNewTask = restartForNewTask
     }
 }

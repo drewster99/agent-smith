@@ -3,7 +3,7 @@ import Foundation
 /// Allows Smith to create new tasks.
 public struct CreateTaskTool: AgentTool {
     public let name = "create_task"
-    public let toolDescription = "Create a new task, automatically spawn Brown+Jones, and send the task description as initial instructions. Brown starts working immediately — no need to call spawn_brown or message_brown."
+    public let toolDescription = "Create a new task and restart the system with a clean context. Brown will be spawned automatically on restart — no need to call spawn_brown or message_brown."
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
@@ -43,21 +43,12 @@ public struct CreateTaskTool: AgentTool {
             ]
         ))
 
-        // Auto-spawn Brown+Jones and assign to this task.
-        guard let brownID = await context.spawnBrown() else {
-            return "Task created: \(task.id) — \(title). ⚠️ Failed to spawn Brown — call spawn_brown(\(task.id)) manually."
-        }
+        // Trigger a full system restart so Smith gets a clean conversation context.
+        // The detached restart will call stopAll() then start(resumingTaskID:), which
+        // auto-spawns Brown with this task. Smith's current run loop will exit cleanly
+        // when stop() sets isRunning = false.
+        await context.restartForNewTask(task.id)
 
-        await context.taskStore.assignAgent(taskID: task.id, agentID: brownID)
-
-        // Send task instructions to Brown automatically.
-        await context.channel.post(ChannelMessage(
-            sender: .agent(context.agentRole),
-            recipientID: brownID,
-            recipient: .agent(.brown),
-            content: "Task: \(title)\n\n\(fullDescription)"
-        ))
-
-        return "Task created and Brown spawned. Task ID: \(task.id). Send any additional instructions via message_brown if needed."
+        return "Task created (ID: \(task.id)). System is restarting with a clean context to begin work."
     }
 }

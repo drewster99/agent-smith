@@ -74,11 +74,16 @@ public struct AnthropicProvider: LLMProvider {
 
         let systemPrompt: String? = systemParts.isEmpty ? nil : systemParts.joined(separator: "\n\n")
 
+        // Merge consecutive same-role messages. The Anthropic API requires strict user/assistant
+        // alternation. Multiple tool_result messages (role "user") can follow an assistant tool_use,
+        // and must be combined into a single user message with all tool_result content blocks.
+        let encodedMessages = Self.mergeConsecutiveSameRole(conversationMessages.map(encodeMessage))
+
         var body: [String: Any] = [
             "model": config.model,
             "max_tokens": config.maxTokens,
             "temperature": config.temperature,
-            "messages": conversationMessages.map(encodeMessage)
+            "messages": encodedMessages
         ]
 
         if let systemPrompt {
@@ -178,6 +183,49 @@ public struct AnthropicProvider: LLMProvider {
                 ]
             ]
         }
+    }
+
+    /// Merges consecutive messages that share the same role into a single message.
+    /// The Anthropic API requires strict user/assistant alternation. This handles cases like
+    /// multiple tool_result messages (each encoded as role "user") following an assistant tool_use.
+    private static func mergeConsecutiveSameRole(_ messages: [[String: Any]]) -> [[String: Any]] {
+        guard !messages.isEmpty else { return messages }
+        var result: [[String: Any]] = []
+        for message in messages {
+            guard let role = message["role"] as? String else {
+                result.append(message)
+                continue
+            }
+            if let lastRole = result.last?["role"] as? String, lastRole == role {
+                // Same role as previous — merge content into the previous message.
+                let prevContent = result[result.count - 1]["content"]
+                let curContent = message["content"]
+                let merged = mergeContent(prevContent, curContent)
+                result[result.count - 1]["content"] = merged
+            } else {
+                result.append(message)
+            }
+        }
+        return result
+    }
+
+    /// Merges two Anthropic message content values into a single content-blocks array.
+    /// Handles both string content (`"hello"`) and array content (`[{type: "tool_result", ...}]`).
+    private static func mergeContent(_ a: Any?, _ b: Any?) -> Any {
+        let blocksA = contentToBlocks(a)
+        let blocksB = contentToBlocks(b)
+        return blocksA + blocksB
+    }
+
+    /// Normalizes Anthropic message content to an array of content blocks.
+    private static func contentToBlocks(_ content: Any?) -> [[String: Any]] {
+        if let blocks = content as? [[String: Any]] {
+            return blocks
+        }
+        if let text = content as? String {
+            return [["type": "text", "text": text]]
+        }
+        return []
     }
 
     /// Parses a JSON argument string back into a Foundation object for the API request body.

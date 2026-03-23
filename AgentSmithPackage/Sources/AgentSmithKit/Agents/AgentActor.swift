@@ -407,9 +407,10 @@ public actor AgentActor {
                 role: .assistant,
                 content: .mixed(text: text, toolCalls: callsToExecute)
             ))
-            if configuration.suppressesRawTextToChannel, !implicitMessageSent {
-                appendDiscardedTextWarning()
-            }
+            // Note: do NOT call appendDiscardedTextWarning() here. Inserting a user message
+            // between the assistant tool_use and the tool_result messages breaks the Anthropic
+            // API requirement that tool_results immediately follow their tool_use. Mixed text
+            // alongside tool calls is intentional narration, not a problem to warn about.
         } else {
             conversationHistory.append(LLMMessage(
                 role: .assistant,

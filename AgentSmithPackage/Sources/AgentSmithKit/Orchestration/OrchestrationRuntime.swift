@@ -85,8 +85,21 @@ public actor OrchestrationRuntime {
         agentRoles.first(where: { $0.value == role })?.key
     }
 
+    /// Triggers a full system restart for a newly-created task.
+    /// Launches a detached task so the calling agent's tool execution can unwind
+    /// without deadlocking (the caller is running inside this actor).
+    public func restartForNewTask(taskID: UUID) {
+        Task.detached { [weak self] in
+            guard let self else { return }
+            await self.stopAll()
+            await self.start(resumingTaskID: taskID)
+        }
+    }
+
     /// Starts the Smith agent and the monitoring timer.
-    public func start() async {
+    /// - Parameter resumingTaskID: When set, skips the "ask user" preamble and immediately
+    ///   instructs Smith to spawn Brown and begin work on this task.
+    public func start(resumingTaskID: UUID? = nil) async {
         guard smith == nil else { return }
         guard !aborted else { return }
 
@@ -174,10 +187,31 @@ public actor OrchestrationRuntime {
             await taskStore.updateStatus(id: task.id, status: .pending)
         }
 
+        let initialInstruction: String
+
+        // Fast path: restarting for a specific task — skip the "ask user" preamble
+        // and instruct Smith to spawn Brown and begin work immediately.
+        if let resumingTaskID {
+            if let resumingTask = await taskStore.task(id: resumingTaskID) {
+                initialInstruction = """
+                    A new task has been created: "\(resumingTask.title)"
+
+                    \(resumingTask.description)
+
+                    Spawn Brown and begin work on this task immediately (task ID: \(resumingTaskID.uuidString)). \
+                    Do not ask the user for confirmation — they just requested this task.
+                    """
+            } else {
+                initialInstruction = """
+                    The system restarted for task \(resumingTaskID.uuidString) but the task was not found in the store. \
+                    Send the user a message explaining the issue.
+                    """
+            }
+        } else {
+
         // Gather awaitingReview tasks — these survive restart and need Smith's attention
         let awaitingReviewTasks = activeTasks.filter { $0.status == .awaitingReview }
 
-        let initialInstruction: String
         if !stalledTasks.isEmpty || !awaitingReviewTasks.isEmpty {
             var parts: [String] = []
 
@@ -268,6 +302,7 @@ public actor OrchestrationRuntime {
                     """
             }
         }
+        } // end else (no resumingTaskID)
 
         await smithAgent.start(initialInstruction: initialInstruction)
         onAgentStarted?(.smith, smithAgent.toolNames)
@@ -599,6 +634,10 @@ public actor OrchestrationRuntime {
             },
             scheduleFollowUp: { [followUpScheduler] delay in
                 await followUpScheduler?.schedule(after: delay)
+            },
+            restartForNewTask: { [weak self] taskID in
+                guard let self else { return }
+                await self.restartForNewTask(taskID: taskID)
             }
         )
     }
