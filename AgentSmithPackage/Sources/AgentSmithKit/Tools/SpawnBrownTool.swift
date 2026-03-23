@@ -3,7 +3,7 @@ import Foundation
 /// Allows Smith to spawn a new Brown+Jones agent pair.
 public struct SpawnBrownTool: AgentTool {
     public let name = "spawn_brown"
-    public let toolDescription = "Spawn a new Brown agent (a Jones data archival agent starts alongside it automatically). Returns the Brown agent's ID. Send task instructions separately via message_brown. Optionally provide a task_id to associate the spawned agent with a task."
+    public let toolDescription = "Re-spawn a Brown+Jones agent pair for an existing task (e.g., after termination or if auto-spawn failed during create_task). Not needed for new tasks — create_task handles spawning automatically. Returns the Brown agent's ID. Send task instructions via message_brown after spawning."
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),

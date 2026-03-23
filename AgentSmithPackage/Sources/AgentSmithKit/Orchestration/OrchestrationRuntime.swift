@@ -229,7 +229,7 @@ public actor OrchestrationRuntime {
 
             if pendingTasks.isEmpty && recentFailed.isEmpty {
                 initialInstruction = """
-                    No tasks are pending. Await instructions from the user.
+                    No tasks are pending. Introduce yourself with "Hello <user's nickname>, how can I help?" - and nothing more.
                     """
             } else {
                 var parts: [String] = []

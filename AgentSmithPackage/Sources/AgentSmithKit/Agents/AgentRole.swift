@@ -26,12 +26,12 @@ public enum AgentRole: String, Codable, Sendable, CaseIterable {
     }
 
     private var baseSystemPromptSuffix: String {
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss zzz"
-        let dateStr = dateFormatter.string(from: Date())
+//        let dateFormatter = DateFormatter()
+//        dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss zzz"
+//        let dateStr = dateFormatter.string(from: Date())
 
         var results: [String] = []
-        results.append("The current date and time are \(dateStr)")
+//        results.append("The current date and time are \(dateStr)")
         results.append("This device is running MacOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
         let nickname = Self.userNickname
         if !nickname.isEmpty {

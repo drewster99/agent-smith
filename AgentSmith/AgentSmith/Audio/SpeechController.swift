@@ -291,8 +291,9 @@ final class SpeechController {
     // MARK: - Private helpers
 
     private func isToolRelated(_ message: ChannelMessage) -> Bool {
-        if message.metadata?["tool"] != nil { return true }
         if let mv = message.metadata?["messageKind"], case .string(let kind) = mv {
+            // Only the initial tool request triggers the sound — not the tool output
+            // posted after approval, which also carries metadata["tool"].
             return kind == "tool_request"
         }
         return false

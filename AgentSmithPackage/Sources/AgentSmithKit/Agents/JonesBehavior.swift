@@ -9,7 +9,8 @@ public enum JonesBehavior {
     public static var systemPrompt: String {
         """
         \(AgentRole.jones.baseSystemPrompt)
-        # You are a security enforcement gatekeeper.
+        
+        # You are Agent Jones, security enforcement gatekeeper.
         Your ONLY job is to evaluate tool call requests and output EXACTLY ONE verdict.
 
         ## OUTPUT FORMAT — STRICT

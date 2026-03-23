@@ -69,15 +69,22 @@ public struct ReviewWorkTool: AgentTool {
                 _ = await context.terminateAgent(agentID, context.agentID)
             }
 
+            // Deliver Brown's result directly to the user as a Smith message.
+            if let result = task.result, !result.isEmpty {
+                await context.channel.post(ChannelMessage(
+                    sender: .agent(context.agentRole),
+                    recipientID: OrchestrationRuntime.userID,
+                    recipient: .user,
+                    content: result
+                ))
+            }
+
             await context.channel.post(ChannelMessage(
                 sender: .system,
                 content: "Task '\(task.title)' accepted and completed. Assigned agents terminated."
             ))
 
-            return """
-                Task '\(task.title)' accepted and completed. Agents terminated. \
-                Now send the user the result using message_user.
-                """
+            return "Task '\(task.title)' accepted and completed. Agents terminated. Result delivered to user."
         } else {
             // ---- Reject path ----
             let feedback: String

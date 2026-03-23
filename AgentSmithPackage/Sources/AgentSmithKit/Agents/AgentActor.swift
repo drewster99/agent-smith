@@ -349,9 +349,13 @@ public actor AgentActor {
             ))
         }
 
-        // For Smith, treat any non-empty text as an implicit message_user.
+        // For Smith, treat text-only responses as an implicit message_user.
+        // In mixed responses (text + tool calls), the text is internal narration
+        // (e.g., "Great job, Brown!") not meant for the user — Smith uses
+        // message_user explicitly when it wants to address the user.
         var implicitMessageSent = false
         if configuration.role == .smith,
+           response.toolCalls.isEmpty,
            let text = response.text?.trimmingCharacters(in: .whitespacesAndNewlines),
            !text.isEmpty {
             await toolContext.channel.post(ChannelMessage(
@@ -453,10 +457,13 @@ public actor AgentActor {
             return
         }
 
-        // After sending a message, stop and wait for a reply rather than continuing to act.
-        // This prevents agents from looping by sending the same message repeatedly before
-        // anyone has had a chance to respond.
-        if sentMessage || implicitMessageSent {
+        // After sending an explicit message, stop and wait for a reply rather than continuing
+        // to act. This prevents agents from looping by sending the same message repeatedly
+        // before anyone has had a chance to respond.
+        // Note: implicitMessageSent (Smith's raw text treated as message_user) does NOT
+        // trigger this — when the LLM emits text alongside tool calls, the text is narration
+        // ("let me check...") and the agent must continue to process tool results.
+        if sentMessage {
             hasUnprocessedInput = false
             return
         }
