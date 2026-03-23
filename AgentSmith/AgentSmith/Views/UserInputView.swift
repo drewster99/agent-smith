@@ -33,7 +33,10 @@ struct UserInputView: View {
                 .buttonStyle(.borderless)
                 .disabled(!isRunning)
 
-                TextField("Message Smith...", text: $text)
+                TextField(
+                    isRunning ? "Message Agent Smith..." : "Press Start to begin messaging...",
+                    text: $text
+                )
                     .font(AppFonts.inputField)
                     .textFieldStyle(.plain)
                     .padding(8)
@@ -44,7 +47,6 @@ struct UserInputView: View {
                             onSend()
                         }
                     }
-                    .disabled(!isRunning)
 
                 Button(action: onSend) {
                     Image(systemName: "paperplane.fill")

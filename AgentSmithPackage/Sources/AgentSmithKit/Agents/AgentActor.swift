@@ -874,14 +874,11 @@ public actor AgentActor {
 
         let combinedText = sections.joined(separator: "\n\n")
 
-        // Append as a user message (merge if needed to maintain alternation)
-        if let lastIndex = conversationHistory.indices.last,
-           conversationHistory[lastIndex].role == .user,
-           case .text = conversationHistory[lastIndex].content {
-            conversationHistory[lastIndex] = LLMMessage(role: .user, text: combinedText)
-        } else {
-            conversationHistory.append(LLMMessage(role: .user, text: combinedText))
-        }
+        // Jones never needs prior eval/response pairs — reset to just [system, eval prompt].
+        // The recent tool call history embedded in the eval prompt provides all needed context.
+        let systemMessage = conversationHistory[0]
+        conversationHistory = [systemMessage, LLMMessage(role: .user, text: combinedText)]
+        lastTurnMessageCount = conversationHistory.count
     }
 
     /// Parses Jones's text response for a security disposition keyword and resolves the gate.
@@ -1114,6 +1111,17 @@ public actor AgentActor {
         let pruneThreshold = contextLimit * 3 / 4
 
         guard estimatedTokens > pruneThreshold else { return }
+
+        // Jones: trim recentToolRequestSummaries instead of pruning messages.
+        // Jones's history is always [system, eval prompt] — the only variable-size content
+        // is the recent tool call history embedded in the eval prompt text.
+        // The trimmed list takes effect on the next drainPendingMessagesForJones call.
+        if configuration.role == .jones {
+            guard !recentToolRequestSummaries.isEmpty else { return }
+            let removeCount = max(1, recentToolRequestSummaries.count / 2)
+            recentToolRequestSummaries.removeFirst(removeCount)
+            return
+        }
 
         // Keep enough recent messages to fill ~50% of context
         let targetTokens = contextLimit / 2

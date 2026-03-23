@@ -21,9 +21,9 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         case paused
         case awaitingReview
 
-        /// Whether this status represents work that is active or waiting — prevents archiving or deletion.
+        /// Whether this status represents work that is actively running — prevents archiving or deletion.
         public var isInProgress: Bool {
-            self == .pending || self == .running || self == .paused || self == .awaitingReview
+            self == .running || self == .paused || self == .awaitingReview
         }
     }
 
