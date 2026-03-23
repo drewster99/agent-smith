@@ -375,6 +375,10 @@ public actor AgentActor {
                     // resolveGateFromText may set hasUnprocessedInput = true on parse failure
                     return
                 }
+
+                if configuration.suppressesRawTextToChannel, !implicitMessageSent {
+                    appendDiscardedTextWarning()
+                }
             }
             // Mark that we've processed the current input; don't re-query until
             // new messages arrive via the channel.
@@ -399,6 +403,9 @@ public actor AgentActor {
                 role: .assistant,
                 content: .mixed(text: text, toolCalls: callsToExecute)
             ))
+            if configuration.suppressesRawTextToChannel, !implicitMessageSent {
+                appendDiscardedTextWarning()
+            }
         } else {
             conversationHistory.append(LLMMessage(
                 role: .assistant,
@@ -466,6 +473,16 @@ public actor AgentActor {
 
         // Tool results have been appended; the LLM needs to see them on the next iteration.
         // hasUnprocessedInput stays true (it was true when we entered handleResponse).
+    }
+
+    /// Appends a warning to conversation history when an agent with suppressed text output
+    /// returns non-empty text that was discarded. Nudges the LLM to use structured tools instead.
+    private func appendDiscardedTextWarning() {
+        conversationHistory.append(LLMMessage(
+            role: .user,
+            text: "[System] Your text output was discarded — it is not visible to anyone. " +
+                  "Use task_update to communicate progress, or task_complete to deliver results."
+        ))
     }
 
     /// Posts a tool_request approval message to the channel, then suspends until Jones resolves it.
