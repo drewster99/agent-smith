@@ -59,17 +59,20 @@ public struct AnthropicProvider: LLMProvider {
         messages: [LLMMessage],
         tools: [LLMToolDefinition]
     ) -> [String: Any] {
-        // Anthropic requires system prompt separate from messages
-        var systemPrompt: String?
+        // Anthropic requires system prompt separate from messages.
+        // Concatenate all system messages so per-turn context doesn't overwrite the base prompt.
+        var systemParts: [String] = []
         var conversationMessages: [LLMMessage] = []
 
         for message in messages {
             if message.role == .system, let text = message.content.textValue {
-                systemPrompt = text
+                systemParts.append(text)
             } else {
                 conversationMessages.append(message)
             }
         }
+
+        let systemPrompt: String? = systemParts.isEmpty ? nil : systemParts.joined(separator: "\n\n")
 
         var body: [String: Any] = [
             "model": config.model,
