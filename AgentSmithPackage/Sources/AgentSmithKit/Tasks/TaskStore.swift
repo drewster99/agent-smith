@@ -51,8 +51,15 @@ public actor TaskStore {
     /// restored to the active disposition — it cannot remain archived or deleted while active.
     public func updateStatus(id: UUID, status: AgentTask.Status) {
         guard var task = tasks[id] else { return }
+        let now = Date()
         task.status = status
-        task.updatedAt = Date()
+        task.updatedAt = now
+        if status == .running && task.startedAt == nil {
+            task.startedAt = now
+        }
+        if status == .completed || status == .failed {
+            task.completedAt = now
+        }
         if status.isInProgress {
             task.disposition = .active
         }

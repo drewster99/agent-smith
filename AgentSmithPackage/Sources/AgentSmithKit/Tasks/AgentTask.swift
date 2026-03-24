@@ -12,6 +12,10 @@ public struct AgentTask: Identifiable, Codable, Sendable {
     public var commentary: String?
     public var createdAt: Date
     public var updatedAt: Date
+    /// Set when the task first transitions to `.running`.
+    public var startedAt: Date?
+    /// Set when the task transitions to `.completed` or `.failed`.
+    public var completedAt: Date?
 
     public enum Status: String, Codable, Sendable, CaseIterable {
         case pending
@@ -46,7 +50,9 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         result: String? = nil,
         commentary: String? = nil,
         createdAt: Date = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        startedAt: Date? = nil,
+        completedAt: Date? = nil
     ) {
         self.id = id
         self.title = title
@@ -58,12 +64,14 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         self.commentary = commentary
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.startedAt = startedAt
+        self.completedAt = completedAt
     }
 
     // MARK: - Codable (backward-compatible with persisted data lacking `disposition`)
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt
+        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt, startedAt, completedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -78,6 +86,8 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         commentary = try c.decodeIfPresent(String.self, forKey: .commentary)
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt)
+        completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -92,5 +102,7 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         try c.encodeIfPresent(commentary, forKey: .commentary)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)
+        try c.encodeIfPresent(startedAt, forKey: .startedAt)
+        try c.encodeIfPresent(completedAt, forKey: .completedAt)
     }
 }

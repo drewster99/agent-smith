@@ -530,6 +530,15 @@ public actor OrchestrationRuntime {
         return await agent.turnsSnapshot()
     }
 
+    /// Terminates all agents assigned to a task. Used when the user stops or pauses a task
+    /// from the UI — the task status alone doesn't stop Brown's LLM loop.
+    public func terminateTaskAgents(taskID: UUID) async {
+        guard let task = await taskStore.task(id: taskID) else { return }
+        for agentID in task.assigneeIDs {
+            _ = await terminateAgent(id: agentID)
+        }
+    }
+
     /// Posts a private message from the user directly to the agent with the given role.
     public func sendDirectMessage(to role: AgentRole, text: String) async {
         guard let agentID = agentIDForRole(role) else { return }

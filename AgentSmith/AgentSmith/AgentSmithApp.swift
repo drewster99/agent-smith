@@ -1,4 +1,5 @@
 import SwiftUI
+import AgentSmithKit
 
 @main
 struct AgentSmithApp: App {
@@ -20,6 +21,19 @@ struct AgentSmithApp: App {
                 .disabled(!viewModel.isRunning)
             }
         }
+
+        WindowGroup("Task Detail", for: UUID.self) { $taskID in
+            if let taskID, let task = viewModel.tasks.first(where: { $0.id == taskID }) {
+                TaskDetailWindow(task: task)
+            } else {
+                ContentUnavailableView(
+                    "Task Not Found",
+                    systemImage: "questionmark.circle",
+                    description: Text("This task may have been deleted.")
+                )
+            }
+        }
+        .defaultSize(width: 800, height: 700)
 
         Settings {
             SettingsView(viewModel: viewModel)

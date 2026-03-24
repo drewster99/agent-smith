@@ -7,7 +7,7 @@ struct TaskListView: View {
 
     @State private var showArchived = false
     @State private var showDeleted = false
-    @State private var selectedTask: AgentTask?
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         let activeTasks = viewModel.tasks.filter { $0.disposition == .active }
@@ -30,7 +30,7 @@ struct TaskListView: View {
                 // Active task rows
                 ForEach(activeTasks) { task in
                     ActiveTaskRow(task: task, viewModel: viewModel)
-                        .onTapGesture { selectedTask = task }
+                        .onTapGesture { openWindow(value: task.id) }
                     Divider()
                 }
 
@@ -70,7 +70,7 @@ struct TaskListView: View {
                     TaskSectionHeader(title: "Archived")
                     ForEach(archivedTasks) { task in
                         ArchivedTaskRow(task: task, viewModel: viewModel)
-                            .onTapGesture { selectedTask = task }
+                            .onTapGesture { openWindow(value: task.id) }
                         Divider()
                     }
                 }
@@ -80,7 +80,7 @@ struct TaskListView: View {
                     TaskSectionHeader(title: "Recently Deleted")
                     ForEach(deletedTasks) { task in
                         DeletedTaskRow(task: task, viewModel: viewModel)
-                            .onTapGesture { selectedTask = task }
+                            .onTapGesture { openWindow(value: task.id) }
                         Divider()
                     }
                 }
@@ -93,98 +93,6 @@ struct TaskListView: View {
             actions: { Button("OK") { viewModel.taskActionError = nil } },
             message: { Text(viewModel.taskActionError ?? "") }
         )
-        .sheet(item: $selectedTask) { task in
-            TaskDetailSheet(task: task)
-        }
-    }
-}
-
-// MARK: - Task Detail Sheet
-
-private struct TaskDetailSheet: View {
-    let task: AgentTask
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Image(systemName: TaskStatusBadge.icon(for: task.status))
-                    .foregroundStyle(TaskStatusBadge.color(for: task.status))
-                Text(task.title)
-                    .font(.title2.bold())
-                Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-            }
-
-            HStack(spacing: 12) {
-                HStack(spacing: 4) {
-                    Text("Status:")
-                        .foregroundStyle(.secondary)
-                    Text(task.status.rawValue.capitalized)
-                        .foregroundStyle(TaskStatusBadge.color(for: task.status))
-                }
-                HStack(spacing: 4) {
-                    Text("Created:")
-                        .foregroundStyle(.secondary)
-                    Text(task.createdAt.formatted(date: .abbreviated, time: .shortened))
-                }
-                HStack(spacing: 4) {
-                    Text("Updated:")
-                        .foregroundStyle(.secondary)
-                    Text(task.updatedAt.formatted(date: .abbreviated, time: .shortened))
-                }
-            }
-            .font(.caption)
-
-            Divider()
-
-            Text("Description")
-                .font(.headline)
-            ScrollView {
-                Text(task.description)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(minHeight: 60)
-
-            if let result = task.result, !result.isEmpty {
-                Divider()
-                Text("Result")
-                    .font(.headline)
-                ScrollView {
-                    Text(result)
-                        .font(.body)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(minHeight: 60)
-            }
-
-            if let commentary = task.commentary, !commentary.isEmpty {
-                Divider()
-                Text("Commentary")
-                    .font(.headline)
-                ScrollView {
-                    Text(commentary)
-                        .font(.body)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(minHeight: 40)
-            }
-
-            HStack {
-                Text("ID: \(task.id.uuidString)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .textSelection(.enabled)
-                Spacer()
-            }
-        }
-        .padding(20)
-        .frame(minWidth: 500, minHeight: 300)
     }
 }
 
