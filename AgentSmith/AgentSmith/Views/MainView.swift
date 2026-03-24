@@ -59,9 +59,20 @@ struct MainView: View {
                     },
                     onRemoveAttachment: { id in
                         viewModel.removePendingAttachment(id: id)
+                    },
+                    onHistoryUp: {
+                        viewModel.navigateHistory(.up)
+                    },
+                    onHistoryDown: {
+                        viewModel.navigateHistory(.down)
                     }
                 )
             }
+        }
+        .onKeyPress(.escape) {
+            guard viewModel.isRunning else { return .ignored }
+            Task { await viewModel.stopCurrentTask() }
+            return .handled
         }
         .inspector(isPresented: $viewModel.showInspector) {
             InspectorView(

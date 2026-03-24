@@ -26,6 +26,13 @@ final class AppViewModel {
     var abortReason = ""
     var inputText = ""
     var pendingAttachments: [Attachment] = []
+    /// History of sent messages for up/down arrow recall.
+    private var messageHistory: [String] = []
+    /// Current position in message history (-1 = not browsing, 0 = most recent).
+    private var historyIndex = -1
+    /// Stash of the in-progress text before the user started browsing history.
+    private var historyStash = ""
+    private static let maxMessageHistory = 100
     /// Roles of agents that are currently waiting for an LLM response.
     var processingRoles: Set<AgentRole> = []
     /// Tools available to each agent role, populated when agents come online.
@@ -110,6 +117,9 @@ final class AppViewModel {
             print("[AgentSmith] \(msg)")
             startupError = msg
         }
+
+        // Load persisted message input history
+        messageHistory = UserDefaults.standard.stringArray(forKey: "messageHistory") ?? []
 
         // Load persisted agent assignments
         if let saved = UserDefaults.standard.data(forKey: "agentAssignments") {
@@ -319,6 +329,20 @@ final class AppViewModel {
         inputText = ""
         pendingAttachments = []
 
+        // Record non-empty text in message history for up/down arrow recall.
+        if !text.isEmpty {
+            // Remove duplicate if the same message was sent most recently.
+            if messageHistory.last != text {
+                messageHistory.append(text)
+            }
+            if messageHistory.count > Self.maxMessageHistory {
+                messageHistory.removeFirst(messageHistory.count - Self.maxMessageHistory)
+            }
+            historyIndex = -1
+            historyStash = ""
+            UserDefaults.standard.set(messageHistory, forKey: "messageHistory")
+        }
+
         // Save attachment files to disk
         for attachment in attachments {
             Task.detached { [persistenceManager] in
@@ -331,6 +355,42 @@ final class AppViewModel {
         }
 
         await runtime.sendUserMessage(text, attachments: attachments)
+    }
+
+    /// Navigates through message history. Call with `.up` to recall older messages, `.down` for newer.
+    enum HistoryDirection { case up, down }
+
+    @discardableResult
+    func navigateHistory(_ direction: HistoryDirection) -> Bool {
+        guard !messageHistory.isEmpty else { return false }
+
+        switch direction {
+        case .up:
+            if historyIndex == -1 {
+                // Entering history mode — stash whatever the user was typing.
+                historyStash = inputText
+                historyIndex = messageHistory.count - 1
+            } else if historyIndex > 0 {
+                historyIndex -= 1
+            } else {
+                return false // already at oldest
+            }
+            inputText = messageHistory[historyIndex]
+            return true
+
+        case .down:
+            guard historyIndex >= 0 else { return false } // not in history mode
+            if historyIndex < messageHistory.count - 1 {
+                historyIndex += 1
+                inputText = messageHistory[historyIndex]
+            } else {
+                // Past the newest — restore the stash and exit history mode.
+                historyIndex = -1
+                inputText = historyStash
+                historyStash = ""
+            }
+            return true
+        }
     }
 
     /// Sends a private message from the user directly to the specified agent role.
@@ -380,10 +440,12 @@ final class AppViewModel {
     }
 
     func pauseTask(id: UUID) async {
+        await runtime?.terminateTaskAgents(taskID: id)
         await taskStore?.pause(id: id)
     }
 
     func stopTask(id: UUID) async {
+        await runtime?.terminateTaskAgents(taskID: id)
         await taskStore?.stop(id: id)
     }
 
@@ -433,6 +495,12 @@ final class AppViewModel {
         }
     }
     #endif
+
+    /// Stops the first running task, if any. Intended for ESC-key quick-stop.
+    func stopCurrentTask() async {
+        guard let runningTask = tasks.first(where: { $0.status == .running }) else { return }
+        await stopTask(id: runningTask.id)
+    }
 
     /// Master kill switch — stops everything immediately.
     func stopAll() async {

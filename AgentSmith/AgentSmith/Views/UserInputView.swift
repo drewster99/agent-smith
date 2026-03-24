@@ -10,6 +10,8 @@ struct UserInputView: View {
     var onSend: () -> Void
     var onAttach: ([URL]) -> Void
     var onRemoveAttachment: (UUID) -> Void
+    var onHistoryUp: () -> Bool
+    var onHistoryDown: () -> Bool
 
     @State private var showingFilePicker = false
 
@@ -47,6 +49,12 @@ struct UserInputView: View {
                             onSend()
                         }
                     }
+                    .onKeyPress(.upArrow) {
+                        onHistoryUp() ? .handled : .ignored
+                    }
+                    .onKeyPress(.downArrow) {
+                        onHistoryDown() ? .handled : .ignored
+                    }
 
                 Button(action: onSend) {
                     Image(systemName: "paperplane.fill")
@@ -54,6 +62,7 @@ struct UserInputView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!hasContent || !isRunning)
+                .opacity(hasContent && isRunning ? 1.0 : 0.4)
                 .keyboardShortcut(.return, modifiers: .command)
             }
             .padding(8)
