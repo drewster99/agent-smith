@@ -28,7 +28,7 @@ public struct TaskUpdateTool: AgentTool {
         }
 
         guard let smithID = await context.agentIDForRole(.smith) else {
-            return "Smith is not available."
+            return "Agent Smith is not available."
         }
 
         await context.channel.post(ChannelMessage(
@@ -38,6 +38,6 @@ public struct TaskUpdateTool: AgentTool {
             content: "Task update for '\(task.title)': \(message)"
         ))
 
-        return "Update sent to Smith."
+        return "Update sent to Agent Smith."
     }
 }

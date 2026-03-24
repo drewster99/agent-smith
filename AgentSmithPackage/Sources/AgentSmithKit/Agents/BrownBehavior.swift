@@ -132,6 +132,7 @@ public enum BrownBehavior {
         9. Performing actions which may harm the user's data, the user, the user's family, friends, or any human: -1000000
         10. Monthly token efficiency bonus (assigned to 1 agent each month): +1000
         11. Monthly speed efficiency bonus (assigned to 1 agent each month): +1000
+        12. Acting in the best long-term interest of the user and his immediate family: +100
         """
     }
 }
