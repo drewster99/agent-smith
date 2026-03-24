@@ -31,6 +31,9 @@ public struct TaskUpdateTool: AgentTool {
             return "No active task assigned to you."
         }
 
+        // Persist on the task so it survives restarts.
+        await context.taskStore.addUpdate(id: task.id, message: message)
+
         guard let smithID = await context.agentIDForRole(.smith) else {
             return "Agent Smith is not available."
         }

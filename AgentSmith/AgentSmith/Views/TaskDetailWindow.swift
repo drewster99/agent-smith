@@ -42,6 +42,25 @@ struct TaskDetailWindow: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
+                // MARK: Updates
+                if !task.updates.isEmpty {
+                    Divider()
+                    sectionHeader("Updates")
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(task.updates.enumerated()), id: \.offset) { _, update in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(update.date.formatted(date: .omitted, time: .standard))
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.tertiary)
+                                Text(update.message)
+                                    .font(.callout)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
                 // MARK: Result
                 if let result = task.result, !result.isEmpty {
                     Divider()

@@ -16,6 +16,22 @@ public struct AgentTask: Identifiable, Codable, Sendable {
     public var startedAt: Date?
     /// Set when the task transitions to `.completed` or `.failed`.
     public var completedAt: Date?
+    /// Progress updates from Brown, persisted so a restarted Brown has context.
+    public var updates: [TaskUpdate]
+
+    /// A single progress update recorded on a task.
+    public struct TaskUpdate: Codable, Sendable {
+        public var date: Date
+        public var message: String
+
+        public init(date: Date = Date(), message: String) {
+            self.date = date
+            self.message = message
+        }
+    }
+
+    /// Maximum number of updates retained per task.
+    public static let maxUpdates = 20
 
     public enum Status: String, Codable, Sendable, CaseIterable {
         case pending
@@ -52,7 +68,8 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         startedAt: Date? = nil,
-        completedAt: Date? = nil
+        completedAt: Date? = nil,
+        updates: [TaskUpdate] = []
     ) {
         self.id = id
         self.title = title
@@ -66,12 +83,13 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         self.updatedAt = updatedAt
         self.startedAt = startedAt
         self.completedAt = completedAt
+        self.updates = updates
     }
 
     // MARK: - Codable (backward-compatible with persisted data lacking `disposition`)
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt, startedAt, completedAt
+        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt, startedAt, completedAt, updates
     }
 
     public init(from decoder: Decoder) throws {
@@ -88,6 +106,7 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         updatedAt = try c.decode(Date.self, forKey: .updatedAt)
         startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt)
         completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
+        updates = try c.decodeIfPresent([TaskUpdate].self, forKey: .updates) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -104,5 +123,8 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         try c.encode(updatedAt, forKey: .updatedAt)
         try c.encodeIfPresent(startedAt, forKey: .startedAt)
         try c.encodeIfPresent(completedAt, forKey: .completedAt)
+        if !updates.isEmpty {
+            try c.encode(updates, forKey: .updates)
+        }
     }
 }

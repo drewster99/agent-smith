@@ -86,6 +86,18 @@ public actor TaskStore {
         }
     }
 
+    /// Appends a progress update to a task, enforcing the per-task cap.
+    public func addUpdate(id: UUID, message: String) {
+        guard var task = tasks[id] else { return }
+        task.updates.append(AgentTask.TaskUpdate(message: message))
+        if task.updates.count > AgentTask.maxUpdates {
+            task.updates.removeFirst(task.updates.count - AgentTask.maxUpdates)
+        }
+        task.updatedAt = Date()
+        tasks[id] = task
+        onChange?()
+    }
+
     /// Stores a result (and optional commentary) on a task.
     public func setResult(id: UUID, result: String, commentary: String?) {
         guard var task = tasks[id] else { return }

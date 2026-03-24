@@ -75,5 +75,8 @@ Store Brown's `task_update` messages as a `updates: [(Date, String)]` array on `
 - On task restart, include the update history in Brown's initial instruction so it knows prior progress
 - Consider adding a source tag (`.brown` / `.smith`) if Smith is later given the ability to annotate tasks
 
+### Remove implementation instructions from user-visible task descriptions
+`CreateTaskTool` appends `"\n\nReport the detailed results to the user using task_complete."` to the task description at creation time (CreateTaskTool.swift:33). This implementation detail is persisted on the task and visible in the task list UI. The instruction should either be injected into Brown's initial message separately (not stored on the task), or moved into Brown's system prompt so it doesn't pollute user-facing task descriptions.
+
 ### Add `bash` tool for better environment availability
 The current `shell` tool may not provide full PATH and environment variable availability. Add a `bash` tool that executes commands via `/bin/bash -c <arguments>`, which sources the user's shell profile and provides access to the full PATH and environment values that the user would have in an interactive terminal session. This improves reliability for commands that depend on tools installed via Homebrew, nvm, pyenv, etc.

@@ -16,6 +16,12 @@ public struct SpawnBrownTool: AgentTool {
         "required": .array([.string("task_id")])
     ]
 
+    private static let updateDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
     public init() {}
 
     public func isAvailable(in context: ToolAvailabilityContext) -> Bool {
@@ -51,6 +57,14 @@ public struct SpawnBrownTool: AgentTool {
 
         await context.taskStore.assignAgent(taskID: taskID, agentID: brownID)
 
-        return "Brown agent spawned: \(brownID). Send it task instructions via message_brown."
+        var response = "Brown agent spawned: \(brownID). Send it task instructions via message_brown."
+        if !task.updates.isEmpty {
+            let history = task.updates.map { entry in
+                "[\(Self.updateDateFormatter.string(from: entry.date))] \(entry.message)"
+            }.joined(separator: "\n")
+            response += "\n\nPrevious progress updates from the prior Brown agent:\n\(history)"
+            response += "\n\nInclude this history in your message_brown so the new Brown knows where the previous one left off."
+        }
+        return response
     }
 }
