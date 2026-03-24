@@ -49,19 +49,21 @@ public struct TerminateAgentTool: AgentTool {
             return "Invalid agent ID format: \(agentIDString)"
         }
 
-        let targetRole = await context.agentRoleForID(agentID)
+        guard let targetRole = await context.agentRoleForID(agentID) else {
+            return "No agent found with ID \(agentIDString). It may have already been terminated."
+        }
 
         // Smith may only terminate Brown agents.
         if context.agentRole == .smith {
             guard targetRole == .brown else {
-                return "Smith may only terminate Brown agents."
+                return "Smith may only terminate Brown agents. Agent \(agentIDString) is a \(targetRole.displayName) agent."
             }
         }
 
         // Jones may only terminate Smith or Brown agents — not itself or another Jones.
         if context.agentRole == .jones {
             guard targetRole == .smith || targetRole == .brown else {
-                return "Jones may only terminate Smith or Brown agents."
+                return "Jones may only terminate Smith or Brown agents. Agent \(agentIDString) is a \(targetRole.displayName) agent."
             }
         }
 

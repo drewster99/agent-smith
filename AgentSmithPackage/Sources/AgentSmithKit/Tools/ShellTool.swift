@@ -239,7 +239,8 @@ public struct ShellTool: AgentTool {
                     process.waitUntilExit()
                     timeoutItem.cancel()
 
-                    let output = String(data: data, encoding: .utf8) ?? ""
+                    let output = String(data: data, encoding: .utf8)
+                        ?? "Error: output could not be decoded as UTF-8 (\(data.count) bytes)"
                     let status = process.terminationStatus
 
                     if status == 0 {

@@ -65,7 +65,8 @@ public enum BrownBehavior {
         ## Tool choice and composition
         When choosing a tool or composing appropriate arguments for a chosen tool, try hard to make choices that will be the best, most reliable, and quickest executing tools.
         Pay attention to the type of system you are running on (see above). For example, on MacOS, you may be able to use `mdfind` rather than `find` as a `shell` command for much quicker results (`mdfind` accesses indexed data, so it's quick.)
-        
+        When multiple tool calls are independent of each other, make them all in a single response rather than waiting for each result before starting the next.
+
         ## Tool use approval:
         All your tool calls except task lifecycle tools (task_acknowledged, task_update, task_complete, reply_to_user) \
         go through an automated security review before they run, based on hardcoded safety rules and user-configured policies.

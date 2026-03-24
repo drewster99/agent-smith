@@ -44,7 +44,11 @@ public struct UpdateTaskTool: AgentTool {
             throw ToolCallError.missingRequiredArgument("status")
         }
         guard let status = AgentTask.Status(rawValue: statusString) else {
-            return "Invalid status: \(statusString). Valid values: pending, running, completed, failed"
+            return "Invalid status: \(statusString). Valid values: pending, running, awaitingReview, completed, failed"
+        }
+
+        guard await context.taskStore.task(id: taskID) != nil else {
+            return "Task not found: \(taskIDString)"
         }
 
         await context.taskStore.updateStatus(id: taskID, status: status)

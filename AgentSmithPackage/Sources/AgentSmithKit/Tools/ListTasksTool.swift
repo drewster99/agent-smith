@@ -26,8 +26,10 @@ public struct ListTasksTool: AgentTool {
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
         var tasks = await context.taskStore.allTasks().filter { $0.disposition == .active }
 
-        if case .string(let filterValue) = arguments["status_filter"],
-           let status = AgentTask.Status(rawValue: filterValue) {
+        if case .string(let filterValue) = arguments["status_filter"] {
+            guard let status = AgentTask.Status(rawValue: filterValue) else {
+                return "Invalid status_filter: '\(filterValue)'. Valid values: pending, running, paused, awaitingReview, completed, failed"
+            }
             tasks = tasks.filter { $0.status == status }
         }
 

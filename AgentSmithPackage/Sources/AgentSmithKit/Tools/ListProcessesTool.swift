@@ -40,7 +40,9 @@ public struct ListProcessesTool: AgentTool {
         // on write while we'd block waiting for exit.
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        let output = String(data: data, encoding: .utf8) ?? ""
+        guard let output = String(data: data, encoding: .utf8) else {
+            return "Error: process output could not be decoded as UTF-8 (\(data.count) bytes)."
+        }
 
         let allLines = output.components(separatedBy: "\n")
         let lines: [String]

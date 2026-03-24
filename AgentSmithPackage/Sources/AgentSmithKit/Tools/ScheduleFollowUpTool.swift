@@ -35,6 +35,11 @@ public struct ScheduleFollowUpTool: AgentTool {
         switch arguments["delay_seconds"] {
         case .int(let v):    rawDelay = Double(v)
         case .double(let v): rawDelay = v
+        case .string(let s):
+            guard let parsed = Double(s) else {
+                return "Invalid delay_seconds: '\(s)' is not a number."
+            }
+            rawDelay = parsed
         default: throw ToolCallError.missingRequiredArgument("delay_seconds")
         }
 

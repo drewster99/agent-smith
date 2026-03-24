@@ -454,14 +454,15 @@ public actor AgentActor {
                 result = "Unknown tool: \(call.name)"
             }
 
-            if call.name == "message_user" || call.name == "review_work" { sentMessage = true }
+            if call.name == "message_user" && result == "Message sent to user." { sentMessage = true }
+            if call.name == "review_work" && (result.contains("accepted and completed") || result.contains("Feedback sent to Brown")) { sentMessage = true }
             // Only pause for message_brown / spawn_brown if the action actually
             // succeeded. On failure, Smith needs another LLM turn to read the
             // error and respond (e.g., by creating a new task instead).
             if call.name == "message_brown" && result == "Message sent to Brown." { sentMessage = true }
             if call.name == "spawn_brown" && result.hasPrefix("Brown agent spawned:") { spawnedBrown = true }
-            if call.name == "task_complete" { calledTaskComplete = true }
-            if call.name == "create_task" || call.name == "run_task" { calledCreateTask = true }
+            if call.name == "task_complete" && result.hasPrefix("Task submitted for review:") { calledTaskComplete = true }
+            if (call.name == "create_task" || call.name == "run_task") && result.contains("System is restarting") { calledCreateTask = true }
 
             conversationHistory.append(LLMMessage(
                 role: .tool,
