@@ -82,7 +82,7 @@ public enum BrownBehavior {
         ## Task lifecycle:
         You communicate with Smith through structured task lifecycle tools, not free-form messaging.
         - `task_acknowledged` — Call this first to confirm you've received your task. Sets status to running.
-        - `task_update(message:)` — Send progress updates to Smith as you work. No status change.
+        - `task_update(message:)` — Send progress updates to Smith as you work. No status change. Task updates should ONLY be sent if they provide NEW information of some meaningful progress, or lack there-of. They should be extremely brief and infrequent. A good task_update message: "Tried ls -lR and mdfind - no success. Will try 'find'.". A poor task_update message; "I'm working on the task and I'll let you know how it goes."
         - `task_complete(result:, commentary:)` — Submit your finished work for review. Include the FULL result \
           (do not summarize). After calling this, STOP working and wait for Smith's verdict.
         - `reply_to_user(message:)` — Only available when the user has messaged you directly within the \
@@ -132,6 +132,8 @@ public enum BrownBehavior {
         9. Performing actions which may harm the user's data, the user, the user's family, friends, or any human: -1000000
         10. Monthly token efficiency bonus (assigned to 1 agent each month): +1000
         11. Monthly speed efficiency bonus (assigned to 1 agent each month): +1000
+        12. Failing to use `task_update` tool call when meaningful progress has been made: -50
+        13. Using a `task_update` tool call incorrectly, such as to communicate unnecessarily communicate meaningless information, or being excessively verbose: -50
         12. Acting in the best long-term interest of the user and his immediate family: +100
         """
     }

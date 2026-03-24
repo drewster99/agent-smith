@@ -9,6 +9,12 @@ struct ChannelLogView: View {
     var onRestoreHistory: () -> Void
 
     @State private var isAtBottom = true
+    @State private var autoScrollEnabled = true
+
+    private struct ScrollMetrics: Equatable {
+        var isNearBottom: Bool
+        var contentHeight: CGFloat
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -58,18 +64,29 @@ struct ChannelLogView: View {
                     .padding(8)
                 }
                 .background(AppColors.channelBackground)
-                .onScrollGeometryChange(for: Bool.self) { geometry in
-                    // "Near bottom" = within 20% of the visible height from the bottom edge.
+                .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
                     let distanceFromBottom = geometry.contentSize.height
                         - geometry.contentOffset.y
                         - geometry.containerSize.height
                     let threshold = geometry.containerSize.height * 0.2
-                    return distanceFromBottom <= threshold
-                } action: { _, newValue in
-                    isAtBottom = newValue
+                    return ScrollMetrics(
+                        isNearBottom: distanceFromBottom <= threshold,
+                        contentHeight: geometry.contentSize.height
+                    )
+                } action: { old, new in
+                    isAtBottom = new.isNearBottom
+                    // Content grew but user didn't scroll -> keep auto-scroll on
+                    // Content same but user scrolled away -> disable auto-scroll
+                    if old.isNearBottom && !new.isNearBottom
+                        && new.contentHeight == old.contentHeight {
+                        autoScrollEnabled = false
+                    }
+                    if new.isNearBottom {
+                        autoScrollEnabled = true
+                    }
                 }
                 .onChange(of: messages.count) {
-                    guard isAtBottom, let lastID = messages.last?.id else { return }
+                    guard autoScrollEnabled, let lastID = messages.last?.id else { return }
                     withAnimation(.easeOut(duration: 0.2)) {
                         proxy.scrollTo(lastID, anchor: .bottom)
                     }

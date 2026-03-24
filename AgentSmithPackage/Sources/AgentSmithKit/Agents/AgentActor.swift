@@ -259,9 +259,12 @@ public actor AgentActor {
             }
 
             do {
+                let hasPendingOrPaused = await toolContext.taskStore.allTasks()
+                    .contains { $0.disposition == .active && ($0.status == .pending || $0.status == .paused) }
                 let availabilityContext = ToolAvailabilityContext(
                     lastDirectUserMessageAt: lastDirectUserMessageAt,
-                    agentRole: configuration.role
+                    agentRole: configuration.role,
+                    hasPendingOrPausedTasks: hasPendingOrPaused
                 )
                 let toolDefinitions = tools
                     .filter { $0.isAvailable(in: availabilityContext) }
@@ -437,10 +440,14 @@ public actor AgentActor {
                 result = "Unknown tool: \(call.name)"
             }
 
-            if call.name == "message_user" || call.name == "message_brown" { sentMessage = true }
+            if call.name == "message_user" { sentMessage = true }
+            // Only pause for message_brown if the message was actually delivered.
+            // When Brown doesn't exist, the tool returns an error — Smith needs
+            // another LLM turn to read that error and respond to the user.
+            if call.name == "message_brown" && result == "Message sent to Brown." { sentMessage = true }
             if call.name == "spawn_brown" { spawnedBrown = true }
             if call.name == "task_complete" { calledTaskComplete = true }
-            if call.name == "create_task" { calledCreateTask = true }
+            if call.name == "create_task" || call.name == "run_task" { calledCreateTask = true }
 
             conversationHistory.append(LLMMessage(
                 role: .tool,

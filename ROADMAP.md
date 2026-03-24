@@ -65,5 +65,15 @@ When the model-list refresh button in Agent LLM Configuration gets an error resp
 [AgentConfig]   Response: HTTP 401 body={"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"},"request_id":"req_011CZGnZBBAcZALmp7nmj87a"}
 ```
 
+### Task update history
+Store Brown's `task_update` messages as a `updates: [(Date, String)]` array on `AgentTask`. Currently these updates are only sent as ephemeral channel messages to Smith — they're lost on restart. Persisting them on the task gives a restarted Brown useful context about where the previous Brown left off.
+
+**Design notes:**
+- Only Brown's `task_update` calls are stored (not `message_brown` content)
+- Full text retained (updates are already encouraged to be brief)
+- Cap at last ~20 entries or ~4K character budget to avoid unbounded growth
+- On task restart, include the update history in Brown's initial instruction so it knows prior progress
+- Consider adding a source tag (`.brown` / `.smith`) if Smith is later given the ability to annotate tasks
+
 ### Add `bash` tool for better environment availability
 The current `shell` tool may not provide full PATH and environment variable availability. Add a `bash` tool that executes commands via `/bin/bash -c <arguments>`, which sources the user's shell profile and provides access to the full PATH and environment values that the user would have in an interactive terminal session. This improves reliability for commands that depend on tools installed via Homebrew, nvm, pyenv, etc.

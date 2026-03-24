@@ -96,7 +96,7 @@ public struct ReviewWorkTool: AgentTool {
                 ))
             }
 
-            return "Task '\(task.title)' accepted and completed. Agents terminated. Result delivered to user."
+            return "Task '\(task.title)' accepted and completed. Agents terminated. Result delivered to user (do not deliver it again yourself, Agent Smith)."
         } else {
             // ---- Reject path ----
             let feedback: String

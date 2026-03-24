@@ -1,6 +1,6 @@
 import Foundation
 
-/// Allows Smith to spawn a new Brown+Jones agent pair.
+/// Allows Smith to spawn a new Brown+Jones agent pair for an existing task.
 public struct SpawnBrownTool: AgentTool {
     public let name = "spawn_brown"
     public let toolDescription = "Re-spawn a Brown+Jones agent pair for an existing task (e.g., after termination or if auto-spawn failed during create_task). Not needed for new tasks — create_task handles spawning automatically. Returns the Brown agent's ID. Send task instructions via message_brown after spawning."
@@ -10,27 +10,34 @@ public struct SpawnBrownTool: AgentTool {
         "properties": .dictionary([
             "task_id": .dictionary([
                 "type": .string("string"),
-                "description": .string("Optional UUID of the task to assign this Brown agent to.")
+                "description": .string("UUID of the task to assign this Brown agent to.")
             ])
         ]),
-        "required": .array([])
+        "required": .array([.string("task_id")])
     ]
 
     public init() {}
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
-        // If a task_id is provided, check that no active Brown is already assigned to it
-        if case .string(let taskIDString) = arguments["task_id"],
-           let taskID = UUID(uuidString: taskIDString) {
-            if let task = await context.taskStore.task(id: taskID) {
-                let activeStatuses: Set<AgentTask.Status> = [.pending, .running, .paused, .awaitingReview]
-                if activeStatuses.contains(task.status) {
-                    for assigneeID in task.assigneeIDs {
-                        if let role = await context.agentRoleForID(assigneeID), role == .brown {
-                            return "A Brown agent is already assigned to this task. Use schedule_followup to check back later, or terminate the existing Brown first."
-                        }
-                    }
-                }
+        guard case .string(let taskIDString) = arguments["task_id"] else {
+            throw ToolCallError.missingRequiredArgument("task_id")
+        }
+        guard let taskID = UUID(uuidString: taskIDString) else {
+            return "Invalid task_id: '\(taskIDString)' is not a valid UUID. Use list_tasks to find valid task IDs."
+        }
+        guard let task = await context.taskStore.task(id: taskID) else {
+            return "No task found with ID \(taskID). Use list_tasks to see available tasks."
+        }
+
+        let runnableStatuses: Set<AgentTask.Status> = [.pending, .running, .paused]
+        guard runnableStatuses.contains(task.status) else {
+            return "Task '\(task.title)' has status '\(task.status.rawValue)' — spawn_brown requires a pending, running, or paused task. Use create_task for new work."
+        }
+
+        // Check that no active Brown is already assigned
+        for assigneeID in task.assigneeIDs {
+            if let role = await context.agentRoleForID(assigneeID), role == .brown {
+                return "A Brown agent is already assigned to this task. Use schedule_followup to check back later, or terminate the existing Brown first."
             }
         }
 
@@ -38,10 +45,7 @@ public struct SpawnBrownTool: AgentTool {
             return "Failed to spawn Brown agent."
         }
 
-        if case .string(let taskIDString) = arguments["task_id"],
-           let taskID = UUID(uuidString: taskIDString) {
-            await context.taskStore.assignAgent(taskID: taskID, agentID: brownID)
-        }
+        await context.taskStore.assignAgent(taskID: taskID, agentID: brownID)
 
         return "Brown agent spawned: \(brownID). Send it task instructions via message_brown."
     }
