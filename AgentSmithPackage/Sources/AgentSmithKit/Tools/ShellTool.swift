@@ -80,10 +80,6 @@ public struct ShellTool: AgentTool {
         "bash -c ",
         "sh -c ",
         "zsh -c ",
-        "python -c ",
-        "python3 -c ",
-        "perl -e ",
-        "ruby -e ",
     ]
 
     /// Sensitive paths that should not be accessible via shell commands.
