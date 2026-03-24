@@ -65,9 +65,26 @@ public struct ReviewWorkTool: AgentTool {
             // ---- Accept path ----
             await context.taskStore.updateStatus(id: taskID, status: .completed)
 
+            // Fetch the updated task to get completedAt/startedAt timestamps.
+            let completedTask = await context.taskStore.task(id: taskID) ?? task
+
             for agentID in task.assigneeIDs {
                 _ = await context.terminateAgent(agentID, context.agentID)
             }
+
+            // Post a structured completion banner for the channel log.
+            var bannerMetadata: [String: AnyCodable] = [
+                "messageKind": .string("task_completed"),
+                "taskID": .string(taskID.uuidString)
+            ]
+            if let startedAt = completedTask.startedAt, let completedAt = completedTask.completedAt {
+                bannerMetadata["durationSeconds"] = .double(completedAt.timeIntervalSince(startedAt))
+            }
+            await context.channel.post(ChannelMessage(
+                sender: .system,
+                content: completedTask.title,
+                metadata: bannerMetadata
+            ))
 
             // Deliver Brown's result directly to the user as a Smith message.
             if let result = task.result, !result.isEmpty {
@@ -78,11 +95,6 @@ public struct ReviewWorkTool: AgentTool {
                     content: result
                 ))
             }
-
-            await context.channel.post(ChannelMessage(
-                sender: .system,
-                content: "Task '\(task.title)' accepted and completed. Assigned agents terminated."
-            ))
 
             return "Task '\(task.title)' accepted and completed. Agents terminated. Result delivered to user."
         } else {

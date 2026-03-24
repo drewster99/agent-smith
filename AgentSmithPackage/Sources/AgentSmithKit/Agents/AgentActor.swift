@@ -131,14 +131,9 @@ public actor AgentActor {
         maxToolCallsPerIteration = count
     }
 
-    /// Schedules a follow-up wake after the given delay.
-    /// If a sooner wake is already scheduled, this call is ignored.
+    /// Schedules a follow-up wake after the given delay, replacing any existing scheduled wake.
     public func scheduleFollowUp(after delay: TimeInterval) {
-        let newWakeAt = Date().addingTimeInterval(delay)
-        if let existing = scheduledWakeAt, existing <= newWakeAt {
-            return
-        }
-        scheduledWakeAt = newWakeAt
+        scheduledWakeAt = Date().addingTimeInterval(delay)
         interruptIdleSleep()
     }
 
@@ -421,6 +416,7 @@ public actor AgentActor {
         var sentMessage = false
         var spawnedBrown = false
         var calledTaskComplete = false
+        var calledCreateTask = false
         for call in callsToExecute {
             guard isRunning else { break }
 
@@ -444,11 +440,19 @@ public actor AgentActor {
             if call.name == "message_user" || call.name == "message_brown" { sentMessage = true }
             if call.name == "spawn_brown" { spawnedBrown = true }
             if call.name == "task_complete" { calledTaskComplete = true }
+            if call.name == "create_task" { calledCreateTask = true }
 
             conversationHistory.append(LLMMessage(
                 role: .tool,
                 content: .toolResult(toolCallID: call.id, content: result)
             ))
+        }
+
+        // create_task fires a detached restart — stop the run loop so we don't
+        // race the restart and accidentally call create_task a second time.
+        if calledCreateTask {
+            hasUnprocessedInput = false
+            return
         }
 
         // After completing a task, stop and wait for Smith's review.
@@ -470,12 +474,10 @@ public actor AgentActor {
         }
 
         // After spawning Brown (without also sending it a message in the same turn), stop
-        // the loop to prevent spawn storms. Schedule a short follow-up so Smith wakes to
-        // send Brown its task instructions — Brown's online announcement is filtered, so
-        // nothing else would wake Smith without this.
+        // the loop to prevent spawn storms. Brown's agent_online announcement passes through
+        // Smith's message filter and will wake Smith to send task instructions.
         if spawnedBrown {
             hasUnprocessedInput = false
-            await toolContext.scheduleFollowUp(10)
             return
         }
 

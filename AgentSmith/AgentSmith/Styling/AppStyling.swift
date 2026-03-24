@@ -16,6 +16,8 @@ enum AppColors {
     static let smithToUserBackground = Color.green.opacity(0.08)
     /// Accent for new-task banners in the channel log.
     static let taskCreatedAccent = Color.blue
+    /// Accent for task-completed banners in the channel log.
+    static let taskCompletedAccent = Color(red: 0.85, green: 0.65, blue: 0.13)
 
     /// Returns the color for a given channel message sender.
     static func color(for sender: ChannelMessage.Sender) -> Color {

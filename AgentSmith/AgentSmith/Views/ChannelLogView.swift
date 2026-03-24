@@ -42,6 +42,13 @@ struct ChannelLogView: View {
                                     timestamp: message.timestamp
                                 )
                                     .id(message.id)
+                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_completed" {
+                                TaskCompletedBanner(
+                                    title: message.content,
+                                    durationSeconds: message.doubleMetadata("durationSeconds"),
+                                    timestamp: message.timestamp
+                                )
+                                    .id(message.id)
                             } else {
                                 MessageRow(message: message, allMessages: messages)
                                     .id(message.id)
@@ -480,6 +487,14 @@ private extension ChannelMessage {
         if case .string(let value) = metadata?[key] { return value }
         return nil
     }
+
+    func doubleMetadata(_ key: String) -> Double? {
+        switch metadata?[key] {
+        case .double(let value): return value
+        case .int(let value): return Double(value)
+        default: return nil
+        }
+    }
 }
 
 /// Visually distinct banner announcing a newly created task in the channel log.
@@ -536,6 +551,79 @@ private struct TaskCreatedBanner: View {
         .background(accentColor.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .padding(.vertical, 4)
+    }
+
+    private static let timestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SS"
+        return f
+    }()
+}
+
+/// Gold/amber banner marking a task's completion in the channel log.
+private struct TaskCompletedBanner: View {
+    let title: String
+    let durationSeconds: Double?
+    let timestamp: Date
+
+    private let accentColor = AppColors.taskCompletedAccent
+
+    var body: some View {
+        VStack(spacing: 0) {
+            accentColor.frame(height: 1).opacity(0.4)
+
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(accentColor)
+
+                Text("Task Completed")
+                    .font(AppFonts.channelSender)
+                    .foregroundStyle(accentColor)
+
+                if let duration = durationSeconds {
+                    Text("(\(Self.formattedDuration(duration)))")
+                        .font(AppFonts.channelTimestamp)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(Self.timestampFormatter.string(from: timestamp))
+                    .font(AppFonts.channelTimestamp)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+
+            Text(title)
+                .font(AppFonts.channelBody.bold())
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 6)
+
+            accentColor.frame(height: 1).opacity(0.4)
+        }
+        .background(accentColor.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .padding(.vertical, 4)
+    }
+
+    private static func formattedDuration(_ seconds: Double) -> String {
+        let totalSeconds = Int(seconds)
+        if totalSeconds < 60 {
+            return "\(totalSeconds)s"
+        }
+        let minutes = totalSeconds / 60
+        let secs = totalSeconds % 60
+        if minutes < 60 {
+            return secs > 0 ? "\(minutes)m \(secs)s" : "\(minutes)m"
+        }
+        let hours = minutes / 60
+        let mins = minutes % 60
+        return mins > 0 ? "\(hours)h \(mins)m" : "\(hours)h"
     }
 
     private static let timestampFormatter: DateFormatter = {
