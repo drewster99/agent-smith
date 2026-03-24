@@ -440,12 +440,12 @@ public actor AgentActor {
                 result = "Unknown tool: \(call.name)"
             }
 
-            if call.name == "message_user" { sentMessage = true }
-            // Only pause for message_brown if the message was actually delivered.
-            // When Brown doesn't exist, the tool returns an error — Smith needs
-            // another LLM turn to read that error and respond to the user.
+            if call.name == "message_user" || call.name == "review_work" { sentMessage = true }
+            // Only pause for message_brown / spawn_brown if the action actually
+            // succeeded. On failure, Smith needs another LLM turn to read the
+            // error and respond (e.g., by creating a new task instead).
             if call.name == "message_brown" && result == "Message sent to Brown." { sentMessage = true }
-            if call.name == "spawn_brown" { spawnedBrown = true }
+            if call.name == "spawn_brown" && result.hasPrefix("Brown agent spawned:") { spawnedBrown = true }
             if call.name == "task_complete" { calledTaskComplete = true }
             if call.name == "create_task" || call.name == "run_task" { calledCreateTask = true }
 
