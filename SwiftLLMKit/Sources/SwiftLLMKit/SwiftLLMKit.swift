@@ -396,10 +396,21 @@ public final class LLMKitManager {
                 ? provider.endpoint
                 : provider.endpoint.appendingPathComponent("v1")
             url = base.appendingPathComponent("messages")
-        case .openAICompatible:
+        case .openAICompatible, .lmStudio, .mistral, .huggingFace, .xAI:
             url = provider.endpoint.appendingPathComponent("chat/completions")
         case .ollama:
             url = provider.endpoint.appendingPathComponent("chat")
+        case .gemini:
+            let base = provider.endpoint.appendingPathComponent("models/\(config.modelID):generateContent")
+            if let apiKey, !apiKey.isEmpty,
+               var components = URLComponents(url: base, resolvingAgainstBaseURL: false) {
+                var items = components.queryItems ?? []
+                items.append(URLQueryItem(name: "key", value: apiKey))
+                components.queryItems = items
+                url = components.url ?? base
+            } else {
+                url = base
+            }
         }
 
         // Build URLRequest with headers
@@ -413,7 +424,7 @@ public final class LLMKitManager {
                 request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
             }
             request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        case .openAICompatible:
+        case .openAICompatible, .lmStudio, .mistral, .huggingFace, .xAI:
             if let apiKey, !apiKey.isEmpty {
                 request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             }
@@ -421,6 +432,9 @@ public final class LLMKitManager {
             if let apiKey, !apiKey.isEmpty {
                 request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             }
+        case .gemini:
+            // API key already in URL query parameter
+            break
         }
 
         // Build base body
@@ -436,10 +450,15 @@ public final class LLMKitManager {
             if let budget = config.thinkingBudget, budget > 0 {
                 body["thinking"] = ["type": "enabled", "budget_tokens": budget] as [String: Any]
             }
-        case .openAICompatible:
+        case .openAICompatible, .lmStudio, .mistral, .huggingFace, .xAI:
             body["max_tokens"] = config.maxOutputTokens
         case .ollama:
             body["options"] = ["num_predict": config.maxOutputTokens] as [String: Any]
+        case .gemini:
+            body["generationConfig"] = [
+                "maxOutputTokens": config.maxOutputTokens,
+                "temperature": config.temperature
+            ] as [String: Any]
         }
 
         return PreparedRequest(

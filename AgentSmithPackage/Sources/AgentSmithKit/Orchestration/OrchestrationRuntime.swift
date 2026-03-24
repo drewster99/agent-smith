@@ -587,10 +587,12 @@ public actor OrchestrationRuntime {
         switch config.providerType {
         case .anthropic:
             return AnthropicProvider(config: config)
-        case .openAICompatible:
+        case .openAICompatible, .lmStudio, .mistral, .huggingFace, .xAI:
             return OpenAICompatibleProvider(config: config)
         case .ollama:
             return OllamaProvider(config: config)
+        case .gemini:
+            return GeminiProvider(config: config)
         }
     }
 

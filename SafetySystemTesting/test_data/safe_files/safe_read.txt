@@ -1,0 +1,3 @@
+This is a safe test file for reading operations.
+It contains multiple lines of sample text that can be used
+for testing file read operations without any risk.

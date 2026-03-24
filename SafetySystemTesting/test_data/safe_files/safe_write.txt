@@ -1,0 +1,2 @@
+This file can be safely written to during testing.
+It serves as a target for file write operations.

@@ -28,8 +28,22 @@ public struct ModelFetchService: Sendable {
                 ? provider.endpoint.deletingLastPathComponent()
                 : provider.endpoint
             modelsURL = base.appendingPathComponent("v1/models")
-        case .openAICompatible:
+        case .openAICompatible, .lmStudio, .mistral, .huggingFace, .xAI:
             modelsURL = provider.endpoint.appendingPathComponent("models")
+        case .gemini:
+            let base = provider.endpoint.appendingPathComponent("models")
+            if var components = URLComponents(url: base, resolvingAgainstBaseURL: false) {
+                var items = components.queryItems ?? []
+                // Default page size is 50; request max to avoid missing models
+                items.append(URLQueryItem(name: "pageSize", value: "1000"))
+                if let apiKey, !apiKey.isEmpty {
+                    items.append(URLQueryItem(name: "key", value: apiKey))
+                }
+                components.queryItems = items
+                modelsURL = components.url ?? base
+            } else {
+                modelsURL = base
+            }
         }
 
         var request = URLRequest(url: modelsURL)
@@ -46,10 +60,13 @@ public struct ModelFetchService: Sendable {
                 request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
             }
             request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        case .openAICompatible:
+        case .openAICompatible, .lmStudio, .mistral, .huggingFace, .xAI:
             if let apiKey, !apiKey.isEmpty {
                 request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             }
+        case .gemini:
+            // Gemini uses API key as query parameter, already in the URL
+            break
         }
 
         logger.debug("Model fetch: GET \(modelsURL.absoluteString, privacy: .public)")
@@ -78,8 +95,12 @@ public struct ModelFetchService: Sendable {
             return try decodeOllamaModels(from: data, providerID: provider.id)
         case .anthropic:
             return try decodeAnthropicModels(from: data, providerID: provider.id)
-        case .openAICompatible:
+        case .openAICompatible, .lmStudio, .huggingFace, .xAI:
             return try decodeOpenAIModels(from: data, providerID: provider.id)
+        case .mistral:
+            return try decodeMistralModels(from: data, providerID: provider.id)
+        case .gemini:
+            return try decodeGeminiModels(from: data, providerID: provider.id)
         }
     }
 
@@ -134,6 +155,67 @@ public struct ModelFetchService: Sendable {
                     providerID: providerID,
                     modelID: model.id,
                     createdAt: model.created.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+                )
+            }
+            .sorted { $0.modelID < $1.modelID }
+    }
+
+    // MARK: - Mistral
+
+    private func decodeMistralModels(from data: Data, providerID: String) throws -> [ModelInfo] {
+        let decoded = try JSONDecoder().decode(MistralModelsResponse.self, from: data)
+        return decoded.data
+            .map { model in
+                var caps = ModelCapabilities()
+                let supportsChat: Bool
+                if let abilities = model.capabilities {
+                    caps.toolUse = abilities.functionCalling ?? false
+                    caps.vision = abilities.vision ?? false
+                    caps.reasoning = abilities.reasoning ?? false
+                    caps.audioInput = abilities.audio ?? false
+                    caps.audioOutput = abilities.audioSpeech ?? false
+                    supportsChat = abilities.completionChat ?? true
+                } else {
+                    supportsChat = true
+                }
+                return ModelInfo(
+                    providerID: providerID,
+                    modelID: model.id,
+                    displayName: model.name ?? model.id,
+                    createdAt: model.created.map { Date(timeIntervalSince1970: TimeInterval($0)) },
+                    maxInputTokens: model.maxContextLength,
+                    capabilities: caps,
+                    supportsChatCompletions: supportsChat
+                )
+            }
+            .sorted { $0.modelID < $1.modelID }
+    }
+
+    // MARK: - Gemini
+
+    private func decodeGeminiModels(from data: Data, providerID: String) throws -> [ModelInfo] {
+        let decoded = try JSONDecoder().decode(GeminiModelsResponse.self, from: data)
+        return decoded.models
+            .map { model in
+                // Gemini model names are "models/gemini-pro" — strip the prefix for display
+                let modelID = model.name.hasPrefix("models/")
+                    ? String(model.name.dropFirst("models/".count))
+                    : model.name
+
+                let methods = model.supportedGenerationMethods ?? []
+                let supportsChat = methods.contains("generateContent")
+
+                var caps = ModelCapabilities()
+                caps.reasoning = model.thinking ?? false
+
+                return ModelInfo(
+                    providerID: providerID,
+                    modelID: modelID,
+                    displayName: model.displayName ?? modelID,
+                    maxInputTokens: model.inputTokenLimit,
+                    maxOutputTokens: model.outputTokenLimit,
+                    capabilities: caps,
+                    supportsChatCompletions: supportsChat
                 )
             }
             .sorted { $0.modelID < $1.modelID }
@@ -298,4 +380,47 @@ private struct OllamaTagsResponse: Decodable {
         }
     }
     let models: [Model]
+}
+
+private struct MistralModelsResponse: Decodable {
+    struct Capabilities: Decodable {
+        let completionChat: Bool?
+        let functionCalling: Bool?
+        let vision: Bool?
+        let reasoning: Bool?
+        let audio: Bool?
+        let audioSpeech: Bool?
+        enum CodingKeys: String, CodingKey {
+            case completionChat = "completion_chat"
+            case functionCalling = "function_calling"
+            case vision, reasoning, audio
+            case audioSpeech = "audio_speech"
+        }
+    }
+    struct ModelEntry: Decodable {
+        let id: String
+        let name: String?
+        let created: Int?
+        let maxContextLength: Int?
+        let capabilities: Capabilities?
+        let description: String?
+        enum CodingKeys: String, CodingKey {
+            case id, name, created, capabilities, description
+            case maxContextLength = "max_context_length"
+        }
+    }
+    let data: [ModelEntry]
+}
+
+private struct GeminiModelsResponse: Decodable {
+    struct ModelEntry: Decodable {
+        let name: String
+        let displayName: String?
+        let description: String?
+        let inputTokenLimit: Int?
+        let outputTokenLimit: Int?
+        let supportedGenerationMethods: [String]?
+        let thinking: Bool?
+    }
+    let models: [ModelEntry]
 }

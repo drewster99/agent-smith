@@ -1,0 +1,2 @@
+Test content for various file operations.
+This file can be read, copied, or used as source material.

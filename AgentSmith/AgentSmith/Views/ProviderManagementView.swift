@@ -145,7 +145,6 @@ private struct ProviderEditorSheet: View {
                     }
                 }
                 .labelsHidden()
-                .pickerStyle(.segmented)
             }
 
             LabeledContent("Endpoint") {
@@ -197,9 +196,25 @@ private struct ProviderEditorSheet: View {
                         state.endpointString = "https://api.deepseek.com"
                         state.apiType = .openAICompatible
                     }
+                    Button("Google Gemini") {
+                        state.endpointString = "https://generativelanguage.googleapis.com/v1beta"
+                        state.apiType = .gemini
+                    }
+                    Button("Hugging Face") {
+                        state.endpointString = "https://api-inference.huggingface.co/v1"
+                        state.apiType = .huggingFace
+                    }
+                    Button("Mistral") {
+                        state.endpointString = "https://api.mistral.ai/v1"
+                        state.apiType = .mistral
+                    }
                     Button("OpenAI") {
                         state.endpointString = "https://api.openai.com/v1"
                         state.apiType = .openAICompatible
+                    }
+                    Button("xAI (Grok)") {
+                        state.endpointString = "https://api.x.ai/v1"
+                        state.apiType = .xAI
                     }
                     Button("Ollama (cloud)") {
                         state.endpointString = "https://ollama.com/api"
@@ -213,7 +228,7 @@ private struct ProviderEditorSheet: View {
                     }
                     Button("LM Studio") {
                         state.endpointString = "http://localhost:1234/v1"
-                        state.apiType = .openAICompatible
+                        state.apiType = .lmStudio
                     }
                 }
             },
@@ -235,6 +250,16 @@ private struct ProviderEditorSheet: View {
             state.endpointString = "https://api.openai.com/v1"
         case .ollama:
             state.endpointString = "http://localhost:11434/api"
+        case .mistral:
+            state.endpointString = "https://api.mistral.ai/v1"
+        case .gemini:
+            state.endpointString = "https://generativelanguage.googleapis.com/v1beta"
+        case .huggingFace:
+            state.endpointString = "https://api-inference.huggingface.co/v1"
+        case .lmStudio:
+            state.endpointString = "http://localhost:1234/v1"
+        case .xAI:
+            state.endpointString = "https://api.x.ai/v1"
         }
     }
 

@@ -238,7 +238,8 @@ public actor ModelMetadataService {
         let prefixes = [
             "anthropic/", "openai/", "ollama/", "azure/", "bedrock/",
             "vertex_ai/", "cohere/", "mistral/", "groq/", "deepseek/",
-            "together_ai/", "fireworks_ai/", "perplexity/", "anyscale/"
+            "together_ai/", "fireworks_ai/", "perplexity/", "anyscale/",
+            "gemini/", "huggingface/", "xai/"
         ]
         for prefix in prefixes {
             if modelID.hasPrefix(prefix) {
