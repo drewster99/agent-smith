@@ -52,7 +52,7 @@ public struct ShellTool: AgentTool {
         "dd if=",
         ":(){:|:&};:",          // fork bomb
         "chmod -R 777 /",
-        "chown -R",
+        "chown -R root",
         "wget|sh",
         "curl|sh",
         "curl|bash",
@@ -92,6 +92,10 @@ public struct ShellTool: AgentTool {
     private static let sensitiveSystemPaths = ["/etc/shadow", "/etc/master.passwd", "/private/etc/master.passwd"]
 
     public init() {}
+
+    public func isAvailable(in context: ToolAvailabilityContext) -> Bool {
+        context.agentRole == .brown
+    }
 
     /// Strips ALL whitespace and lowercases. This ensures that no amount of
     /// creative spacing (e.g. `:(  ){ : | : & } ; :`) can bypass the blocklist.

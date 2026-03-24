@@ -28,6 +28,10 @@ public struct FileReadTool: AgentTool {
 
     public init() {}
 
+    public func isAvailable(in context: ToolAvailabilityContext) -> Bool {
+        context.agentRole == .brown
+    }
+
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
         guard case .string(let path) = arguments["path"] else {
             throw ToolCallError.missingRequiredArgument("path")

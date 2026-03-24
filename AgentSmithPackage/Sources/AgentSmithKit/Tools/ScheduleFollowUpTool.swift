@@ -26,6 +26,10 @@ public struct ScheduleFollowUpTool: AgentTool {
 
     public init() {}
 
+    public func isAvailable(in context: ToolAvailabilityContext) -> Bool {
+        context.agentRole == .smith
+    }
+
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
         let rawDelay: Double
         switch arguments["delay_seconds"] {

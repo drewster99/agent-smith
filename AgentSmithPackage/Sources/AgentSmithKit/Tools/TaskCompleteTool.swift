@@ -25,6 +25,10 @@ public struct TaskCompleteTool: AgentTool {
 
     public init() {}
 
+    public func isAvailable(in context: ToolAvailabilityContext) -> Bool {
+        context.agentRole == .brown
+    }
+
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
         guard case .string(let result) = arguments["result"] else {
             throw ToolCallError.missingRequiredArgument("result")

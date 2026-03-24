@@ -22,6 +22,10 @@ public struct MessageBrownTool: AgentTool {
 
     public init() {}
 
+    public func isAvailable(in context: ToolAvailabilityContext) -> Bool {
+        context.agentRole == .smith
+    }
+
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
         guard case .string(let message) = arguments["message"] else {
             throw ToolCallError.missingRequiredArgument("message")

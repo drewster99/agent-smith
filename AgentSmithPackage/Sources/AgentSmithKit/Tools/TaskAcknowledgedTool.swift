@@ -13,6 +13,10 @@ public struct TaskAcknowledgedTool: AgentTool {
 
     public init() {}
 
+    public func isAvailable(in context: ToolAvailabilityContext) -> Bool {
+        context.agentRole == .brown
+    }
+
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
         guard let task = await context.taskStore.taskForAgent(agentID: context.agentID) else {
             return "No active task assigned to you."

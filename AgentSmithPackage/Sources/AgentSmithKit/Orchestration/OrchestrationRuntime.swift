@@ -550,15 +550,6 @@ public actor OrchestrationRuntime {
         ))
     }
 
-    /// One-shot repair of orphaned tool_use/tool_result pairs in an agent's conversation history.
-    /// DEBUG builds only.
-    #if DEBUG
-    public func sanitizeHistory(for role: AgentRole) async {
-        guard let agentID = agentIDForRole(role), let agent = agents[agentID] else { return }
-        await agent.sanitizeHistory()
-    }
-    #endif
-
     /// Replaces the system prompt in the active agent's conversation history.
     public func updateSystemPrompt(for role: AgentRole, prompt: String) async {
         guard let agentID = agentIDForRole(role), let agent = agents[agentID] else { return }

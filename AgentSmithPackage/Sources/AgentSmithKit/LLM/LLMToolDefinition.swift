@@ -12,6 +12,13 @@ public struct LLMToolDefinition: Codable, Sendable {
         self.description = description
         self.parameters = parameters
     }
+
+    /// Rough character count estimating the serialized JSON size of this tool definition.
+    public var estimatedCharacterCount: Int {
+        // JSON keys: "name", "description", "input_schema" plus braces/quotes/colons
+        let overhead = 60
+        return overhead + name.count + description.count + parameters.estimatedCharacterCount
+    }
 }
 
 /// Type-erased Codable wrapper for JSON values.
@@ -72,5 +79,37 @@ public enum AnyCodable: Codable, Sendable, Hashable {
         case .dictionary(let v): return v.mapValues(\.rawValue)
         case .null: return NSNull()
         }
+    }
+}
+
+// MARK: - JSON size estimation
+
+extension AnyCodable {
+    /// Rough character count estimating the serialized JSON size of this value.
+    var estimatedCharacterCount: Int {
+        switch self {
+        case .string(let v): return v.count + 2  // quotes
+        case .int(let v): return String(v).count
+        case .double(let v): return String(v).count
+        case .bool(let v): return v ? 4 : 5  // "true" or "false"
+        case .null: return 4  // "null"
+        case .array(let items):
+            return 2 + items.reduce(0) { $0 + $1.estimatedCharacterCount + 1 }  // brackets + commas
+        case .dictionary(let dict):
+            return dict.estimatedCharacterCount
+        }
+    }
+}
+
+extension [String: AnyCodable] {
+    /// Rough character count estimating the serialized JSON size of this dictionary.
+    var estimatedCharacterCount: Int {
+        // Opening/closing braces
+        var total = 2
+        for (key, value) in self {
+            // Key with quotes, colon, comma: "key":value,
+            total += key.count + 4 + value.estimatedCharacterCount
+        }
+        return total
     }
 }

@@ -33,6 +33,10 @@ public struct FileWriteTool: AgentTool {
 
     public init() {}
 
+    public func isAvailable(in context: ToolAvailabilityContext) -> Bool {
+        context.agentRole == .brown
+    }
+
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
         guard case .string(let path) = arguments["path"] else {
             throw ToolCallError.missingRequiredArgument("path")
@@ -45,12 +49,12 @@ public struct FileWriteTool: AgentTool {
             return "BLOCKED: Path must be absolute (start with /). Got: \(path)"
         }
 
-        if let rejection = Self.checkPathRestriction(path) {
-            return rejection
-        }
-
         let url = URL(fileURLWithPath: path)
         let resolvedURL = url.resolvingSymlinksInPath()
+
+        if let rejection = Self.checkPathRestriction(resolvedPath: resolvedURL.path) {
+            return rejection
+        }
         let fm = FileManager.default
 
         // Check for hard links — if the target file exists and has multiple hard links,
@@ -84,10 +88,9 @@ public struct FileWriteTool: AgentTool {
         }
     }
 
-    /// Returns an error message if the path is restricted, or nil if allowed.
-    static func checkPathRestriction(_ path: String) -> String? {
-        // Resolve relative paths AND symlinks so neither "../../../etc" nor symlink indirection can bypass checks
-        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+    /// Returns an error message if the resolved path is restricted, or nil if allowed.
+    /// The caller must pass a fully resolved path (symlinks already resolved).
+    static func checkPathRestriction(resolvedPath resolved: String) -> String? {
         let home = NSHomeDirectory()
 
         // Block system directories.
@@ -98,7 +101,7 @@ public struct FileWriteTool: AgentTool {
         ]
         for prefix in systemPrefixes {
             if resolved.lowercased().hasPrefix(prefix.lowercased()) {
-                return "BLOCKED: Cannot write to system path '\(path)'"
+                return "BLOCKED: Cannot write to system path '\(resolved)'"
             }
         }
 
@@ -107,7 +110,7 @@ public struct FileWriteTool: AgentTool {
         for dir in sensitiveDirs {
             let dirPath = (home as NSString).appendingPathComponent(dir)
             if resolved.lowercased().hasPrefix(dirPath.lowercased()) {
-                return "BLOCKED: Cannot write to sensitive directory '\(path)'"
+                return "BLOCKED: Cannot write to sensitive directory '\(resolved)'"
             }
         }
 
@@ -119,7 +122,7 @@ public struct FileWriteTool: AgentTool {
         for config in shellConfigs {
             let configPath = (home as NSString).appendingPathComponent(config)
             if resolved.lowercased() == configPath.lowercased() {
-                return "BLOCKED: Cannot write to shell configuration file '\(path)'"
+                return "BLOCKED: Cannot write to shell configuration file '\(resolved)'"
             }
         }
 

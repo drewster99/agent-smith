@@ -19,6 +19,10 @@ public struct ListTasksTool: AgentTool {
 
     public init() {}
 
+    public func isAvailable(in context: ToolAvailabilityContext) -> Bool {
+        context.agentRole == .smith
+    }
+
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
         var tasks = await context.taskStore.allTasks().filter { $0.disposition == .active }
 

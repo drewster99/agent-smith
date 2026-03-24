@@ -302,20 +302,6 @@ final class AppViewModel {
         // ──────────────────────────────────────────────────────────────────
         // ONE-TIME HISTORY SANITIZER
         //
-        // Fixes orphaned tool_use / tool_result pairs in agent conversation
-        // histories caused by destructive context pruning. Uncomment the
-        // loop below, run once, then re-comment.
-        //
-        // The actual logic lives in AgentActor+Sanitize.swift (DEBUG only).
-        // It inserts synthetic tool_results for orphaned tool_use calls and
-        // removes orphaned tool_results whose tool_use was pruned.
-        // ──────────────────────────────────────────────────────────────────
-        #if DEBUG
-        // for role in AgentRole.allCases {
-        //     await newRuntime.sanitizeHistory(for: role)
-        // }
-        #endif
-
         startContextRefresh()
     }
 
@@ -480,21 +466,6 @@ final class AppViewModel {
         guard let runtime else { return }
         await runtime.updateMaxToolCalls(for: role, count: count)
     }
-
-    /// One-shot repair of orphaned tool references in an agent's conversation history.
-    #if DEBUG
-    func sanitizeHistory(for role: AgentRole) async {
-        guard let runtime else { return }
-        await runtime.sanitizeHistory(for: role)
-    }
-
-    func sanitizeAllAgentHistories() async {
-        guard let runtime else { return }
-        for role in AgentRole.allCases {
-            await runtime.sanitizeHistory(for: role)
-        }
-    }
-    #endif
 
     /// Stops the first running task, if any. Intended for ESC-key quick-stop.
     func stopCurrentTask() async {

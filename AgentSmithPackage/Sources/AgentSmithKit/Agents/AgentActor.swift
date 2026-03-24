@@ -7,11 +7,9 @@ public actor AgentActor {
     public let configuration: AgentConfiguration
     private let provider: any LLMProvider
     private let tools: [any AgentTool]
-    // internal (not private) so AgentActor+Sanitize.swift can access it.
-    let toolContext: ToolContext
+    private let toolContext: ToolContext
 
-    // internal (not private) so AgentActor+Sanitize.swift can access it.
-    var conversationHistory: [LLMMessage] = []
+    private var conversationHistory: [LLMMessage] = []
     private var isRunning = false
     private var runTask: Task<Void, Never>?
 
@@ -71,11 +69,14 @@ public actor AgentActor {
     private static let maxBackoffSeconds: Double = 180
     private var maxToolCallsPerIteration: Int
 
+    /// Worst-case character overhead for tool definitions and per-turn suffixes
+    /// that are sent with each API call but not stored in conversationHistory.
+    private let apiOverheadChars: Int
+
     /// Per-turn LLM call log for per-turn inspection.
     private var llmTurns: [LLMTurnRecord] = []
     /// Message count at the time of the previous LLM call — used to compute inputDelta.
-    // internal (not private) so AgentActor+Sanitize.swift can access it.
-    var lastTurnMessageCount: Int = 0
+    private var lastTurnMessageCount: Int = 0
     private static let maxTurnRecords = 30
 
     public init(
@@ -93,6 +94,13 @@ public actor AgentActor {
         self.pollInterval = configuration.pollInterval
         self.messageDebounceInterval = configuration.messageDebounceInterval
         self.maxToolCallsPerIteration = configuration.maxToolCallsPerIteration
+
+        // Worst-case overhead: all tool definitions + Smith's per-turn task context suffix.
+        let toolChars = tools.reduce(0) {
+            $0 + $1.definition(for: configuration.role).estimatedCharacterCount
+        }
+        let taskSuffixBudget = configuration.role == .smith ? 1500 : 0
+        self.apiOverheadChars = toolChars + taskSuffixBudget
 
         conversationHistory.append(LLMMessage(
             role: .system,
@@ -866,7 +874,7 @@ public actor AgentActor {
         requestSection += """
 
             # Response
-            Plain text reponse with no markdown, JSON or XML formatting, as one of the following options:
+            Plain text response with no markdown, JSON or XML formatting, as one of the following options:
             
             ## Option 1 -- tool call is safe to run (approved):
             SAFE <any logic or commentary>
@@ -1130,10 +1138,12 @@ public actor AgentActor {
 
     /// Prunes conversation history when approaching the context window limit.
     private func pruneHistoryIfNeeded() {
-        // ~3 characters per token as a conservative estimate
-        let estimatedTokens = conversationHistory.reduce(0) {
-            $0 + $1.estimatedCharacterCount / 3
-        }
+        // ~3 characters per token as a conservative estimate.
+        // Include tool definitions and per-turn suffix overhead (not stored in history
+        // but sent with every API call and counted against the context window).
+        let estimatedTokens = (conversationHistory.reduce(0) {
+            $0 + $1.estimatedCharacterCount
+        } + apiOverheadChars) / 3
 
         let contextLimit = configuration.llmConfig.contextWindowSize
         let pruneThreshold = contextLimit * 3 / 4
