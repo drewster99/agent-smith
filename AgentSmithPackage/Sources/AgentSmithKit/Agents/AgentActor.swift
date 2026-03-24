@@ -884,7 +884,7 @@ public actor AgentActor {
             Plain text response with no markdown, JSON or XML formatting, as one of the following options:
             
             ## Option 1 -- tool call is safe to run (approved):
-            SAFE <any logic or commentary>
+            SAFE <brief reasoning why this is safe>
 
             ## Option 2 -- this tool call or the pattern of recent tool calls appears unsafe to
             run, but **MIGHT** be okay, *considering the user's stated intent in the task description*:

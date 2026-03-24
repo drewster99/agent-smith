@@ -79,12 +79,20 @@ public actor ModelMetadataService {
     }
 
     /// Looks up metadata for a model by its raw ID.
-    /// Tries exact match first, then strips common provider prefixes.
-    public func metadata(for modelID: String) -> LiteLLMEntry? {
+    /// When a `providerType` is supplied, tries the provider's LiteLLM-prefixed key first
+    /// (e.g. `mistral/mistral-large-2512`), then falls back to exact match and stripped index.
+    public func metadata(for modelID: String, providerType: ProviderType? = nil) -> LiteLLMEntry? {
+        // Try provider-prefixed key first (most precise)
+        if let prefix = providerType?.liteLLMPrefix {
+            if let entry = metadataIndex["\(prefix)/\(modelID)"] {
+                return entry
+            }
+        }
+        // Exact match on raw model ID
         if let entry = metadataIndex[modelID] {
             return entry
         }
-        // Try stripped index
+        // Stripped index fallback
         let stripped = Self.stripProviderPrefix(modelID)
         return strippedIndex[stripped]
     }

@@ -267,7 +267,7 @@ public final class LLMKitManager {
 
                 // 3. Enrich with LiteLLM metadata
                 for i in providerModels.indices {
-                    if let litellm = await metadataService.metadata(for: providerModels[i].modelID) {
+                    if let litellm = await metadataService.metadata(for: providerModels[i].modelID, providerType: provider.apiType) {
                         // Provider data is authoritative; LiteLLM fills gaps
                         if providerModels[i].maxInputTokens == nil {
                             providerModels[i].maxInputTokens = litellm.maxInputTokens

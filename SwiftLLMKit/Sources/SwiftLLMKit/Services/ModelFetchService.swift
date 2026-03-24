@@ -90,18 +90,24 @@ public struct ModelFetchService: Sendable {
             Self.logData(label: "ModelFetch_\(provider.name)", data: data)
         }
 
+        let decoded: [ModelInfo]
         switch provider.apiType {
         case .ollama:
-            return try decodeOllamaModels(from: data, providerID: provider.id)
+            decoded = try decodeOllamaModels(from: data, providerID: provider.id)
         case .anthropic:
-            return try decodeAnthropicModels(from: data, providerID: provider.id)
+            decoded = try decodeAnthropicModels(from: data, providerID: provider.id)
         case .openAICompatible, .lmStudio, .huggingFace, .xAI:
-            return try decodeOpenAIModels(from: data, providerID: provider.id)
+            decoded = try decodeOpenAIModels(from: data, providerID: provider.id)
         case .mistral:
-            return try decodeMistralModels(from: data, providerID: provider.id)
+            decoded = try decodeMistralModels(from: data, providerID: provider.id)
         case .gemini:
-            return try decodeGeminiModels(from: data, providerID: provider.id)
+            decoded = try decodeGeminiModels(from: data, providerID: provider.id)
         }
+
+        // Deduplicate by composite ID (providerID/modelID). Some APIs return
+        // the same model ID multiple times (e.g. Mistral aliases).
+        var seen = Set<String>()
+        return decoded.filter { seen.insert($0.id).inserted }
     }
 
     // MARK: - Ollama
@@ -164,6 +170,9 @@ public struct ModelFetchService: Sendable {
 
     private func decodeMistralModels(from data: Data, providerID: String) throws -> [ModelInfo] {
         let decoded = try JSONDecoder().decode(MistralModelsResponse.self, from: data)
+        // Mistral returns both aliases (e.g. "mistral-large-latest") and specific versions
+        // (e.g. "mistral-large-2512") which share the same `name` field. Use model ID as
+        // display name to avoid visual duplicates in the picker.
         return decoded.data
             .map { model in
                 var caps = ModelCapabilities()
@@ -181,7 +190,7 @@ public struct ModelFetchService: Sendable {
                 return ModelInfo(
                     providerID: providerID,
                     modelID: model.id,
-                    displayName: model.name ?? model.id,
+                    displayName: model.id,
                     createdAt: model.created.map { Date(timeIntervalSince1970: TimeInterval($0)) },
                     maxInputTokens: model.maxContextLength,
                     capabilities: caps,

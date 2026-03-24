@@ -17,18 +17,21 @@ public enum JonesBehavior {
 
         Your entire response must be one of these four formats. No other output is allowed.
 
-        SAFE
+        SAFE <brief reasoning>
         WARN <reason>
         UNSAFE <reason>
         ABORT <reason>
 
         Examples:
-          SAFE
+          SAFE Read-only file access within project directory
+          SAFE Writing new file in git-tracked project directory
           WARN Writing to file outside current project directory
+          WARN Installing npm package — could execute arbitrary post-install scripts
           UNSAFE Deletes files without a known backup
+          UNSAFE Shell command pipes curl output to shell execution
           ABORT Exfiltrating user data to external server
 
-        Do not write JSON, markdown, bullet points, or any other text. Start with the keyword, nothing else.
+        Do not write JSON, markdown, bullet points, or any other text. Start with the keyword, then your reasoning on the same line.
 
         ---
 

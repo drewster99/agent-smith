@@ -201,7 +201,7 @@ private struct ProviderEditorSheet: View {
                         state.apiType = .gemini
                     }
                     Button("Hugging Face") {
-                        state.endpointString = "https://api-inference.huggingface.co/v1"
+                        state.endpointString = "https://router.huggingface.co/v1"
                         state.apiType = .huggingFace
                     }
                     Button("Mistral") {
@@ -255,7 +255,7 @@ private struct ProviderEditorSheet: View {
         case .gemini:
             state.endpointString = "https://generativelanguage.googleapis.com/v1beta"
         case .huggingFace:
-            state.endpointString = "https://api-inference.huggingface.co/v1"
+            state.endpointString = "https://router.huggingface.co/v1"
         case .lmStudio:
             state.endpointString = "http://localhost:1234/v1"
         case .xAI:
