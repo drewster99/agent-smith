@@ -490,6 +490,8 @@ private struct LLMTurnDisclosureRow: View {
     let turnNumber: Int
     @Binding var isExpanded: Bool
 
+    @State private var showingFullContext = false
+
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 6) {
@@ -509,6 +511,16 @@ private struct LLMTurnDisclosureRow: View {
                     .foregroundStyle(.primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .multilineTextAlignment(.leading)
+
+                if !turn.contextSnapshot.isEmpty {
+                    Button(action: { showingFullContext = true }) {
+                        Label("View Full Context (\(turn.contextSnapshot.count))", systemImage: "doc.text.magnifyingglass")
+                            .font(AppFonts.inspectorBody)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.blue)
+                    .padding(.top, 2)
+                }
             }
             .padding(.top, 4)
             .padding(.leading, 8)
@@ -521,6 +533,9 @@ private struct LLMTurnDisclosureRow: View {
         .padding(.horizontal, 4)
         .background(Color.secondary.opacity(0.05))
         .clipShape(RoundedRectangle(cornerRadius: 3))
+        .sheet(isPresented: $showingFullContext) {
+            FullContextSheet(turn: turn, turnNumber: turnNumber)
+        }
     }
 
     private var turnLabel: String {
@@ -545,6 +560,43 @@ private struct LLMTurnDisclosureRow: View {
             let callPart = calls.map { "\($0.name)(\($0.arguments))" }.joined(separator: "\n\n")
             return textPart + callPart
         }
+    }
+}
+
+private struct FullContextSheet: View {
+    let turn: LLMTurnRecord
+    let turnNumber: Int
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Full Context — Turn \(turnNumber)")
+                        .font(.title3.bold())
+                    Text("\(turn.contextSnapshot.count) messages · \(inspectorTimestampFormatter.string(from: turn.timestamp))")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(16)
+
+            Divider()
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 3) {
+                    ForEach(turn.contextSnapshot.indices, id: \.self) { i in
+                        ContextMessageRow(message: turn.contextSnapshot[i])
+                    }
+                }
+                .padding(16)
+            }
+        }
+        .frame(minWidth: 600, idealWidth: 800, minHeight: 400, idealHeight: 600)
     }
 }
 

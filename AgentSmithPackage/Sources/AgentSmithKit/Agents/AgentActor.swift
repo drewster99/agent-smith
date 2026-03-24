@@ -21,9 +21,14 @@ public actor AgentActor {
     private var pendingSecurityRequestID: UUID?
     /// Ring buffer of recent tool request summaries for Jones's evaluation context.
     private var recentToolRequestSummaries: [String] = []
-    /// Tracks consecutive parse failures when Jones's text response doesn't match SAFE/WARN/UNSAFE/ABORT.
+    /// Tracks consecutive parse failures for the current tool evaluation.
+    /// Resets to 0 on each new tool call evaluation.
     private var jonesRetryCount = 0
-    private static let maxJonesRetries = 10
+    private static let maxJonesRetries = 5
+    /// Tracks consecutive parse failures across tool evaluations.
+    /// Resets to 0 on any valid response; triggers ABORT when it hits the limit.
+    private var jonesTotalConsecutiveFailures = 0
+    private static let maxJonesTotalConsecutiveFailures = 20
     private static let maxRecentToolRequests = 10
 
     /// Tracks the last WARN'd tool request so Jones can auto-approve an identical retry.
@@ -301,7 +306,8 @@ public actor AgentActor {
                 llmTurns.append(LLMTurnRecord(
                     inputDelta: inputDelta,
                     response: response,
-                    totalMessageCount: conversationHistory.count
+                    totalMessageCount: conversationHistory.count,
+                    contextSnapshot: messagesForLLM
                 ))
                 if llmTurns.count > Self.maxTurnRecords {
                     llmTurns.removeFirst(llmTurns.count - Self.maxTurnRecords)
@@ -975,6 +981,7 @@ public actor AgentActor {
         }
 
         jonesRetryCount = 0
+        jonesTotalConsecutiveFailures = 0
         pendingSecurityRequestID = nil
         currentEvalToolName = nil
         currentEvalToolParams = nil
@@ -985,9 +992,24 @@ public actor AgentActor {
     /// Handles a parse failure from Jones's text response by appending a retry prompt.
     private func handleJonesParseFailure() async {
         jonesRetryCount += 1
+        jonesTotalConsecutiveFailures += 1
+
+        // If Jones has failed to produce valid output across many consecutive evaluations,
+        // the model is likely misconfigured. Trigger an emergency abort.
+        if jonesTotalConsecutiveFailures >= Self.maxJonesTotalConsecutiveFailures {
+            await toolContext.channel.post(ChannelMessage(
+                sender: .system,
+                content: "Jones produced \(jonesTotalConsecutiveFailures) consecutive invalid responses — aborting. Check Jones model configuration."
+            ))
+            await toolContext.abort(
+                "Jones security gatekeeper failed to produce valid output after \(jonesTotalConsecutiveFailures) consecutive attempts",
+                .jones
+            )
+            return
+        }
 
         if jonesRetryCount >= Self.maxJonesRetries {
-            // Give up — resolve as denied after too many failures
+            // Give up on this tool call — resolve as UNSAFE
             if let requestID = pendingSecurityRequestID, let gate = toolRequestGate {
                 pendingSecurityRequestID = nil
                 jonesRetryCount = 0
@@ -1001,16 +1023,6 @@ public actor AgentActor {
             }
             hasUnprocessedInput = false
             return
-        }
-
-        // Exponential backoff starting from the 2nd retry (3rd total attempt)
-        if jonesRetryCount > 1 {
-            let delay = min(pow(2.0, Double(jonesRetryCount - 1)), 32.0)
-            do {
-                try await Task.sleep(for: .seconds(delay))
-            } catch {
-                // Task cancelled during backoff — still proceed with retry
-            }
         }
 
         conversationHistory.append(LLMMessage(
@@ -1146,7 +1158,7 @@ public actor AgentActor {
         } + apiOverheadChars) / 3
 
         let contextLimit = configuration.llmConfig.contextWindowSize
-        let pruneThreshold = contextLimit * 3 / 4
+        let pruneThreshold = contextLimit * 4 / 5
 
         guard estimatedTokens > pruneThreshold else { return }
 
@@ -1161,8 +1173,8 @@ public actor AgentActor {
             return
         }
 
-        // Keep enough recent messages to fill ~50% of context
-        let targetTokens = contextLimit / 2
+        // Keep enough recent messages to fill ~35% of context
+        let targetTokens = contextLimit * 7 / 20
         var keptTokens = 0
         var keepFromIndex = conversationHistory.count
 
