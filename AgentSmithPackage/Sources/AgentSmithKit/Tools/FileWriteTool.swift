@@ -3,7 +3,7 @@ import Foundation
 /// Writes content to a file. Blocks writes to sensitive system and credential paths.
 public struct FileWriteTool: AgentTool {
     public let name = "file_write"
-    public let toolDescription = "Write content to a file at the given path. Creates parent directories if needed. Sensitive system paths are blocked."
+    public let toolDescription = "Write content to a file at the given absolute path. Creates parent directories if needed. Requires fully qualified paths (starting with /). Blocks writes to sensitive system paths and hard-linked files."
 
     public func description(for role: AgentRole) -> String {
         switch role {
@@ -21,7 +21,7 @@ public struct FileWriteTool: AgentTool {
         "properties": .dictionary([
             "path": .dictionary([
                 "type": .string("string"),
-                "description": .string("Absolute or relative file path to write.")
+                "description": .string("Fully qualified (absolute) file path to write. Must start with /.")
             ]),
             "content": .dictionary([
                 "type": .string("string"),
@@ -41,18 +41,43 @@ public struct FileWriteTool: AgentTool {
             throw ToolCallError.missingRequiredArgument("content")
         }
 
+        guard path.hasPrefix("/") else {
+            return "BLOCKED: Path must be absolute (start with /). Got: \(path)"
+        }
+
         if let rejection = Self.checkPathRestriction(path) {
             return rejection
         }
 
         let url = URL(fileURLWithPath: path)
+        let resolvedURL = url.resolvingSymlinksInPath()
+        let fm = FileManager.default
+
+        // Check for hard links — if the target file exists and has multiple hard links,
+        // writing to it could silently modify data reachable from other paths.
+        if fm.fileExists(atPath: resolvedURL.path) {
+            do {
+                let attrs = try fm.attributesOfItem(atPath: resolvedURL.path)
+                if let linkCount = attrs[.referenceCount] as? Int, linkCount > 1 {
+                    return "BLOCKED: File '\(path)' has \(linkCount) hard links. Writing would affect all linked paths."
+                }
+            } catch {
+                return "Error checking file attributes: \(error.localizedDescription)"
+            }
+        }
+
         do {
-            let parentDir = url.deletingLastPathComponent()
-            try FileManager.default.createDirectory(
+            let parentDir = resolvedURL.deletingLastPathComponent()
+            try fm.createDirectory(
                 at: parentDir,
                 withIntermediateDirectories: true
             )
-            try content.write(to: url, atomically: true, encoding: .utf8)
+            try content.write(to: resolvedURL, atomically: true, encoding: .utf8)
+
+            // Report if the path traversed symlinks so the caller knows where the file actually landed.
+            if resolvedURL.path != url.standardized.path {
+                return "File written successfully: \(path) (resolved to \(resolvedURL.path) via symlink)"
+            }
             return "File written successfully: \(path)"
         } catch {
             return "Error writing file: \(error.localizedDescription)"
