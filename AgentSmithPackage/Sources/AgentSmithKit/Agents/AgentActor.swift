@@ -521,6 +521,17 @@ public actor AgentActor {
             metadata["taskDescription"] = .string(task.description)
         }
 
+        // Attach structured fields for file_write so the view layer can render rich formatting.
+        if call.name == "file_write",
+           let args = Self.parseToolParams(call.arguments) {
+            if case .string(let path) = args["path"] {
+                metadata["fileWritePath"] = .string(path)
+            }
+            if case .string(let content) = args["content"] {
+                metadata["fileWriteContent"] = .string(content)
+            }
+        }
+
         await toolContext.channel.post(ChannelMessage(
             sender: .agent(configuration.role),
             content: Self.conciseToolCallSummary(name: call.name, arguments: call.arguments),
@@ -1013,6 +1024,9 @@ public actor AgentActor {
     }
 
     /// Formats a tool call as a concise one-liner for channel display, e.g. `"shell: ls -la ~/"`.
+    /// Produces a short human-readable description for a tool call.
+    /// For `file_write`, returns just `file_write <path>` — the view layer renders rich formatting
+    /// using the structured metadata fields (`fileWritePath`, `fileWriteContent`).
     private static func conciseToolCallSummary(name: String, arguments: String) -> String {
         guard let data = arguments.data(using: .utf8) else {
             return "\(name): \(arguments)"
@@ -1023,6 +1037,11 @@ public actor AgentActor {
         } catch {
             // Malformed JSON from the LLM — fall back to raw arguments string.
             return "\(name): \(arguments)"
+        }
+
+        // file_write gets a compact one-liner; the view layer adds rich formatting.
+        if name == "file_write", case .string(let path) = dict["path"] {
+            return "file_write \(path)"
         }
 
         // For single-argument tools, just show the value directly

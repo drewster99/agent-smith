@@ -12,54 +12,81 @@ struct ChannelLogView: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    if persistedHistoryCount > 0 && !hasRestoredHistory {
-                        Button(action: onRestoreHistory) {
-                            Text("Restore full history (\(persistedHistoryCount) messages)")
-                                .font(.caption)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .background(.quaternary)
-                                .clipShape(Capsule())
+            ZStack(alignment: .bottom) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if persistedHistoryCount > 0 && !hasRestoredHistory {
+                            Button(action: onRestoreHistory) {
+                                Text("Restore full history (\(persistedHistoryCount) messages)")
+                                    .font(.caption)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(.quaternary)
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .padding(.bottom, 4)
                         }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .padding(.bottom, 4)
-                    }
 
-                    ForEach(messages) { message in
-                        if shouldSuppress(message) {
-                            // Folded into a tool_request row — don't render standalone
-                        } else if case .string(let kind) = message.metadata?["messageKind"], kind == "agent_online" {
-                            // Agent online announcements are internal coordination messages
-                        } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_created" {
-                            TaskCreatedBanner(
-                                title: message.content,
-                                description: message.stringMetadata("taskDescription"),
-                                timestamp: message.timestamp
-                            )
-                                .id(message.id)
-                        } else {
-                            MessageRow(message: message, allMessages: messages)
-                                .id(message.id)
+                        ForEach(messages) { message in
+                            if shouldSuppress(message) {
+                                // Folded into a tool_request row — don't render standalone
+                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "agent_online" {
+                                // Agent online announcements are internal coordination messages
+                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_created" {
+                                TaskCreatedBanner(
+                                    title: message.content,
+                                    description: message.stringMetadata("taskDescription"),
+                                    timestamp: message.timestamp
+                                )
+                                    .id(message.id)
+                            } else {
+                                MessageRow(message: message, allMessages: messages)
+                                    .id(message.id)
+                            }
                         }
+                    }
+                    .padding(8)
+                }
+                .background(AppColors.channelBackground)
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    // "Near bottom" = within 20% of the visible height from the bottom edge.
+                    let distanceFromBottom = geometry.contentSize.height
+                        - geometry.contentOffset.y
+                        - geometry.containerSize.height
+                    let threshold = geometry.containerSize.height * 0.2
+                    return distanceFromBottom <= threshold
+                } action: { _, newValue in
+                    isAtBottom = newValue
+                }
+                .onChange(of: messages.count) {
+                    guard isAtBottom, let lastID = messages.last?.id else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(lastID, anchor: .bottom)
                     }
                 }
-                .padding(8)
-            }
-            .background(AppColors.channelBackground)
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                // Within 20pts of the bottom counts as "at bottom" to account for padding
-                geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 20
-            } action: { _, newValue in
-                isAtBottom = newValue
-            }
-            .onChange(of: messages.count) {
-                guard isAtBottom, let lastID = messages.last?.id else { return }
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(lastID, anchor: .bottom)
+
+                if !isAtBottom {
+                    Button {
+                        guard let lastID = messages.last?.id else { return }
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo(lastID, anchor: .bottom)
+                        }
+                    } label: {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.title2)
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(8)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Circle())
+                    .shadow(radius: 2)
+                    .padding(.bottom, 8)
+                    .transition(.opacity.combined(with: .scale))
                 }
             }
         }
@@ -283,8 +310,70 @@ private struct MessageRow: View {
 
     // MARK: - Tool request consolidated block
 
+    private var isFileWrite: Bool {
+        message.stringMetadata("tool") == "file_write"
+    }
+
     @ViewBuilder
     private var toolRequestBody: some View {
+        if isFileWrite {
+            fileWriteRequestBody
+        } else {
+            genericToolRequestBody
+        }
+    }
+
+    // MARK: file_write display
+
+    @ViewBuilder
+    private var fileWriteRequestBody: some View {
+        // Line 1: "file_write /dir/path/filename ✅ (show content)"
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            FileWritePathView(path: message.stringMetadata("fileWritePath") ?? "")
+            if let indicator = dispositionIndicator {
+                Text(indicator)
+            }
+            if let content = message.stringMetadata("fileWriteContent"), !content.isEmpty {
+                Text(isExpanded ? "(hide content)" : "(show content)")
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+                    .onTapGesture { isExpanded.toggle() }
+            }
+        }
+
+        // Disposition comment (for WARN/UNSAFE/ABORT)
+        if let comment = dispositionComment {
+            Text(comment)
+                .font(AppFonts.channelBody.italic())
+                .foregroundStyle(dispositionCommentColor)
+                .padding(.leading, 12)
+        }
+
+        // Expanded content
+        if isExpanded, let content = message.stringMetadata("fileWriteContent") {
+            Text(content)
+                .font(AppFonts.channelBody.monospaced())
+                .foregroundStyle(.secondary)
+                .padding(.leading, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+        }
+
+        // Tool output (success/error message)
+        if let output = toolOutputMessage {
+            Text(output.content)
+                .font(AppFonts.channelBody.monospaced())
+                .foregroundStyle(.secondary)
+                .padding(.leading, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+        }
+    }
+
+    // MARK: generic tool display
+
+    @ViewBuilder
+    private var genericToolRequestBody: some View {
         // Line 1: "Tool: shell: pwd ✅"
         HStack(alignment: .firstTextBaseline, spacing: 4) {
             Text("Tool: \(toolCallDisplayText)")
@@ -523,5 +612,70 @@ private struct AttachmentView: View {
         if attachment.mimeType.hasPrefix("video/") { return "film" }
         if attachment.mimeType.hasPrefix("audio/") { return "waveform" }
         return "doc"
+    }
+}
+
+/// Renders a `file_write` path with colored directory components and a clickable filename.
+/// If the path traversed a symlink (detected by checking the resolved path), shows the
+/// symlink destination as a secondary label.
+private struct FileWritePathView: View {
+    let path: String
+
+    private var url: URL { URL(fileURLWithPath: path) }
+
+    /// Directory portion (everything before the last component).
+    private var directory: String {
+        guard !path.isEmpty else { return "" }
+        let dir = (path as NSString).deletingLastPathComponent
+        // Ensure trailing slash for visual consistency
+        return dir.hasSuffix("/") ? dir : dir + "/"
+    }
+
+    /// The filename (last path component).
+    private var filename: String {
+        (path as NSString).lastPathComponent
+    }
+
+    /// If the path is a symlink (or contains symlinks), returns the resolved destination.
+    private var symlinkDestination: String? {
+        guard !path.isEmpty else { return nil }
+        let resolved = url.resolvingSymlinksInPath().path
+        let standardized = url.standardized.path
+        return resolved != standardized ? resolved : nil
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Text("file_write ")
+                .font(AppFonts.channelBody)
+                .foregroundStyle(.secondary)
+
+            Text(directory)
+                .font(AppFonts.channelBody)
+                .foregroundStyle(.secondary.opacity(0.7))
+
+            Text(filename)
+                .font(AppFonts.channelBody.bold())
+                .foregroundStyle(.cyan)
+                .onTapGesture { openInFinder() }
+
+            if let dest = symlinkDestination {
+                Text(" \u{2192} ")
+                    .font(AppFonts.channelBody)
+                    .foregroundStyle(.secondary)
+                Text(dest)
+                    .font(AppFonts.channelBody)
+                    .foregroundStyle(.purple.opacity(0.8))
+                    .onTapGesture { openInFinder(path: dest) }
+            }
+        }
+    }
+
+    private func openInFinder(path overridePath: String? = nil) {
+        let targetPath = overridePath ?? path
+        let targetURL = URL(fileURLWithPath: targetPath)
+        if FileManager.default.fileExists(atPath: targetPath) {
+            NSWorkspace.shared.activateFileViewerSelecting([targetURL])
+        }
     }
 }
