@@ -98,11 +98,30 @@ public actor TaskStore {
         onChange?()
     }
 
+    /// Appends a clearly-labeled amendment to a task's description.
+    /// Used by Smith to relay user clarifications so that Brown and Jones see the updated context.
+    public func amendDescription(id: UUID, amendment: String) {
+        guard var task = tasks[id] else { return }
+        task.description += "\n\n[Amendment]: \(amendment)"
+        task.updatedAt = Date()
+        tasks[id] = task
+        onChange?()
+    }
+
     /// Stores a result (and optional commentary) on a task.
     public func setResult(id: UUID, result: String, commentary: String?) {
         guard var task = tasks[id] else { return }
         task.result = result
         task.commentary = commentary
+        task.updatedAt = Date()
+        tasks[id] = task
+        onChange?()
+    }
+
+    /// Saves a compressed summary of Brown's last working state for resumability.
+    public func setLastBrownContext(id: UUID, context: String) {
+        guard var task = tasks[id] else { return }
+        task.lastBrownContext = context
         task.updatedAt = Date()
         tasks[id] = task
         onChange?()

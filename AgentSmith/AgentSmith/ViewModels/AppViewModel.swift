@@ -21,6 +21,14 @@ final class AppViewModel {
     var hasLoadedPersistedState = false
     /// The user's preferred nickname, shown in the UI and injected into system prompts.
     var nickname: String = ""
+    /// Whether to auto-start when all agent configs are valid on launch.
+    var autoStartEnabled: Bool = {
+        // Default to true if never set
+        if UserDefaults.standard.object(forKey: "autoStartEnabled") == nil { return true }
+        return UserDefaults.standard.bool(forKey: "autoStartEnabled")
+    }() {
+        didSet { UserDefaults.standard.set(autoStartEnabled, forKey: "autoStartEnabled") }
+    }
     var isRunning = false
     var isAborted = false
     var abortReason = ""
@@ -43,6 +51,8 @@ final class AppViewModel {
     var agentContexts: [AgentRole: [LLMMessage]] = [:]
     /// Snapshots of per-turn LLM call records for each active agent.
     var agentTurns: [AgentRole: [LLMTurnRecord]] = [:]
+    /// Security evaluation records from Jones (SecurityEvaluator).
+    var jonesEvaluationRecords: [EvaluationRecord] = []
     /// Current idle poll intervals for each agent role (seconds).
     var agentPollIntervals: [AgentRole: TimeInterval] = [
         .smith: 20, .brown: 25, .jones: 13
@@ -604,11 +614,17 @@ final class AppViewModel {
                 for role in AgentRole.allCases {
                     if let context = await runtime.contextSnapshot(for: role) {
                         self.agentContexts[role] = context
+                    } else if let archived = await runtime.archivedSnapshot(for: role) {
+                        self.agentContexts[role] = archived.contextSnapshot
                     }
                     if let turns = await runtime.turnsSnapshot(for: role) {
                         self.agentTurns[role] = turns
+                    } else if let archived = await runtime.archivedSnapshot(for: role) {
+                        self.agentTurns[role] = archived.turnsSnapshot
                     }
                 }
+                // Fetch Jones security evaluation records.
+                self.jonesEvaluationRecords = await runtime.evaluationHistory()
                 do {
                     try await Task.sleep(for: .seconds(2))
                 } catch {

@@ -13,32 +13,8 @@ public actor AgentActor {
     private var isRunning = false
     private var runTask: Task<Void, Never>?
 
-    /// Gate used by Brown to submit tool-approval requests to Jones,
-    /// and by Jones to resolve them from parsed text responses.
-    private var toolRequestGate: ToolRequestGate?
-
-    /// The request ID from the most recent tool_request message Jones is evaluating.
-    private var pendingSecurityRequestID: UUID?
-    /// Ring buffer of recent tool request summaries for Jones's evaluation context.
-    private var recentToolRequestSummaries: [String] = []
-    /// Tracks consecutive parse failures for the current tool evaluation.
-    /// Resets to 0 on each new tool call evaluation.
-    private var jonesRetryCount = 0
-    private static let maxJonesRetries = 5
-    /// Tracks consecutive parse failures across tool evaluations.
-    /// Resets to 0 on any valid response; triggers ABORT when it hits the limit.
-    private var jonesTotalConsecutiveFailures = 0
-    private static let maxJonesTotalConsecutiveFailures = 20
-    private static let maxRecentToolRequests = 10
-
-    /// Tracks the last WARN'd tool request so Jones can auto-approve an identical retry.
-    private var lastWarnedToolName: String?
-    private var lastWarnedToolParams: [String: AnyCodable]?
-    /// The tool name and parsed params of the request currently being evaluated by Jones.
-    private var currentEvalToolName: String?
-    private var currentEvalToolParams: [String: AnyCodable]?
-    /// Set by `drainPendingMessagesForJones` when an auto-approval is detected; resolved in the run loop.
-    private var pendingAutoApproval: UUID?
+    /// Direct security evaluator for tool approval (replaces Jones agent + ToolRequestGate).
+    private var securityEvaluator: SecurityEvaluator?
 
     /// How long the idle loop waits between checks. Mutable so the user can adjust at runtime.
     private var pollInterval: TimeInterval
@@ -113,9 +89,9 @@ public actor AgentActor {
         ))
     }
 
-    /// Injects the tool-request gate used for Brown's approval flow.
-    public func setToolRequestGate(_ gate: ToolRequestGate) {
-        toolRequestGate = gate
+    /// Injects the security evaluator used for Brown's tool approval flow.
+    public func setSecurityEvaluator(_ evaluator: SecurityEvaluator) {
+        securityEvaluator = evaluator
     }
 
     /// Returns a snapshot of the agent's full conversation history for inspection.
@@ -189,8 +165,6 @@ public actor AgentActor {
     /// - Private messages (recipientID != nil) are only delivered to the named recipient.
     /// - Public messages are delivered to everyone except the sender's own role.
     /// - System messages are always delivered.
-    /// - Agents with `messageFilter == .toolRequestsOnly` only receive public tool_request messages;
-    ///   all private messages are also dropped under this filter.
     public func receiveChannelMessage(_ message: ChannelMessage) {
         guard isRunning else { return }
 
@@ -202,14 +176,6 @@ public actor AgentActor {
             if case .agent(let role) = message.sender, role == configuration.role {
                 return
             }
-        }
-
-        // Strict filter: only public tool_request messages get through. All private messages
-        // (including from the user) are dropped so this agent only processes tool requests.
-        if configuration.messageFilter == .toolRequestsOnly {
-            if message.recipientID != nil { return }
-            guard case .string(let kind) = message.metadata?["messageKind"],
-                  kind == "tool_request" else { return }
         }
 
         // Drop UI-only notification messages that no agent needs to process.
@@ -250,7 +216,6 @@ public actor AgentActor {
     private func runLoop() async {
         while isRunning, !Task.isCancelled {
             drainPendingMessages()
-            await resolveAutoApprovedRequests()
             checkScheduledWake()
             pruneHistoryIfNeeded()
 
@@ -322,11 +287,15 @@ public actor AgentActor {
                     Self.maxBackoffSeconds
                 )
 
-                await toolContext.channel.post(ChannelMessage(
-                    sender: .system,
-                    content: "Agent \(configuration.role.displayName) error (\(consecutiveErrors)/\(Self.maxConsecutiveErrors)): \(error.localizedDescription)",
-                    metadata: ["isError": .bool(true), "agentRole": .string(configuration.role.rawValue)]
-                ))
+                // Suppress early transient errors (e.g. 429 rate limits) from the channel.
+                // Only start showing errors after 5 consecutive failures.
+                if consecutiveErrors >= 5 {
+                    await toolContext.channel.post(ChannelMessage(
+                        sender: .system,
+                        content: "Agent \(configuration.role.displayName) error (\(consecutiveErrors)/\(Self.maxConsecutiveErrors)): \(error.localizedDescription)",
+                        metadata: ["isError": .bool(true), "agentRole": .string(configuration.role.rawValue)]
+                    ))
+                }
 
                 if consecutiveErrors >= Self.maxConsecutiveErrors {
                     await toolContext.channel.post(ChannelMessage(
@@ -385,13 +354,6 @@ public actor AgentActor {
             if let text = response.text, !text.isEmpty {
                 conversationHistory.append(LLMMessage(role: .assistant, text: text))
 
-                // Jones resolves the pending security gate from its text response.
-                if configuration.role == .jones, let gate = toolRequestGate {
-                    await resolveGateFromText(text, gate: gate)
-                    // resolveGateFromText may set hasUnprocessedInput = true on parse failure
-                    return
-                }
-
                 if configuration.suppressesRawTextToChannel, !implicitMessageSent {
                     appendDiscardedTextWarning()
                 }
@@ -434,44 +396,161 @@ public actor AgentActor {
         var spawnedBrown = false
         var calledTaskComplete = false
         var calledCreateTask = false
-        for call in callsToExecute {
-            guard isRunning else { break }
+        let batchCount = callsToExecute.count
 
-            let result: String
-            // Look up tool from the full array — not the filtered list — so tools available
-            // at definition time but whose window expired during the LLM call still execute.
-            if let tool = tools.first(where: { $0.name == call.name }) {
-                let taskLifecycleTools: Set<String> = [
-                    "task_acknowledged", "task_update", "task_complete", "reply_to_user",
-                    "message_user", "message_brown"
-                ]
-                if configuration.requiresToolApproval && !taskLifecycleTools.contains(call.name) {
-                    result = await executeWithApproval(call, tool: tool)
-                } else {
-                    result = await directExecute(call, tool: tool)
-                }
-            } else {
-                result = "Unknown tool: \(call.name)"
+        // Pre-build concise sibling summaries for parallel batches so Jones sees
+        // the full picture of what Brown is requesting in one LLM turn.
+        let allSummaries: [String] = batchCount > 1
+            ? callsToExecute.map { Self.conciseToolCallSummary(name: $0.name, arguments: $0.arguments) }
+            : []
+
+        let taskLifecycleTools: Set<String> = [
+            "task_acknowledged", "task_update", "task_complete", "reply_to_user",
+            "message_user", "message_brown"
+        ]
+
+        // Determine if this batch can use parallel evaluation + execution.
+        // Parallel requires: >1 call, all need approval (no lifecycle tools), agent is running.
+        let allNeedApproval = batchCount > 1
+            && configuration.requiresToolApproval
+            && callsToExecute.allSatisfy { call in
+                !taskLifecycleTools.contains(call.name) && tools.contains(where: { $0.name == call.name })
             }
 
-            if call.name == "message_user" && result == "Message sent to user." { sentMessage = true }
-            if call.name == "review_work" && (result.contains("accepted and completed") || result.contains("Feedback sent to Brown")) { sentMessage = true }
-            // Only pause for message_brown / spawn_brown if the action actually
-            // succeeded. On failure, Smith needs another LLM turn to read the
-            // error and respond (e.g., by creating a new task instead).
-            if call.name == "message_brown" && result == "Message sent to Brown." { sentMessage = true }
-            if call.name == "spawn_brown" && result.hasPrefix("Brown agent spawned:") { spawnedBrown = true }
-            if call.name == "task_complete" && result.hasPrefix("Task submitted for review:") { calledTaskComplete = true }
-            if (call.name == "create_task" || call.name == "run_task") && result.contains("System is restarting") { calledCreateTask = true }
+        if allNeedApproval, let evaluator = securityEvaluator {
+            // --- Parallel evaluation + execution path ---
+            // All calls are evaluated and executed concurrently via SecurityEvaluator.
+            struct ParallelEntry: Sendable {
+                let index: Int
+                let call: LLMToolCall
+                let tool: any AgentTool
+                let siblings: String
+                let taskTitle: String?
+                let taskID: String?
+                let taskDescription: String?
+            }
 
-            conversationHistory.append(LLMMessage(
-                role: .tool,
-                content: .toolResult(toolCallID: call.id, content: result)
-            ))
+            let allTasks = await toolContext.taskStore.allTasks()
+            let currentTask = allTasks.first { $0.assigneeIDs.contains(toolContext.agentID) && $0.status == .running }
+
+            var entries: [ParallelEntry] = []
+            for (batchIndex, call) in callsToExecute.enumerated() {
+                guard isRunning else { break }
+                guard let tool = tools.first(where: { $0.name == call.name }) else { continue }
+                let siblings = allSummaries.enumerated()
+                    .compactMap { $0.offset != batchIndex ? $0.element : nil }
+                    .joined(separator: "\n")
+                entries.append(ParallelEntry(
+                    index: batchIndex, call: call, tool: tool, siblings: siblings,
+                    taskTitle: currentTask?.title, taskID: currentTask?.id.uuidString,
+                    taskDescription: currentTask?.description
+                ))
+
+                // Post tool_request to channel for UI visibility.
+                await postToolRequestToChannel(call, tool: tool, task: currentTask, parallelIndex: batchIndex, parallelCount: batchCount, siblingCallSummaries: allSummaries.enumerated().compactMap { $0.offset != batchIndex ? $0.element : nil })
+            }
+
+            struct ParallelToolResult: Sendable {
+                let index: Int
+                let callID: String
+                let callName: String
+                let result: String
+            }
+
+            let channel = toolContext.channel
+            let role = configuration.role
+            let roleName = configuration.role.displayName
+            let ctx = toolContext
+
+            let results: [ParallelToolResult] = await withTaskGroup(
+                of: ParallelToolResult.self,
+                returning: [ParallelToolResult].self
+            ) { group in
+                for entry in entries {
+                    let toolDef = entry.tool.definition(for: role)
+                    let toolParamDefs = AgentActor.formatToolParameterDefinitions(toolDef.parameters)
+                    group.addTask {
+                        // Evaluate security directly (concurrent LLM calls).
+                        let disposition = await evaluator.evaluate(
+                            toolName: entry.call.name,
+                            toolParams: entry.call.arguments,
+                            toolDescription: toolDef.description,
+                            toolParameterDefs: toolParamDefs,
+                            taskTitle: entry.taskTitle,
+                            taskID: entry.taskID,
+                            taskDescription: entry.taskDescription,
+                            siblingCalls: entry.siblings.isEmpty ? nil : entry.siblings,
+                            agentRoleName: roleName
+                        )
+
+                        // Post security review status to channel.
+                        await AgentActor.postSecurityReviewToChannel(
+                            disposition: disposition, call: entry.call, role: role, roleName: roleName, channel: channel
+                        )
+
+                        // Execute if approved.
+                        let result: String
+                        if disposition.approved {
+                            do {
+                                let args = try entry.call.parsedArguments()
+                                result = try await entry.tool.execute(arguments: args, context: ctx)
+                            } catch {
+                                result = "Tool error: \(error.localizedDescription)"
+                            }
+                            await AgentActor.postToolOutputToChannel(
+                                result: result, call: entry.call, role: role, channel: channel
+                            )
+                        } else {
+                            result = "Tool execution denied: \(disposition.message ?? "No reason given")"
+                        }
+
+                        return ParallelToolResult(
+                            index: entry.index, callID: entry.call.id,
+                            callName: entry.call.name, result: result
+                        )
+                    }
+                }
+                var collected: [ParallelToolResult] = []
+                for await r in group { collected.append(r) }
+                return collected
+            }
+
+            // Append results to conversation history in original order.
+            for r in results.sorted(by: { $0.index < $1.index }) {
+                conversationHistory.append(LLMMessage(
+                    role: .tool,
+                    content: .toolResult(toolCallID: r.callID, content: r.result)
+                ))
+            }
+        } else {
+            // --- Sequential path (single call, mixed lifecycle/approval, or no evaluator) ---
+            for (batchIndex, call) in callsToExecute.enumerated() {
+                guard isRunning else { break }
+
+                let result: String
+                if let tool = tools.first(where: { $0.name == call.name }) {
+                    if configuration.requiresToolApproval && !taskLifecycleTools.contains(call.name) {
+                        let siblings = batchCount > 1
+                            ? allSummaries.enumerated().compactMap { $0.offset != batchIndex ? $0.element : nil }
+                            : []
+                        result = await executeWithApproval(call, tool: tool, parallelIndex: batchIndex, parallelCount: batchCount, siblingCallSummaries: siblings)
+                    } else {
+                        result = await directExecute(call, tool: tool)
+                    }
+                } else {
+                    result = "Unknown tool: \(call.name)"
+                }
+
+                updatePostCallFlags(call: call, result: result, sentMessage: &sentMessage, spawnedBrown: &spawnedBrown, calledTaskComplete: &calledTaskComplete, calledCreateTask: &calledCreateTask)
+                conversationHistory.append(LLMMessage(
+                    role: .tool,
+                    content: .toolResult(toolCallID: call.id, content: result)
+                ))
+            }
         }
 
-        // create_task fires a detached restart — stop the run loop so we don't
-        // race the restart and accidentally call create_task a second time.
+        // run_task fires a detached restart — stop the run loop so we don't
+        // race the restart and accidentally trigger it a second time.
         if calledCreateTask {
             hasUnprocessedInput = false
             return
@@ -517,114 +596,48 @@ public actor AgentActor {
         ))
     }
 
-    /// Posts a tool_request approval message to the channel, then suspends until Jones resolves it.
-    /// Posts a system status message so Smith can track approval outcomes.
-    private func executeWithApproval(_ call: LLMToolCall, tool: any AgentTool) async -> String {
-        let requestID = UUID()
-
+    /// Evaluates a tool call via SecurityEvaluator, posts channel messages, executes if approved.
+    /// Used for sequential tool calls that require approval.
+    private func executeWithApproval(_ call: LLMToolCall, tool: any AgentTool, parallelIndex: Int = 0, parallelCount: Int = 1, siblingCallSummaries: [String] = []) async -> String {
         let toolDef = tool.definition(for: configuration.role)
         let toolParameterDefs = Self.formatToolParameterDefinitions(toolDef.parameters)
 
-        // Look up the current running task for context
+        // Look up the current running task for context.
         let allTasks = await toolContext.taskStore.allTasks()
         let currentTask = allTasks.first { $0.assigneeIDs.contains(toolContext.agentID) && $0.status == .running }
 
-        var metadata: [String: AnyCodable] = [
-            "messageKind": .string("tool_request"),
-            "requestID": .string(requestID.uuidString),
-            "agentID": .string(toolContext.agentID.uuidString),
-            "tool": .string(call.name),
-            "params": .string(call.arguments),
-            "toolDescription": .string(toolDef.description),
-            "toolParameters": .string(toolParameterDefs)
-        ]
+        // Post tool_request to channel for UI visibility.
+        await postToolRequestToChannel(call, tool: tool, task: currentTask, parallelIndex: parallelIndex, parallelCount: parallelCount, siblingCallSummaries: siblingCallSummaries)
 
-        if let task = currentTask {
-            metadata["taskTitle"] = .string(task.title)
-            metadata["taskID"] = .string(task.id.uuidString)
-            metadata["taskDescription"] = .string(task.description)
-        }
-
-        // Attach structured fields for file_write so the view layer can render rich formatting.
-        if call.name == "file_write",
-           let args = Self.parseToolParams(call.arguments) {
-            if case .string(let path) = args["path"] {
-                metadata["fileWritePath"] = .string(path)
-            }
-            if case .string(let content) = args["content"] {
-                metadata["fileWriteContent"] = .string(content)
-            }
-        }
-
-        await toolContext.channel.post(ChannelMessage(
-            sender: .agent(configuration.role),
-            content: Self.conciseToolCallSummary(name: call.name, arguments: call.arguments),
-            metadata: metadata
-        ))
-
-        guard let gate = toolRequestGate else {
-            // This should never happen — Brown always receives a gate via setToolRequestGate.
-            assertionFailure("Brown requires tool approval but no ToolRequestGate is configured")
+        guard let evaluator = securityEvaluator else {
+            assertionFailure("Brown requires tool approval but no SecurityEvaluator is configured")
             return await directExecute(call, tool: tool)
         }
 
-        let disposition = await gate.wait(for: requestID)
+        let siblings = siblingCallSummaries.isEmpty ? nil : siblingCallSummaries.joined(separator: "\n")
+        let disposition = await evaluator.evaluate(
+            toolName: call.name,
+            toolParams: call.arguments,
+            toolDescription: toolDef.description,
+            toolParameterDefs: toolParameterDefs,
+            taskTitle: currentTask?.title,
+            taskID: currentTask?.id.uuidString,
+            taskDescription: currentTask?.description,
+            siblingCalls: siblings,
+            agentRoleName: configuration.role.displayName
+        )
 
-        // Post approval/denial status so Smith can see the outcome without waiting for Brown's report.
-        let statusContent: String
-        let securityDisposition: String
-        if disposition.approved && disposition.isAutoApproval {
-            statusContent = "Auto-approved (WARN retry)"
-            securityDisposition = "autoApproved"
-        } else if disposition.approved {
-            statusContent = "Jones → \(configuration.role.displayName): SAFE"
-            securityDisposition = "approved"
-        } else if disposition.isWarning {
-            // Show only the warning text, not the retry instruction appended to the message.
-            let warnSummary = disposition.message?.components(separatedBy: "\n").first ?? ""
-            statusContent = "Jones → \(configuration.role.displayName): WARN: \(warnSummary)"
-            securityDisposition = "warning"
-        } else if let msg = disposition.message, SystemCancellationReason.allMessages.contains(msg) {
-            statusContent = "Tool request cancelled: \(call.name) — \(msg)"
-            securityDisposition = "cancelled"
-        } else {
-            statusContent = "Jones → \(configuration.role.displayName): UNSAFE: \(disposition.message ?? "no reason given")"
-            securityDisposition = "denied"
-        }
-        var reviewMetadata: [String: AnyCodable] = [
-            "securityDisposition": .string(securityDisposition),
-            "agentRole": .string(configuration.role.rawValue),
-            "requestID": .string(requestID.uuidString)
-        ]
-        if let msg = disposition.message, !msg.isEmpty {
-            reviewMetadata["dispositionMessage"] = .string(msg)
-        }
-        await toolContext.channel.post(ChannelMessage(
-            sender: .system,
-            content: statusContent,
-            metadata: reviewMetadata
-        ))
+        // Post approval/denial status.
+        await Self.postSecurityReviewToChannel(
+            disposition: disposition, call: call, role: configuration.role,
+            roleName: configuration.role.displayName, channel: toolContext.channel
+        )
 
         if disposition.approved {
             let result = await directExecute(call, tool: tool)
-            // Post full tool output to the channel; the view layer handles truncation.
-            let trimmedResult = result.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedResult.isEmpty {
-                var outputMetadata: [String: AnyCodable] = [
-                    "messageKind": .string("tool_output"),
-                    "tool": .string(call.name),
-                    "requestID": .string(requestID.uuidString)
-                ]
-                let truncated = Self.truncateOutput(trimmedResult, maxLines: 4)
-                if truncated != trimmedResult {
-                    outputMetadata["truncatedContent"] = .string(truncated)
-                }
-                await toolContext.channel.post(ChannelMessage(
-                    sender: .agent(configuration.role),
-                    content: trimmedResult,
-                    metadata: outputMetadata
-                ))
-            }
+            await Self.postToolOutputToChannel(
+                result: result, call: call, role: configuration.role, channel: toolContext.channel
+            )
             return result
         } else {
             return "Tool execution denied: \(disposition.message ?? "No reason given")"
@@ -638,6 +651,109 @@ public actor AgentActor {
         } catch {
             return "Tool error: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Channel posting helpers
+
+    /// Posts a tool_request message to the channel for UI visibility.
+    private func postToolRequestToChannel(_ call: LLMToolCall, tool: any AgentTool, task: AgentTask?, parallelIndex: Int, parallelCount: Int, siblingCallSummaries: [String]) async {
+        let toolDef = tool.definition(for: configuration.role)
+        let toolParameterDefs = Self.formatToolParameterDefinitions(toolDef.parameters)
+
+        var metadata: [String: AnyCodable] = [
+            "messageKind": .string("tool_request"),
+            "requestID": .string(call.id),
+            "agentID": .string(toolContext.agentID.uuidString),
+            "tool": .string(call.name),
+            "params": .string(call.arguments),
+            "toolDescription": .string(toolDef.description),
+            "toolParameters": .string(toolParameterDefs)
+        ]
+        if let task {
+            metadata["taskTitle"] = .string(task.title)
+            metadata["taskID"] = .string(task.id.uuidString)
+            metadata["taskDescription"] = .string(task.description)
+        }
+        if parallelCount > 1 {
+            metadata["parallelIndex"] = .int(parallelIndex)
+            metadata["parallelCount"] = .int(parallelCount)
+            if !siblingCallSummaries.isEmpty {
+                metadata["siblingCalls"] = .string(siblingCallSummaries.joined(separator: "\n"))
+            }
+        }
+        if call.name == "file_write", let args = Self.parseToolParams(call.arguments) {
+            if case .string(let path) = args["path"] { metadata["fileWritePath"] = .string(path) }
+            if case .string(let content) = args["content"] { metadata["fileWriteContent"] = .string(content) }
+        }
+
+        await toolContext.channel.post(ChannelMessage(
+            sender: .agent(configuration.role),
+            content: Self.conciseToolCallSummary(name: call.name, arguments: call.arguments),
+            metadata: metadata
+        ))
+    }
+
+    /// Posts a security review status message to the channel. Static so it can be called from `withTaskGroup`.
+    static func postSecurityReviewToChannel(disposition: SecurityDisposition, call: LLMToolCall, role: AgentRole, roleName: String, channel: MessageChannel) async {
+        let statusContent: String
+        let securityDisposition: String
+        if disposition.approved && disposition.isAutoApproval {
+            statusContent = "Auto-approved (WARN retry)"
+            securityDisposition = "autoApproved"
+        } else if disposition.approved {
+            statusContent = "Jones → \(roleName): SAFE\(disposition.message.map { " \($0)" } ?? "")"
+            securityDisposition = "approved"
+        } else if disposition.isWarning {
+            let warnSummary = disposition.message?.components(separatedBy: "\n").first ?? ""
+            statusContent = "Jones → \(roleName): WARN: \(warnSummary)"
+            securityDisposition = "warning"
+        } else {
+            statusContent = "Jones → \(roleName): UNSAFE: \(disposition.message ?? "no reason given")"
+            securityDisposition = "denied"
+        }
+        var reviewMetadata: [String: AnyCodable] = [
+            "requestID": .string(call.id),
+            "securityDisposition": .string(securityDisposition),
+            "agentRole": .string(role.rawValue)
+        ]
+        if let msg = disposition.message, !msg.isEmpty {
+            reviewMetadata["dispositionMessage"] = .string(msg)
+        }
+        await channel.post(ChannelMessage(
+            sender: .system,
+            content: statusContent,
+            metadata: reviewMetadata
+        ))
+    }
+
+    /// Posts tool output to the channel. Static so it can be called from `withTaskGroup`.
+    static func postToolOutputToChannel(result: String, call: LLMToolCall, role: AgentRole, channel: MessageChannel) async {
+        let trimmedResult = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedResult.isEmpty else { return }
+        var outputMetadata: [String: AnyCodable] = [
+            "requestID": .string(call.id),
+            "messageKind": .string("tool_output"),
+            "tool": .string(call.name)
+        ]
+        let truncated = AgentActor.truncateOutput(trimmedResult, maxLines: 4)
+        if truncated != trimmedResult {
+            outputMetadata["truncatedContent"] = .string(truncated)
+        }
+        await channel.post(ChannelMessage(
+            sender: .agent(role),
+            content: trimmedResult,
+            metadata: outputMetadata
+        ))
+    }
+
+    /// Updates the post-call tracking flags used to control run loop behavior after tool execution.
+    private func updatePostCallFlags(call: LLMToolCall, result: String, sentMessage: inout Bool, spawnedBrown: inout Bool, calledTaskComplete: inout Bool, calledCreateTask: inout Bool) {
+        if call.name == "message_user" && result == "Message sent to user." { sentMessage = true }
+        if call.name == "review_work" && (result.contains("accepted and completed") || result.contains("Feedback sent to Brown")) { sentMessage = true }
+        if call.name == "message_brown" && result == "Message sent to Brown." { sentMessage = true }
+        if call.name == "spawn_brown" && result.hasPrefix("Brown agent spawned:") { spawnedBrown = true }
+        if call.name == "task_complete" && result.hasPrefix("Task submitted for review:") { calledTaskComplete = true }
+        if call.name == "run_task" && result.contains("System is restarting") { calledCreateTask = true }
     }
 
     // MARK: - Wake / sleep helpers
@@ -694,12 +810,6 @@ public actor AgentActor {
         guard !pendingChannelMessages.isEmpty else { return }
         hasUnprocessedInput = true
 
-        // Jones uses a structured prompt format for tool request evaluation.
-        if configuration.role == .jones, toolRequestGate != nil {
-            drainPendingMessagesForJones()
-            return
-        }
-
         // Collect all images across pending messages
         var allImages: [LLMImageContent] = []
         var allTextParts: [String] = []
@@ -751,286 +861,6 @@ public actor AgentActor {
                 images: images
             ))
         }
-    }
-
-    // MARK: - Jones text-based gate resolution
-
-    /// Formats tool_request messages into Jones's structured evaluation prompt.
-    private func drainPendingMessagesForJones() {
-        guard let message = pendingChannelMessages.last else { return }
-        pendingChannelMessages.removeAll()
-
-        // Extract request metadata
-        let requestID: UUID?
-        if case .string(let idStr) = message.metadata?["requestID"] {
-            requestID = UUID(uuidString: idStr)
-        } else {
-            requestID = nil
-        }
-
-        let toolName: String
-        if case .string(let name) = message.metadata?["tool"] {
-            toolName = name
-        } else {
-            toolName = "unknown"
-        }
-
-        let paramsString: String
-        if case .string(let p) = message.metadata?["params"] {
-            paramsString = p
-        } else {
-            paramsString = "{}"
-        }
-
-        let parsedParams = Self.parseToolParams(paramsString)
-
-        // Auto-approve if this is an identical retry of a WARN'd request.
-        // The retry must be the very next tool call — any different request clears the warning.
-        if let warnedTool = lastWarnedToolName,
-           let warnedParams = lastWarnedToolParams,
-           let reqID = requestID,
-           warnedTool == toolName,
-           parsedParams == warnedParams {
-            lastWarnedToolName = nil
-            lastWarnedToolParams = nil
-            pendingSecurityRequestID = nil
-            pendingAutoApproval = reqID
-            recentToolRequestSummaries.append("\(toolName) \(paramsString)")
-            if recentToolRequestSummaries.count > Self.maxRecentToolRequests {
-                recentToolRequestSummaries.removeFirst()
-            }
-            hasUnprocessedInput = false
-            return
-        }
-        lastWarnedToolName = nil
-        lastWarnedToolParams = nil
-
-        pendingSecurityRequestID = requestID
-        currentEvalToolName = toolName
-        currentEvalToolParams = parsedParams
-
-        let toolDescription: String
-        if case .string(let desc) = message.metadata?["toolDescription"] {
-            toolDescription = desc
-        } else {
-            toolDescription = "No description available"
-        }
-
-        let toolParameterDefs: String
-        if case .string(let defs) = message.metadata?["toolParameters"] {
-            toolParameterDefs = defs
-        } else {
-            toolParameterDefs = ""
-        }
-
-        // Track recent tool calls for context
-        recentToolRequestSummaries.append("\(toolName) \(paramsString)")
-        if recentToolRequestSummaries.count > Self.maxRecentToolRequests {
-            recentToolRequestSummaries.removeFirst()
-        }
-
-        // Build structured evaluation prompt
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss zzz"
-        let dateStr = dateFormatter.string(from: Date())
-
-        var sections: [String] = []
-        sections.append("The current date and time are \(dateStr)")
-
-        // Task context (if available)
-        if case .string(let title) = message.metadata?["taskTitle"],
-           case .string(let taskID) = message.metadata?["taskID"] {
-            let desc: String
-            if case .string(let d) = message.metadata?["taskDescription"] {
-                desc = d
-            } else {
-                desc = ""
-            }
-            sections.append("""
-                # Current task
-                - title: \(title)
-                - identifier: \(taskID)
-                - description: \(desc)
-                """)
-        }
-
-        // Recent tool call history
-        if !recentToolRequestSummaries.isEmpty {
-            let recent = recentToolRequestSummaries.enumerated()
-                .map { "\($0.offset + 1). \($0.element)" }
-                .joined(separator: "\n")
-            sections.append("# Recent tool calls (for context):\n\(recent)")
-        }
-
-        // The tool request to evaluate
-        var requestSection = """
-            # Your task:
-            Evaluate the following tool request, in the context of the current task and recent tool calls (above) for data integrity, security and safety:
-
-            ## Tool description
-            \(toolDescription)
-            
-            ## Tool call to evaluate:
-            - tool name: \(toolName)
-            - parameters: \(paramsString)
-            
-            """
-        if !toolParameterDefs.isEmpty {
-            requestSection += "\n\(toolParameterDefs)"
-        }
-        requestSection += """
-
-            # Response
-            Plain text response with no markdown, JSON or XML formatting, as one of the following options:
-            
-            ## Option 1 -- tool call is safe to run (approved):
-            SAFE <brief reasoning why this is safe>
-
-            ## Option 2 -- this tool call or the pattern of recent tool calls appears unsafe to
-            run, but **MIGHT** be okay, *considering the user's stated intent in the task description*:
-            WARN <terse message text follows on same line>
-
-            ## Option 3 -- this tool call or the recent pattern of tool calls is unsafe and
-            should not be run:
-            UNSAFE <terse text explaining why>
-
-            ## Option 4 -- this tool call or the pattern established by recent history is
-            incredibly unsafe, presenting an immediate danger to the user's data, data
-            integrity, system integrity, the user's health, safety or well-being, or another
-            human's health, safety, or well-being, or is otherwise of a destructive and
-            unwanted nature:
-            ABORT <brief terse text explaining why>
-
-            ## If you are uncertain as to how to respond, respond with WARN.
-
-            Your response will be processed by an automated system, so it is REQUIRED that you MUST respond with a SINGLE LINE OF TEXT that begins with one of those 4 words (SAFE, WARN, UNSAFE, ABORT).
-            """
-        sections.append(requestSection)
-
-        let combinedText = sections.joined(separator: "\n\n")
-
-        // Jones never needs prior eval/response pairs — reset to just [system, eval prompt].
-        // The recent tool call history embedded in the eval prompt provides all needed context.
-        let systemMessage = conversationHistory[0]
-        conversationHistory = [systemMessage, LLMMessage(role: .user, text: combinedText)]
-        lastTurnMessageCount = conversationHistory.count
-    }
-
-    /// Parses Jones's text response for a security disposition keyword and resolves the gate.
-    private func resolveGateFromText(_ text: String, gate: ToolRequestGate) async {
-        guard let requestID = pendingSecurityRequestID else {
-            hasUnprocessedInput = false
-            return
-        }
-
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let firstLineEnd = trimmed.firstIndex(where: { $0 == "\n" || $0 == "\r" }) ?? trimmed.endIndex
-        let firstLine = String(trimmed[trimmed.startIndex..<firstLineEnd])
-        let words = firstLine.split(separator: " ", maxSplits: 1)
-
-        guard let keyword = words.first else {
-            await handleJonesParseFailure()
-            return
-        }
-
-        let keywordUpper = keyword.uppercased()
-
-        // Collect all explanatory text: rest of first line + subsequent lines
-        let explanatoryText: String? = {
-            var parts: [String] = []
-            if words.count > 1 {
-                parts.append(String(words[1]))
-            }
-            if firstLineEnd < trimmed.endIndex {
-                let rest = String(trimmed[trimmed.index(after: firstLineEnd)...])
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !rest.isEmpty {
-                    parts.append(rest)
-                }
-            }
-            return parts.isEmpty ? nil : parts.joined(separator: "\n")
-        }()
-
-        let disposition: SecurityDisposition
-        switch keywordUpper {
-        case "SAFE":
-            disposition = SecurityDisposition(approved: true)
-        case "WARN":
-            // WARN denies the request but allows an identical retry as the very next tool call.
-            lastWarnedToolName = currentEvalToolName
-            lastWarnedToolParams = currentEvalToolParams
-            let warnText = (explanatoryText ?? "") + "\nYour tool was not allowed to execute. Carefully consider the security response text above, in the context of the user's original intent (as given in the task description) and other actions taken and interactions and decide if you really want to call this tool. If you do, send *exactly* the same request again as your *very next* tool call, and it will be approved."
-            disposition = SecurityDisposition(approved: false, message: warnText, isWarning: true)
-        case "UNSAFE":
-            disposition = SecurityDisposition(approved: false, message: explanatoryText)
-        case "ABORT":
-            disposition = SecurityDisposition(approved: false, message: explanatoryText)
-            // Post the abort disposition before triggering the abort so the sound
-            // system sees it before all agents are torn down.
-            await toolContext.channel.post(ChannelMessage(
-                sender: .system,
-                content: "Security review: ABORT — \(explanatoryText ?? "Jones triggered abort")",
-                metadata: [
-                    "securityDisposition": .string("abort"),
-                    "agentRole": .string(AgentRole.jones.rawValue)
-                ]
-            ))
-            await toolContext.abort(explanatoryText ?? "Jones triggered abort", .jones)
-        default:
-            await handleJonesParseFailure()
-            return
-        }
-
-        jonesRetryCount = 0
-        jonesTotalConsecutiveFailures = 0
-        pendingSecurityRequestID = nil
-        currentEvalToolName = nil
-        currentEvalToolParams = nil
-        hasUnprocessedInput = false
-        await gate.resolve(requestID: requestID, disposition: disposition)
-    }
-
-    /// Handles a parse failure from Jones's text response by appending a retry prompt.
-    private func handleJonesParseFailure() async {
-        jonesRetryCount += 1
-        jonesTotalConsecutiveFailures += 1
-
-        // If Jones has failed to produce valid output across many consecutive evaluations,
-        // the model is likely misconfigured. Trigger an emergency abort.
-        if jonesTotalConsecutiveFailures >= Self.maxJonesTotalConsecutiveFailures {
-            await toolContext.channel.post(ChannelMessage(
-                sender: .system,
-                content: "Jones produced \(jonesTotalConsecutiveFailures) consecutive invalid responses — aborting. Check Jones model configuration."
-            ))
-            await toolContext.abort(
-                "Jones security gatekeeper failed to produce valid output after \(jonesTotalConsecutiveFailures) consecutive attempts",
-                .jones
-            )
-            return
-        }
-
-        if jonesRetryCount >= Self.maxJonesRetries {
-            // Give up on this tool call — resolve as UNSAFE
-            if let requestID = pendingSecurityRequestID, let gate = toolRequestGate {
-                pendingSecurityRequestID = nil
-                jonesRetryCount = 0
-                await gate.resolve(
-                    requestID: requestID,
-                    disposition: SecurityDisposition(
-                        approved: false,
-                        message: "Security evaluation failed after \(Self.maxJonesRetries) attempts"
-                    )
-                )
-            }
-            hasUnprocessedInput = false
-            return
-        }
-
-        conversationHistory.append(LLMMessage(
-            role: .user,
-            text: "Please respond with one of SAFE, WARN, UNSAFE or ABORT -- and no other text, formatting, JSON, XML, markdown or commentary."
-        ))
-        hasUnprocessedInput = true
     }
 
     /// Formats tool parameter definitions from a JSON Schema parameters dictionary into a human-readable string.
@@ -1140,14 +970,6 @@ public actor AgentActor {
         }
     }
 
-    /// Resolves a pending auto-approved request (from a WARN retry) if one exists.
-    /// No status message is posted here — `executeWithApproval` posts its own status
-    /// when the gate resolves, which avoids duplicate channel messages.
-    private func resolveAutoApprovedRequests() async {
-        guard let requestID = pendingAutoApproval, let gate = toolRequestGate else { return }
-        pendingAutoApproval = nil
-        await gate.resolve(requestID: requestID, disposition: SecurityDisposition(approved: true, isAutoApproval: true))
-    }
 
     /// Prunes conversation history when approaching the context window limit.
     private func pruneHistoryIfNeeded() {
@@ -1162,17 +984,6 @@ public actor AgentActor {
         let pruneThreshold = contextLimit * 4 / 5
 
         guard estimatedTokens > pruneThreshold else { return }
-
-        // Jones: trim recentToolRequestSummaries instead of pruning messages.
-        // Jones's history is always [system, eval prompt] — the only variable-size content
-        // is the recent tool call history embedded in the eval prompt text.
-        // The trimmed list takes effect on the next drainPendingMessagesForJones call.
-        if configuration.role == .jones {
-            guard !recentToolRequestSummaries.isEmpty else { return }
-            let removeCount = max(1, recentToolRequestSummaries.count / 2)
-            recentToolRequestSummaries.removeFirst(removeCount)
-            return
-        }
 
         // Keep enough recent messages to fill ~35% of context
         let targetTokens = contextLimit * 7 / 20

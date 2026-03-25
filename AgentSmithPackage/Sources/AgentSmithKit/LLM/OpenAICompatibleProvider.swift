@@ -56,11 +56,30 @@ public struct OpenAICompatibleProvider: LLMProvider {
         messages: [LLMMessage],
         tools: [LLMToolDefinition]
     ) -> [String: Any] {
+        // OpenAI API requires system messages at the start of the conversation.
+        // Extract any system messages from arbitrary positions (e.g. per-turn task
+        // context appended by AgentActor) and consolidate them into a single leading
+        // system message, followed by the remaining non-system messages in order.
+        var systemParts: [String] = []
+        var nonSystemMessages: [[String: Any]] = []
+        for message in messages {
+            if message.role == .system, case .text(let text) = message.content {
+                systemParts.append(text)
+            } else {
+                nonSystemMessages.append(encodeMessage(message))
+            }
+        }
+        var orderedMessages: [[String: Any]] = []
+        if !systemParts.isEmpty {
+            orderedMessages.append(["role": "system", "content": systemParts.joined(separator: "\n\n")])
+        }
+        orderedMessages.append(contentsOf: nonSystemMessages)
+
         var body: [String: Any] = [
             "model": config.model,
             "temperature": config.temperature,
             "max_tokens": config.maxTokens,
-            "messages": messages.map(encodeMessage)
+            "messages": orderedMessages
         ]
 
         if !tools.isEmpty {

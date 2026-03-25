@@ -135,6 +135,7 @@ private struct MessageRow: View {
     let allMessages: [ChannelMessage]
 
     @State private var isExpanded = false
+    @State private var isHovering = false
 
     private var senderColor: Color {
         AppColors.color(for: message.sender)
@@ -314,6 +315,24 @@ private struct MessageRow: View {
             return Color.clear
         }())
         .clipShape(RoundedRectangle(cornerRadius: 4))
+        .overlay(alignment: .topTrailing) {
+            if isHovering {
+                Button(action: {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(message.content, forType: .string)
+                }) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .padding(4)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+                .buttonStyle(.plain)
+                .padding(4)
+            }
+        }
+        .onHover { isHovering = $0 }
     }
 
     /// Maximum characters to show for the tool call description before truncating.
@@ -351,9 +370,18 @@ private struct MessageRow: View {
 
     @ViewBuilder
     private var fileWriteRequestBody: some View {
-        // Line 1: "file_write /dir/path/filename ✅ (show content)"
+        // Line 1: "file_write /dir/path/filename ⚡1/3 ✅ (show content)"
         HStack(alignment: .firstTextBaseline, spacing: 4) {
             FileWritePathView(path: message.stringMetadata("fileWritePath") ?? "")
+            if let badge = parallelBadge {
+                Text("⚡\(badge)")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.cyan)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(.cyan.opacity(0.15))
+                    .clipShape(Capsule())
+            }
             if let indicator = dispositionIndicator {
                 Text(indicator)
             }
@@ -396,6 +424,13 @@ private struct MessageRow: View {
 
     // MARK: generic tool display
 
+    /// Whether this tool call was part of a parallel batch.
+    private var parallelBadge: String? {
+        guard case .int(let count) = message.metadata?["parallelCount"], count > 1,
+              case .int(let index) = message.metadata?["parallelIndex"] else { return nil }
+        return "\(index + 1)/\(count)"
+    }
+
     @ViewBuilder
     private var genericToolRequestBody: some View {
         // Line 1: "Tool: shell: pwd ✅"
@@ -403,6 +438,15 @@ private struct MessageRow: View {
             Text("Tool: \(toolCallDisplayText)")
                 .font(AppFonts.channelBody)
                 .foregroundStyle(.secondary)
+            if let badge = parallelBadge {
+                Text("⚡\(badge)")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.cyan)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(.cyan.opacity(0.15))
+                    .clipShape(Capsule())
+            }
             if let indicator = dispositionIndicator {
                 Text(indicator)
             }

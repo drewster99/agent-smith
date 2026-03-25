@@ -94,7 +94,56 @@ public actor ModelMetadataService {
         }
         // Stripped index fallback
         let stripped = Self.stripProviderPrefix(modelID)
-        return strippedIndex[stripped]
+        if let entry = strippedIndex[stripped] {
+            return entry
+        }
+        // Alias resolution: "-latest" / "-latest-YYYY-MM-DD" suffixes don't appear in
+        // LiteLLM, which uses versioned names (e.g. "ministral-3-14b-2512" vs "ministral-14b-latest").
+        // Extract the base name from the alias and find the best match in the provider's entries.
+        if let prefix = providerType?.liteLLMPrefix {
+            if let entry = fuzzyMatchAlias(modelID, prefix: prefix) {
+                return entry
+            }
+        }
+        return fuzzyMatchAlias(modelID, prefix: nil)
+    }
+
+    /// Attempts to match a model alias (e.g. "ministral-14b-latest") against LiteLLM entries
+    /// by stripping the "-latest" suffix and finding a key whose base name contains the same stem.
+    private func fuzzyMatchAlias(_ modelID: String, prefix: String?) -> LiteLLMEntry? {
+        // Strip common alias suffixes
+        let aliasSuffixes = ["-latest"]
+        var stem = modelID
+        for suffix in aliasSuffixes {
+            if stem.hasSuffix(suffix) {
+                stem = String(stem.dropLast(suffix.count))
+                break
+            }
+        }
+        // Also strip date suffixes like "-20250301"
+        if let lastDash = stem.lastIndex(of: "-") {
+            let tail = stem[stem.index(after: lastDash)...]
+            if tail.count >= 8, tail.allSatisfy(\.isNumber) {
+                stem = String(stem[..<lastDash])
+            }
+        }
+        guard stem != modelID else { return nil } // No alias suffix was stripped
+
+        // Search for a matching key in the index
+        let searchPrefix = prefix.map { "\($0)/" } ?? ""
+        var bestMatch: (key: String, entry: LiteLLMEntry)?
+        for (key, entry) in metadataIndex {
+            guard key.hasPrefix(searchPrefix) else { continue }
+            let keyBase = searchPrefix.isEmpty ? key : String(key.dropFirst(searchPrefix.count))
+            // Check if the key's base name contains the stem (handles "ministral-3-14b-2512" matching "ministral-14b")
+            if keyBase.contains(stem) || stem.contains(keyBase) {
+                // Prefer shorter keys (more specific match)
+                if bestMatch == nil || key.count < bestMatch!.key.count {
+                    bestMatch = (key, entry)
+                }
+            }
+        }
+        return bestMatch?.entry
     }
 
     // MARK: - Private

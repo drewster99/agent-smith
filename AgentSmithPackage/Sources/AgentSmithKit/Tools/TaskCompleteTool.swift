@@ -34,6 +34,10 @@ public struct TaskCompleteTool: AgentTool {
             throw ToolCallError.missingRequiredArgument("result")
         }
 
+        guard !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "Error: result must contain a meaningful summary of the completed work. Re-read the task requirements and provide the full result."
+        }
+
         let commentary: String?
         if case .string(let c) = arguments["commentary"] {
             commentary = c

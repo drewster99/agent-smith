@@ -99,6 +99,9 @@ public struct ToolContext: Sendable {
     public let scheduleFollowUp: @Sendable (TimeInterval) async -> Void
     /// Signals a full system restart for a new task. Called by create_task.
     public let restartForNewTask: @Sendable (UUID) async -> Void
+    /// The task ID that the current session was started/restarted for, if any.
+    /// Used by `run_task` to prevent restart loops when Smith re-invokes it on the same task.
+    public let currentResumingTaskID: UUID?
 
     public init(
         agentID: UUID,
@@ -113,7 +116,8 @@ public struct ToolContext: Sendable {
         onSelfTerminate: @escaping @Sendable () async -> Void = {},
         onProcessingStateChange: @escaping @Sendable (Bool) -> Void = { _ in },
         scheduleFollowUp: @escaping @Sendable (TimeInterval) async -> Void = { _ in },
-        restartForNewTask: @escaping @Sendable (UUID) async -> Void = { _ in }
+        restartForNewTask: @escaping @Sendable (UUID) async -> Void = { _ in },
+        currentResumingTaskID: UUID? = nil
     ) {
         self.agentID = agentID
         self.agentRole = agentRole
@@ -128,5 +132,6 @@ public struct ToolContext: Sendable {
         self.onProcessingStateChange = onProcessingStateChange
         self.scheduleFollowUp = scheduleFollowUp
         self.restartForNewTask = restartForNewTask
+        self.currentResumingTaskID = currentResumingTaskID
     }
 }

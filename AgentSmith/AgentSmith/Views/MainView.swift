@@ -83,6 +83,7 @@ struct MainView: View {
                 agentTurns: viewModel.agentTurns,
                 agentPollIntervals: viewModel.agentPollIntervals,
                 agentMaxToolCalls: viewModel.agentMaxToolCalls,
+                jonesEvaluationRecords: viewModel.jonesEvaluationRecords,
                 speechController: viewModel.speechController,
                 onSendDirectMessage: { role, text in
                     Task { await viewModel.sendDirectMessage(to: role, text: text) }
@@ -157,6 +158,8 @@ struct MainView: View {
                 showWelcomeSheet = true
             } else if !viewModel.allAgentConfigsValid {
                 showValidationSheet = true
+            } else if viewModel.autoStartEnabled {
+                Task { await viewModel.start() }
             }
         }
         .sheet(isPresented: $showWelcomeSheet, onDismiss: {

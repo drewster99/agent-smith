@@ -1,9 +1,10 @@
 import Foundation
 
-/// Executes shell commands. Has a hard blocklist of dangerous patterns.
-public struct ShellTool: AgentTool {
-    public let name = "shell"
-    public let toolDescription = "Execute a shell command and return its output. Dangerous commands are blocked."
+/// Executes commands via /bin/bash login shell for better PATH/environment availability.
+/// Shares the same safety blocklist as ShellTool.
+public struct BashTool: AgentTool {
+    public let name = "bash"
+    public let toolDescription = "Execute a command via bash login shell (/bin/bash -l). Picks up PATH entries from ~/.bash_profile, ~/.bashrc, etc. Use when commands depend on Homebrew, nvm, pyenv, or similar tools."
 
     public func description(for role: AgentRole) -> String {
         switch role {
@@ -21,7 +22,7 @@ public struct ShellTool: AgentTool {
         "properties": .dictionary([
             "command": .dictionary([
                 "type": .string("string"),
-                "description": .string("The shell command to execute.")
+                "description": .string("The command to execute in a bash login shell.")
             ]),
             "workingDirectory": .dictionary([
                 "type": .string("string"),
@@ -80,15 +81,13 @@ public struct ShellTool: AgentTool {
         workingDirectory: String?,
         timeout: TimeInterval
     ) async throws -> String {
-        // Dispatch blocking Process operations to a GCD thread to avoid
-        // blocking Swift concurrency's cooperative thread pool.
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
                 let pipe = Pipe()
 
-                process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-                process.arguments = ["-c", command]
+                process.executableURL = URL(fileURLWithPath: "/bin/bash")
+                process.arguments = ["-l", "-c", command]
                 process.standardOutput = pipe
                 process.standardError = pipe
 
@@ -109,9 +108,6 @@ public struct ShellTool: AgentTool {
                 do {
                     try process.run()
 
-                    // Read pipe data BEFORE waitUntilExit to avoid deadlock:
-                    // if output exceeds pipe buffer (~64KB), the process blocks
-                    // on write while we'd block waiting for exit.
                     let data = pipe.fileHandleForReading.readDataToEndOfFile()
                     process.waitUntilExit()
                     timeoutItem.cancel()

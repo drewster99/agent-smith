@@ -3,7 +3,7 @@ import Foundation
 /// Allows Smith to run an existing pending or paused task without duplicating it.
 public struct RunTaskTool: AgentTool {
     public let name = "run_task"
-    public let toolDescription = "Run an existing pending or paused task. Restarts with a clean context and auto-spawns Brown+Jones — no need to call spawn_brown or message_brown."
+    public let toolDescription = "Run an existing pending or paused task. Restarts with a clean context and auto-spawns Brown+Jones. The `instructions` field is required — include any updates, permissions, scope changes, or clarifications from the user. These are appended to the task description and survive the restart."
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
@@ -11,9 +11,13 @@ public struct RunTaskTool: AgentTool {
             "task_id": .dictionary([
                 "type": .string("string"),
                 "description": .string("UUID of the pending or paused task to run.")
+            ]),
+            "instructions": .dictionary([
+                "type": .string("string"),
+                "description": .string("Instructions to append to the task description. Include any new permissions, scope changes, or clarifications from the user. If the user said nothing new, summarize their confirmation (e.g. 'User confirmed: proceed as described'). These survive the restart and are visible to Brown and Jones.")
             ])
         ]),
-        "required": .array([.string("task_id")])
+        "required": .array([.string("task_id"), .string("instructions")])
     ]
 
     public init() {}
@@ -37,6 +41,26 @@ public struct RunTaskTool: AgentTool {
                 Task '\(task.title)' has status '\(task.status.rawValue)' — run_task only works on pending or paused tasks. \
                 Use list_tasks to check current statuses, or create_task if you need a new task.
                 """
+        }
+
+        // Prevent restart loops: if the system already restarted for this exact task,
+        // don't restart again — just tell Smith to spawn Brown directly.
+        if context.currentResumingTaskID == taskID {
+            return """
+                The system has already restarted for this task. Do NOT call run_task again. \
+                Call `spawn_brown` now to start a Brown agent, then use `message_brown` to give it the task instructions.
+                """
+        }
+
+        guard case .string(let instructions) = arguments["instructions"] else {
+            throw ToolCallError.missingRequiredArgument("instructions")
+        }
+
+        // Amend the task with the instructions before restarting, so they survive
+        // the context reset and are visible to the new Smith, Brown, and Jones.
+        let trimmed = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            await context.taskStore.amendDescription(id: taskID, amendment: trimmed)
         }
 
         await context.restartForNewTask(task.id)

@@ -1,9 +1,11 @@
 import Foundation
 
 /// Allows Smith to create new tasks.
+///
+/// Always creates the task as pending. Smith must call `run_task` to start it.
 public struct CreateTaskTool: AgentTool {
     public let name = "create_task"
-    public let toolDescription = "Create a new task and restart the system with a clean context. Brown will be spawned automatically on restart — no need to call spawn_brown or message_brown."
+    public let toolDescription = "Create a new pending task. The task is always queued — call `run_task` to start it when ready. You can create multiple tasks before running any of them."
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
@@ -34,8 +36,7 @@ public struct CreateTaskTool: AgentTool {
             throw ToolCallError.missingRequiredArgument("description")
         }
 
-        let fullDescription = description + "\n\nReport the detailed results to the user using `task_complete`."
-        let task = await context.taskStore.addTask(title: title, description: fullDescription)
+        let task = await context.taskStore.addTask(title: title, description: description)
 
         await context.channel.post(ChannelMessage(
             sender: .system,
@@ -47,12 +48,6 @@ public struct CreateTaskTool: AgentTool {
             ]
         ))
 
-        // Trigger a full system restart so Smith gets a clean conversation context.
-        // The detached restart will call stopAll() then start(resumingTaskID:), which
-        // auto-spawns Brown with this task. Smith's current run loop will exit cleanly
-        // when stop() sets isRunning = false.
-        await context.restartForNewTask(task.id)
-
-        return "Task created (ID: \(task.id)). System is restarting with a clean context to begin work."
+        return "Task created (ID: \(task.id), title: \"\(title)\"). Call `run_task` with this task ID to start it."
     }
 }

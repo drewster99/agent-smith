@@ -38,7 +38,7 @@ public struct OllamaProvider: LLMProvider {
         // to user messages for backends that don't understand the "tool" role, but breaks
         // the tool_call/tool_result pairing that Ollama requires when tools ARE defined.
         let finalMessages = tools.isEmpty ? Self.normalizeMessages(messages) : messages
-        let body = buildRequestBody(messages: finalMessages, tools: tools)
+        let body = buildRequestBody(messages: Self.extractSystemMessages(finalMessages), tools: tools)
         let requestData = try JSONSerialization.data(withJSONObject: body)
         request.httpBody = requestData
 
@@ -135,6 +135,26 @@ public struct OllamaProvider: LLMProvider {
             return jsonString
         }
         return obj
+    }
+
+    // MARK: - System message extraction
+
+    /// Moves all system messages to the front as a single consolidated system message.
+    /// Prevents invalid message ordering (e.g. system after tool) that some backends reject.
+    private static func extractSystemMessages(_ messages: [LLMMessage]) -> [LLMMessage] {
+        var systemParts: [String] = []
+        var nonSystem: [LLMMessage] = []
+        for message in messages {
+            if message.role == .system, case .text(let text) = message.content {
+                systemParts.append(text)
+            } else {
+                nonSystem.append(message)
+            }
+        }
+        guard !systemParts.isEmpty else { return messages }
+        var result: [LLMMessage] = [LLMMessage(role: .system, text: systemParts.joined(separator: "\n\n"))]
+        result.append(contentsOf: nonSystem)
+        return result
     }
 
     // MARK: - Message normalization

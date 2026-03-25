@@ -18,6 +18,8 @@ public struct AgentTask: Identifiable, Codable, Sendable {
     public var completedAt: Date?
     /// Progress updates from Brown, persisted so a restarted Brown has context.
     public var updates: [TaskUpdate]
+    /// Compressed summary of Brown's last working state, saved on termination for resumability.
+    public var lastBrownContext: String?
 
     /// A single progress update recorded on a task.
     public struct TaskUpdate: Codable, Sendable {
@@ -69,7 +71,8 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         updatedAt: Date = Date(),
         startedAt: Date? = nil,
         completedAt: Date? = nil,
-        updates: [TaskUpdate] = []
+        updates: [TaskUpdate] = [],
+        lastBrownContext: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -84,12 +87,13 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         self.startedAt = startedAt
         self.completedAt = completedAt
         self.updates = updates
+        self.lastBrownContext = lastBrownContext
     }
 
     // MARK: - Codable (backward-compatible with persisted data lacking `disposition`)
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt, startedAt, completedAt, updates
+        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt, startedAt, completedAt, updates, lastBrownContext
     }
 
     public init(from decoder: Decoder) throws {
@@ -107,6 +111,7 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt)
         completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
         updates = try c.decodeIfPresent([TaskUpdate].self, forKey: .updates) ?? []
+        lastBrownContext = try c.decodeIfPresent(String.self, forKey: .lastBrownContext)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -126,5 +131,6 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         if !updates.isEmpty {
             try c.encode(updates, forKey: .updates)
         }
+        try c.encodeIfPresent(lastBrownContext, forKey: .lastBrownContext)
     }
 }

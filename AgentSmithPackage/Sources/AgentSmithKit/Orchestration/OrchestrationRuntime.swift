@@ -14,17 +14,21 @@ public actor OrchestrationRuntime {
 
     /// Current Brown agent ID (only one active at a time).
     private var currentBrownID: UUID?
-    /// Maps Brown agent IDs to their paired Jones agent IDs.
-    private var brownToJones: [UUID: UUID] = [:]
     /// Maps agent IDs to their roles for access-control lookups.
     private var agentRoles: [UUID: AgentRole] = [:]
+
+    /// Archived snapshots of terminated agents, keyed by role for latest-wins semantics.
+    private var terminatedAgentArchive: [AgentRole: AgentArchiveEntry] = [:]
+
+    /// Active SecurityEvaluator for the current Brown, keyed by Brown's agent ID.
+    private var securityEvaluators: [UUID: SecurityEvaluator] = [:]
+    /// Preserved evaluation records from terminated Browns, for inspector display.
+    private var archivedEvaluationRecords: [UUID: [EvaluationRecord]] = [:]
 
     private var llmConfigs: [AgentRole: LLMConfiguration]
     private var agentTuning: [AgentRole: AgentTuningConfig]
     private var monitoringTimer: MonitoringTimer?
     private var powerManager: PowerAssertionManager?
-    /// Maps Brown agent IDs to their active ToolRequestGate so we can drain pending approvals on shutdown.
-    private var toolRequestGates: [UUID: ToolRequestGate] = [:]
     /// Maps each agent ID to its channel subscription IDs for proper cleanup.
     private var agentSubscriptions: [UUID: [UUID]] = [:]
 
@@ -88,18 +92,33 @@ public actor OrchestrationRuntime {
     /// Triggers a full system restart for a newly-created task.
     /// Launches a detached task so the calling agent's tool execution can unwind
     /// without deadlocking (the caller is running inside this actor).
+    /// Captures the last user message before stopping so it can be forwarded to the new Smith.
     public func restartForNewTask(taskID: UUID) {
         Task.detached { [weak self] in
             guard let self else { return }
+            // Capture the most recent user message before stopping — it may contain
+            // permissions or instructions that would be lost across the restart.
+            let lastUserMessage = await self.captureLastUserMessage()
             await self.stopAll()
-            await self.start(resumingTaskID: taskID)
+            await self.start(resumingTaskID: taskID, lastUserMessage: lastUserMessage)
         }
+    }
+
+    /// Returns the content of the most recent user message from the channel, if any.
+    private func captureLastUserMessage() async -> String? {
+        let messages = await channel.allMessages()
+        return messages.last(where: { message in
+            if case .user = message.sender { return true }
+            return false
+        })?.content
     }
 
     /// Starts the Smith agent and the monitoring timer.
     /// - Parameter resumingTaskID: When set, skips the "ask user" preamble and immediately
     ///   instructs Smith to spawn Brown and begin work on this task.
-    public func start(resumingTaskID: UUID? = nil) async {
+    /// - Parameter lastUserMessage: The most recent user message captured before a restart,
+    ///   included in the initial instruction so new Smith doesn't lose user context.
+    public func start(resumingTaskID: UUID? = nil, lastUserMessage: String? = nil) async {
         guard smith == nil else { return }
         guard !aborted else { return }
 
@@ -114,7 +133,7 @@ public actor OrchestrationRuntime {
         let id = UUID()
         smithID = id
         let followUpScheduler = FollowUpScheduler()
-        let context = makeToolContext(agentID: id, role: .smith, followUpScheduler: followUpScheduler)
+        let context = makeToolContext(agentID: id, role: .smith, followUpScheduler: followUpScheduler, currentResumingTaskID: resumingTaskID)
 
         // Smith only wakes for: private messages (user/Brown/Jones→Smith), system termination notices.
         // Public Brown messages, tool_request/tool execution messages, and security review notices
@@ -193,14 +212,30 @@ public actor OrchestrationRuntime {
         // and instruct Smith to spawn Brown and begin work immediately.
         if let resumingTaskID {
             if let resumingTask = await taskStore.task(id: resumingTaskID) {
-                initialInstruction = """
+                var parts = ["""
                     A new task has been created: "\(resumingTask.title)"
 
                     \(resumingTask.description)
 
                     Spawn Brown and begin work on this task immediately (task ID: \(resumingTaskID.uuidString)). \
-                    Do not ask the user for confirmation — they just requested this task.
-                    """
+                    Do not ask the user for confirmation — they just requested this task. \
+                    Do NOT call `run_task` or `create_task` — the system has already restarted for this task. \
+                    Call `spawn_brown` directly and give Brown the task instructions via `message_brown`.
+                    """]
+
+                // Include prior progress context for resumed tasks
+                if !resumingTask.updates.isEmpty {
+                    let history = resumingTask.updates.map { "- \($0.message)" }.joined(separator: "\n")
+                    parts.append("Prior progress updates from a previous attempt:\n\(history)\n\nPass this context to Brown so it can resume where the previous agent left off.")
+                }
+                if let brownContext = resumingTask.lastBrownContext {
+                    parts.append("Last known Brown working state:\n\(brownContext)\n\nInclude this context when instructing Brown.")
+                }
+                if let userMsg = lastUserMessage, !userMsg.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    parts.append("The user's most recent message (before this restart):\n\"\(userMsg)\"\n\nThis is authoritative — honor any permissions, scope changes, or instructions the user gave. Pass relevant parts to Brown.")
+                }
+
+                initialInstruction = parts.joined(separator: "\n\n")
             } else {
                 initialInstruction = """
                     The system restarted for task \(resumingTaskID.uuidString) but the task was not found in the store. \
@@ -221,6 +256,13 @@ public actor OrchestrationRuntime {
                         var entry = "- \(task.title) (id: \(task.id.uuidString))"
                         if !task.description.isEmpty {
                             entry += "\n  Description: \(task.description)"
+                        }
+                        if !task.updates.isEmpty {
+                            let history = task.updates.map { "    - \($0.message)" }.joined(separator: "\n")
+                            entry += "\n  Prior progress:\n\(history)"
+                        }
+                        if let brownContext = task.lastBrownContext {
+                            entry += "\n  Last Brown state: \(String(brownContext.prefix(500)))"
                         }
                         return entry
                     }
@@ -340,12 +382,8 @@ public actor OrchestrationRuntime {
         await monitoringTimer?.stop()
         monitoringTimer = nil
 
-        // Drain all pending tool-approval continuations before stopping agents so no Task is
-        // left suspended forever waiting for a Jones that is about to be torn down.
-        for (_, gate) in toolRequestGates {
-            await gate.drainAll(approved: false, message: SystemCancellationReason.systemShuttingDown.rawValue)
-        }
-        toolRequestGates.removeAll()
+        // Save Brown's context summary to its task before stopping agents
+        await saveBrownContextToTask()
 
         for (_, agent) in agents {
             await agent.stop()
@@ -358,9 +396,17 @@ public actor OrchestrationRuntime {
         }
         agentSubscriptions.removeAll()
 
+        // Archive evaluation records before clearing evaluators.
+        for (brownID, evaluator) in securityEvaluators {
+            let records = await evaluator.evaluationHistory()
+            if !records.isEmpty {
+                archivedEvaluationRecords[brownID] = records
+            }
+        }
+
         agents.removeAll()
         agentRoles.removeAll()
-        brownToJones.removeAll()
+        securityEvaluators.removeAll()
         currentBrownID = nil
         smith = nil
         smithID = nil
@@ -401,10 +447,18 @@ public actor OrchestrationRuntime {
         jonesConfig.verboseLogging = LLMRequestLogger.logJones
 
         let brownID = UUID()
-        let jonesID = UUID()
 
-        let gate = ToolRequestGate()
-        toolRequestGates[brownID] = gate
+        // Create SecurityEvaluator with Jones's LLM config — replaces the Jones agent.
+        let evaluator = SecurityEvaluator(
+            provider: makeProvider(config: jonesConfig),
+            systemPrompt: JonesBehavior.systemPrompt,
+            channel: channel,
+            abort: { [weak self] reason, callerRole in
+                guard let self else { return }
+                await self.abort(reason: reason, callerRole: callerRole)
+            }
+        )
+        securityEvaluators[brownID] = evaluator
 
         let brownContext = makeToolContext(agentID: brownID, role: .brown)
         let brownAgent = AgentActor(
@@ -423,93 +477,51 @@ public actor OrchestrationRuntime {
             tools: BrownBehavior.tools(),
             toolContext: brownContext
         )
-        await brownAgent.setToolRequestGate(gate)
-
-        let jonesContext = makeToolContext(agentID: jonesID, role: .jones)
-        let jonesAgent = AgentActor(
-            id: jonesID,
-            configuration: AgentConfiguration(
-                role: .jones,
-                llmConfig: jonesConfig,
-                systemPrompt: JonesBehavior.systemPrompt,
-                toolNames: JonesBehavior.toolNames,
-                messageFilter: .toolRequestsOnly,
-                suppressesRawTextToChannel: true,
-                pollInterval: agentTuning[.jones]?.pollInterval ?? 13,
-                messageDebounceInterval: agentTuning[.jones]?.messageDebounceInterval ?? 1,
-                maxToolCallsPerIteration: agentTuning[.jones]?.maxToolCalls ?? 100
-            ),
-            provider: makeProvider(config: jonesConfig),
-            tools: [],
-            toolContext: jonesContext
-        )
-        await jonesAgent.setToolRequestGate(gate)
+        await brownAgent.setSecurityEvaluator(evaluator)
 
         agents[brownID] = brownAgent
-        agents[jonesID] = jonesAgent
         agentRoles[brownID] = .brown
-        agentRoles[jonesID] = .jones
-        brownToJones[brownID] = jonesID
         currentBrownID = brownID
 
         let brownSubID = await channel.subscribe { [weak brownAgent] message in
             guard let brownAgent else { return }
             Task { await brownAgent.receiveChannelMessage(message) }
         }
-        let jonesSubID = await channel.subscribe { [weak jonesAgent] message in
-            guard let jonesAgent else { return }
-            Task { await jonesAgent.receiveChannelMessage(message) }
-        }
         agentSubscriptions[brownID] = [brownSubID]
-        agentSubscriptions[jonesID] = [jonesSubID]
 
-        // Start both agents — they will auto-announce on the channel.
-        await jonesAgent.start()
-        onAgentStarted?(.jones, jonesAgent.toolNames)
+        // Announce Jones is online (evaluator is ready) for UI consistency.
+        await channel.post(ChannelMessage(
+            sender: .agent(.jones),
+            content: "Jones security evaluator online.",
+            metadata: ["messageKind": .string("agent_online")]
+        ))
+        onAgentStarted?(.jones, [])
+
         await brownAgent.start()
         onAgentStarted?(.brown, brownAgent.toolNames)
 
         return brownID
     }
 
-    /// Terminates a specific agent. If it's a Brown, also stops its paired Jones
-    /// (unless Jones is the caller — in that case Jones finishes its turn naturally).
+    /// Terminates a specific agent. If it's a Brown, also cleans up its SecurityEvaluator.
     public func terminateAgent(id: UUID, callerID: UUID? = nil) async -> Bool {
         guard let agent = agents[id] else { return false }
 
-        // Drain any pending approval requests before stopping so Brown's suspended tool
-        // calls are unblocked rather than leaking as orphaned continuations.
-        if let gate = toolRequestGates.removeValue(forKey: id) {
-            await gate.drainAll(approved: false, message: SystemCancellationReason.agentTerminated.rawValue)
+        // Archive the agent's state before termination so the inspector can still display it.
+        if let role = agentRoles[id] {
+            await archiveAgent(agent, role: role)
+        }
+
+        // Archive the security evaluator's history before removing it.
+        if let evaluator = securityEvaluators.removeValue(forKey: id) {
+            let records = await evaluator.evaluationHistory()
+            archivedEvaluationRecords[id] = records
         }
 
         await agent.stop()
         agents.removeValue(forKey: id)
         agentRoles.removeValue(forKey: id)
         await unsubscribeAgent(id: id)
-
-        if let jonesID = brownToJones[id] {
-            if jonesID != callerID {
-                // Jones is NOT the caller — stop it immediately.
-                if let jones = agents[jonesID] {
-                    await jones.stop()
-                    agents.removeValue(forKey: jonesID)
-                    agentRoles.removeValue(forKey: jonesID)
-                }
-                await unsubscribeAgent(id: jonesID)
-            } else {
-                // Jones IS the caller — let it finish its current turn so it can
-                // send follow-up messages. Unsubscribe from the channel to prevent
-                // interference with any future Brown agent's tool_request messages.
-                //
-                // Cleanup path: once unsubscribed, Jones's message stream terminates,
-                // causing the `for await` in its run loop to exit. This triggers
-                // onSelfTerminate → handleAgentSelfTerminate, which removes Jones
-                // from `agents`/`agentRoles` and cleans up subscriptions.
-                await unsubscribeAgent(id: jonesID)
-            }
-            brownToJones.removeValue(forKey: id)
-        }
 
         if currentBrownID == id {
             currentBrownID = nil
@@ -528,6 +540,21 @@ public actor OrchestrationRuntime {
     public func turnsSnapshot(for role: AgentRole) async -> [LLMTurnRecord]? {
         guard let agentID = agentIDForRole(role), let agent = agents[agentID] else { return nil }
         return await agent.turnsSnapshot()
+    }
+
+    /// Returns the security evaluation history for the current (or most recent) Brown.
+    public func evaluationHistory() async -> [EvaluationRecord] {
+        // Try active evaluator first.
+        if let brownID = currentBrownID, let evaluator = securityEvaluators[brownID] {
+            return await evaluator.evaluationHistory()
+        }
+        // Fall back to archived records from the most recently terminated Brown.
+        if let records = archivedEvaluationRecords.values.max(by: {
+            ($0.last?.timestamp ?? .distantPast) < ($1.last?.timestamp ?? .distantPast)
+        }) {
+            return records
+        }
+        return []
     }
 
     /// Terminates all agents assigned to a task. Used when the user stops or pauses a task
@@ -573,6 +600,33 @@ public actor OrchestrationRuntime {
         Array(agents.keys)
     }
 
+    // MARK: - Agent Archive
+
+    /// Snapshot of a terminated agent's state, preserved for inspector display.
+    public struct AgentArchiveEntry: Sendable {
+        public let role: AgentRole
+        public let contextSnapshot: [LLMMessage]
+        public let turnsSnapshot: [LLMTurnRecord]
+        public let terminatedAt: Date
+    }
+
+    /// Returns the archived snapshot for a terminated agent role, if any.
+    public func archivedSnapshot(for role: AgentRole) -> AgentArchiveEntry? {
+        terminatedAgentArchive[role]
+    }
+
+    /// Snapshots the given agent's state into the archive before it is deallocated.
+    private func archiveAgent(_ agent: AgentActor, role: AgentRole) async {
+        let context = await agent.contextSnapshot()
+        let turns = await agent.turnsSnapshot()
+        terminatedAgentArchive[role] = AgentArchiveEntry(
+            role: role,
+            contextSnapshot: context,
+            turnsSnapshot: turns,
+            terminatedAt: Date()
+        )
+    }
+
     // MARK: - Private
 
     /// Removes channel subscriptions for a given agent.
@@ -599,7 +653,8 @@ public actor OrchestrationRuntime {
     private func makeToolContext(
         agentID: UUID,
         role: AgentRole,
-        followUpScheduler: FollowUpScheduler? = nil
+        followUpScheduler: FollowUpScheduler? = nil,
+        currentResumingTaskID: UUID? = nil
     ) -> ToolContext {
         ToolContext(
             agentID: agentID,
@@ -640,7 +695,8 @@ public actor OrchestrationRuntime {
             restartForNewTask: { [weak self] taskID in
                 guard let self else { return }
                 await self.restartForNewTask(taskID: taskID)
-            }
+            },
+            currentResumingTaskID: currentResumingTaskID
         )
     }
 
@@ -652,27 +708,22 @@ public actor OrchestrationRuntime {
     /// Cleans up registry entries and channel subscriptions when an agent's run loop exits on its own.
     /// Guarded by agents[id] presence to be idempotent with terminateAgent().
     private func handleAgentSelfTerminate(id: UUID) async {
-        guard agents[id] != nil else { return }
+        guard let agent = agents[id] else { return }
 
-        // Drain any pending approval requests so Brown's suspended continuations are not leaked.
-        if let gate = toolRequestGates.removeValue(forKey: id) {
-            await gate.drainAll(approved: false, message: SystemCancellationReason.agentSelfTerminated.rawValue)
+        // Archive the agent's state before cleanup so the inspector can still display it.
+        if let role = agentRoles[id] {
+            await archiveAgent(agent, role: role)
+        }
+
+        // Archive security evaluator records before cleanup.
+        if let evaluator = securityEvaluators.removeValue(forKey: id) {
+            let records = await evaluator.evaluationHistory()
+            archivedEvaluationRecords[id] = records
         }
 
         agents.removeValue(forKey: id)
         agentRoles.removeValue(forKey: id)
         await unsubscribeAgent(id: id)
-
-        // If this was a Brown, also stop its paired Jones.
-        if let jonesID = brownToJones[id] {
-            if let jones = agents[jonesID] {
-                await jones.stop()
-                agents.removeValue(forKey: jonesID)
-                agentRoles.removeValue(forKey: jonesID)
-            }
-            await unsubscribeAgent(id: jonesID)
-            brownToJones.removeValue(forKey: id)
-        }
 
         // Mark any running tasks assigned to this agent as failed — no agent is working on them anymore
         let allTasks = await taskStore.allTasks()
@@ -688,6 +739,38 @@ public actor OrchestrationRuntime {
             smith = nil
             smithID = nil
         }
+    }
+
+    /// Extracts Brown's last few assistant messages and saves a compressed context summary
+    /// to the task it was working on, enabling better resumability.
+    private func saveBrownContextToTask() async {
+        guard let brownID = currentBrownID, let brown = agents[brownID] else { return }
+        let context = await brown.contextSnapshot()
+
+        // Find the task Brown was working on
+        let task = await taskStore.taskForAgent(agentID: brownID)
+        guard let task else { return }
+
+        // Extract the last few assistant messages as a summary
+        let assistantMessages = context.compactMap { msg -> String? in
+            guard msg.role == .assistant else { return nil }
+            switch msg.content {
+            case .text(let s) where !s.isEmpty: return s
+            case .mixed(let s, let calls) where !s.isEmpty || !calls.isEmpty:
+                let toolPart = calls.map { "[\($0.name)]" }.joined(separator: ", ")
+                return [s, toolPart].filter { !$0.isEmpty }.joined(separator: " ")
+            case .toolCalls(let calls):
+                return calls.map { "[\($0.name)]" }.joined(separator: ", ")
+            default: return nil
+            }
+        }
+        let recentMessages = assistantMessages.suffix(5)
+        guard !recentMessages.isEmpty else { return }
+
+        let summary = recentMessages.joined(separator: "\n---\n")
+        // Cap to prevent storing extremely long context
+        let truncated = summary.count > 2000 ? String(summary.suffix(2000)) : summary
+        await taskStore.setLastBrownContext(id: task.id, context: truncated)
     }
 
     private func defaultConfig() -> LLMConfiguration {

@@ -11,6 +11,7 @@ struct InspectorView: View {
     let agentTurns: [AgentRole: [LLMTurnRecord]]
     let agentPollIntervals: [AgentRole: TimeInterval]
     let agentMaxToolCalls: [AgentRole: Int]
+    let jonesEvaluationRecords: [EvaluationRecord]
     let speechController: SpeechController
     let onSendDirectMessage: (AgentRole, String) -> Void
     let onUpdateSystemPrompt: (AgentRole, String) -> Void
@@ -51,6 +52,7 @@ struct InspectorView: View {
                         recentToolUses: recentTools,
                         contextMessages: context,
                         llmTurns: turns,
+                        evaluationRecords: role == .jones ? jonesEvaluationRecords : [],
                         currentSystemPrompt: currentSystemPrompt,
                         pollInterval: pollInterval,
                         maxToolCalls: maxToolCalls,
@@ -76,6 +78,7 @@ private struct AgentCard: View {
     let recentToolUses: [ChannelMessage]
     let contextMessages: [LLMMessage]
     let llmTurns: [LLMTurnRecord]
+    let evaluationRecords: [EvaluationRecord]
     let currentSystemPrompt: String
     let pollInterval: TimeInterval
     let maxToolCalls: Int
@@ -118,10 +121,14 @@ private struct AgentCard: View {
                                     .font(AppFonts.inspectorLabel)
                                     .foregroundStyle(.secondary)
                             }
-                        } else if hasActivity {
+                        } else if hasActivity && !availableTools.isEmpty {
                             Text("Idle")
                                 .font(AppFonts.inspectorLabel)
                                 .foregroundStyle(.secondary)
+                        } else if !contextMessages.isEmpty {
+                            Text("Terminated")
+                                .font(AppFonts.inspectorLabel)
+                                .foregroundStyle(.orange)
                         } else {
                             Text("Not active")
                                 .font(AppFonts.inspectorLabel)
@@ -182,21 +189,11 @@ private struct AgentCard: View {
                         }
                     }
 
-                    // For agents whose raw text is suppressed from the channel, surface recent
-                    // LLM reasoning inline so it isn't invisible.
-                    let llmOutputs = contextMessages.compactMap { msg -> String? in
-                        guard msg.role == .assistant else { return nil }
-                        switch msg.content {
-                        case .text(let s): return s.isEmpty ? nil : s
-                        case .mixed(let s, _): return s.isEmpty ? nil : s
-                        default: return nil
-                        }
-                    }
-                    let recentLLMOutputs = Array(llmOutputs.suffix(3).reversed())
-                    if role == .jones && !recentLLMOutputs.isEmpty {
-                        InspectorSection(title: "LLM Reasoning") {
-                            ForEach(recentLLMOutputs.indices, id: \.self) { i in
-                                LLMReasoningRow(text: recentLLMOutputs[i])
+                    // Jones: show security evaluation records instead of LLM context.
+                    if role == .jones && !evaluationRecords.isEmpty {
+                        InspectorSection(title: "Security Evaluations (\(evaluationRecords.count))") {
+                            ForEach(Array(evaluationRecords.suffix(10).reversed())) { record in
+                                EvaluationRecordRow(record: record)
                             }
                         }
                     }
@@ -452,29 +449,79 @@ private struct ContextMessageRow: View {
     }
 }
 
-private struct LLMReasoningRow: View {
-    let text: String
+/// A row showing a single security evaluation result from SecurityEvaluator.
+private struct EvaluationRecordRow: View {
+    let record: EvaluationRecord
+    @State private var expanded = false
+
+    private var dispositionLabel: String {
+        if record.disposition.approved && record.disposition.isAutoApproval {
+            return "AUTO"
+        } else if record.disposition.approved {
+            return "SAFE"
+        } else if record.disposition.isWarning {
+            return "WARN"
+        } else {
+            return "UNSAFE"
+        }
+    }
+
+    private var dispositionColor: Color {
+        if record.disposition.approved { return .green }
+        if record.disposition.isWarning { return .orange }
+        return .red
+    }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 6) {
-            Text("LLM")
-                .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 2)
-                .background(Color.purple.opacity(0.65))
-                .clipShape(RoundedRectangle(cornerRadius: 3))
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+        }, label: {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(dispositionLabel)
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(dispositionColor.opacity(0.8))
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
 
-            Text(text)
-                .font(AppFonts.inspectorBody.italic())
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .multilineTextAlignment(.leading)
-        }
-        .padding(.vertical, 3)
-        .padding(.horizontal, 6)
-        .background(Color.purple.opacity(0.05))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    Text(record.toolName)
+                        .font(AppFonts.inspectorBody.bold())
+                        .foregroundStyle(.primary)
+
+                    Spacer()
+
+                    Text("\(record.latencyMs)ms")
+                        .font(AppFonts.inspectorBody)
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+
+                    Text(record.timestamp, style: .time)
+                        .font(AppFonts.inspectorBody)
+                        .foregroundStyle(.tertiary)
+                }
+
+                if expanded {
+                    if !record.toolParams.isEmpty {
+                        Text(record.toolParams)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(5)
+                    }
+                    Text("Response: \(record.response)")
+                        .font(AppFonts.inspectorBody.italic())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                }
+            }
+            .padding(.vertical, 3)
+            .padding(.horizontal, 6)
+            .background(dispositionColor.opacity(0.05))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .contentShape(Rectangle())
+        })
+        .buttonStyle(.plain)
     }
 }
 
