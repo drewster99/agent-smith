@@ -472,6 +472,11 @@ private struct MessageRow: View {
         if let output = toolOutputMessage {
             let displayText: String = {
                 if isExpanded {
+                    // Prefer expandedContent (capped excerpt) over raw content to avoid
+                    // rendering megabytes of data (e.g., binary blobs from osascript).
+                    if case .string(let expanded) = output.metadata?["expandedContent"] {
+                        return expanded
+                    }
                     return output.content
                 }
                 if case .string(let truncated) = output.metadata?["truncatedContent"] {

@@ -519,11 +519,22 @@ public actor AgentActor {
             for r in results.sorted(by: { $0.index < $1.index }) {
                 conversationHistory.append(LLMMessage(
                     role: .tool,
-                    content: .toolResult(toolCallID: r.callID, content: r.result)
+                    content: .toolResult(toolCallID: r.callID, content: Self.capToolResult(r.result))
+                ))
+            }
+
+            // Safety: if entries were fewer than callsToExecute (e.g., stop() during entry-building),
+            // append placeholder results for orphaned tool_calls to maintain API invariant.
+            let coveredCallIDs = Set(results.map(\.callID))
+            for call in callsToExecute where !coveredCallIDs.contains(call.id) {
+                conversationHistory.append(LLMMessage(
+                    role: .tool,
+                    content: .toolResult(toolCallID: call.id, content: "Tool execution cancelled (agent stopped)")
                 ))
             }
         } else {
             // --- Sequential path (single call, mixed lifecycle/approval, or no evaluator) ---
+            var executedCallIDs = Set<String>()
             for (batchIndex, call) in callsToExecute.enumerated() {
                 guard isRunning else { break }
 
@@ -541,10 +552,20 @@ public actor AgentActor {
                     result = "Unknown tool: \(call.name)"
                 }
 
+                executedCallIDs.insert(call.id)
                 updatePostCallFlags(call: call, result: result, sentMessage: &sentMessage, spawnedBrown: &spawnedBrown, calledTaskComplete: &calledTaskComplete, calledCreateTask: &calledCreateTask)
                 conversationHistory.append(LLMMessage(
                     role: .tool,
-                    content: .toolResult(toolCallID: call.id, content: result)
+                    content: .toolResult(toolCallID: call.id, content: Self.capToolResult(result))
+                ))
+            }
+
+            // Safety: if the loop exited early (stop() during await), append placeholder results
+            // for remaining tool_calls to maintain the API invariant.
+            for call in callsToExecute where !executedCallIDs.contains(call.id) {
+                conversationHistory.append(LLMMessage(
+                    role: .tool,
+                    content: .toolResult(toolCallID: call.id, content: "Tool execution cancelled (agent stopped)")
                 ))
             }
         }
@@ -727,21 +748,33 @@ public actor AgentActor {
     }
 
     /// Posts tool output to the channel. Static so it can be called from `withTaskGroup`.
+    ///
+    /// The channel message stores only the display-truncated version of the output to avoid
+    /// bloating the SwiftUI view layer with megabytes of data (e.g., binary blobs from osascript).
     static func postToolOutputToChannel(result: String, call: LLMToolCall, role: AgentRole, channel: MessageChannel) async {
         let trimmedResult = result.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedResult.isEmpty else { return }
+        let truncated = AgentActor.truncateOutput(trimmedResult, maxLines: 4)
+        let isTruncated = truncated != trimmedResult
         var outputMetadata: [String: AnyCodable] = [
             "requestID": .string(call.id),
             "messageKind": .string("tool_output"),
             "tool": .string(call.name)
         ]
-        let truncated = AgentActor.truncateOutput(trimmedResult, maxLines: 4)
-        if truncated != trimmedResult {
+        if isTruncated {
             outputMetadata["truncatedContent"] = .string(truncated)
+            // Store a larger excerpt for "Show more" — but not the entire output.
+            let expandedLimit = 10_000
+            if trimmedResult.count > expandedLimit {
+                let remaining = trimmedResult.count - expandedLimit
+                outputMetadata["expandedContent"] = .string(
+                    String(trimmedResult.prefix(expandedLimit)) + "\n… (\(remaining) more characters, see conversation history)"
+                )
+            }
         }
         await channel.post(ChannelMessage(
             sender: .agent(role),
-            content: trimmedResult,
+            content: isTruncated ? truncated : trimmedResult,
             metadata: outputMetadata
         ))
     }
@@ -931,6 +964,17 @@ public actor AgentActor {
                 return String(describing: value)
             }
         }
+    }
+
+    /// Maximum characters for a tool result stored in conversation history.
+    /// Prevents massive outputs (e.g., binary blobs, multi-MB command output) from blowing up LLM context.
+    private static let maxToolResultCharacters = 50_000
+
+    /// Caps a tool result string for conversation history, preserving the head and noting truncation.
+    static func capToolResult(_ result: String) -> String {
+        guard result.count > maxToolResultCharacters else { return result }
+        let remaining = result.count - maxToolResultCharacters
+        return String(result.prefix(maxToolResultCharacters)) + "\n\n[Output truncated — \(remaining) more characters omitted]"
     }
 
     /// Truncates multi-line output to a limited number of lines, appending an ellipsis indicator if truncated.
