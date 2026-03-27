@@ -2,10 +2,11 @@ import Foundation
 import Synchronization
 
 /// The role an agent plays in the system.
-public enum AgentRole: String, Codable, Sendable, CaseIterable {
+public enum AgentRole: String, Codable, Sendable, CaseIterable, CodingKeyRepresentable {
     case smith
     case brown
     case jones
+    case summarizer
 
     /// Thread-safe storage for the user's preferred nickname.
     private static let _userNickname = Mutex("")
@@ -16,12 +17,16 @@ public enum AgentRole: String, Codable, Sendable, CaseIterable {
         set { _userNickname.withLock { $0 = newValue } }
     }
 
+    /// Roles that must be configured for the system to start.
+    public static let requiredRoles: [AgentRole] = [.smith, .brown, .jones, .summarizer]
+
     /// Human-readable name for display.
     public var displayName: String {
         switch self {
         case .smith: return "Smith"
         case .brown: return "Brown"
         case .jones: return "Jones"
+        case .summarizer: return "Summarizer"
         }
     }
 
@@ -54,6 +59,10 @@ public enum AgentRole: String, Codable, Sendable, CaseIterable {
             \(baseSystemPromptSuffix)
             """
         case .jones:
+            return """
+            \(baseSystemPromptSuffix)
+            """
+        case .summarizer:
             return """
             \(baseSystemPromptSuffix)
             """

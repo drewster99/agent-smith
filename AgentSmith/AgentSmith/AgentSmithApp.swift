@@ -4,6 +4,7 @@ import AgentSmithKit
 @main
 struct AgentSmithApp: App {
     @State private var viewModel = AppViewModel()
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
         WindowGroup {
@@ -20,6 +21,12 @@ struct AgentSmithApp: App {
                 .keyboardShortcut("k", modifiers: [.command, .shift])
                 .disabled(!viewModel.isRunning)
             }
+            CommandGroup(after: .sidebar) {
+                Button("Memory Browser") {
+                    openWindow(id: "memory-browser")
+                }
+                .keyboardShortcut("m", modifiers: [.command, .option])
+            }
         }
 
         WindowGroup("Task Detail", for: UUID.self) { $taskID in
@@ -34,6 +41,11 @@ struct AgentSmithApp: App {
             }
         }
         .defaultSize(width: 800, height: 700)
+
+        Window("Memory Browser", id: "memory-browser") {
+            MemoryEditorView(viewModel: viewModel)
+        }
+        .defaultSize(width: 900, height: 600)
 
         Settings {
             SettingsView(viewModel: viewModel)

@@ -275,12 +275,9 @@ public struct AnthropicProvider: LLMProvider {
             }
         }
 
-        if let text, !toolCalls.isEmpty {
-            return .mixed(text: text, toolCalls: toolCalls)
-        } else if !toolCalls.isEmpty {
-            return .toolCalls(toolCalls)
-        } else {
-            return .text(text ?? "")
-        }
+        return LLMResponse(
+            text: text?.isEmpty == true ? nil : text,
+            toolCalls: toolCalls
+        )
     }
 }

@@ -43,6 +43,23 @@ public struct RunTaskTool: AgentTool {
                 """
         }
 
+        // Refuse to restart if another task is running or awaiting review.
+        // Running: would kill Brown mid-work. AwaitingReview: Smith should review first.
+        let allTasks = await context.taskStore.allTasks()
+        if let runningTask = allTasks.first(where: { $0.status == .running && $0.id != taskID }) {
+            return """
+                Cannot start '\(task.title)' — task '\(runningTask.title)' is still running. \
+                Wait for the current task to complete (or fail) before calling run_task. \
+                The task has been created and is queued as pending.
+                """
+        }
+        if let reviewTask = allTasks.first(where: { $0.status == .awaitingReview && $0.id != taskID }) {
+            return """
+                Cannot start '\(task.title)' — task '\(reviewTask.title)' is awaiting your review. \
+                Call review_work to accept or reject it first, then run_task to start the next task.
+                """
+        }
+
         // Prevent restart loops: if the system already restarted for this exact task,
         // don't restart again — just tell Smith to spawn Brown directly.
         if context.currentResumingTaskID == taskID {

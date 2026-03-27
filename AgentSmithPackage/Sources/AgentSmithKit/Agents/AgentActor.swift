@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Core agent actor: owns an LLM session, subscribes to the channel,
 /// runs an async loop of receive -> LLM -> act -> report.
@@ -48,11 +49,21 @@ public actor AgentActor {
     private var consecutiveErrors = 0
     private static let maxConsecutiveErrors = 50
     private static let maxBackoffSeconds: Double = 180
+
+    /// Tracks consecutive context overflow errors (separate from general errors).
+    /// Context overflows trigger aggressive pruning instead of backoff.
+    private var consecutiveContextOverflows = 0
+    private static let maxContextOverflowRetries = 3
     private var maxToolCallsPerIteration: Int
 
     /// Worst-case character overhead for tool definitions and per-turn suffixes
     /// that are sent with each API call but not stored in conversationHistory.
     private let apiOverheadChars: Int
+
+    /// When true, the agent has called `task_complete` and is waiting for Smith's review.
+    /// While set, `drainPendingMessages` will not re-wake the agent unless a private message
+    /// addressed to it arrives (indicating Smith sent revision feedback).
+    private var awaitingTaskReview = false
 
     /// Per-turn LLM call log for per-turn inspection.
     private var llmTurns: [LLMTurnRecord] = []
@@ -179,7 +190,20 @@ public actor AgentActor {
         }
 
         // Drop UI-only notification messages that no agent needs to process.
-        if case .string(let kind) = message.metadata?["messageKind"], kind == "task_created" {
+        if case .string(let kind) = message.metadata?["messageKind"] {
+            switch kind {
+            case "task_created", "memory_saved", "memory_searched":
+                return
+            default:
+                break
+            }
+        }
+
+        // Drop error messages — they are for the UI only. Feeding them back into
+        // agent conversation history wastes tokens and creates a death spiral when
+        // the error is a context overflow (each retry adds the error text, growing
+        // the context further).
+        if case .bool(true) = message.metadata?["isError"] {
             return
         }
 
@@ -255,24 +279,33 @@ public actor AgentActor {
                 if configuration.role == .smith {
                     let taskSuffix = await buildTaskContextSuffix()
                     if !taskSuffix.isEmpty {
-                        messagesForLLM.append(LLMMessage(role: .system, text: taskSuffix))
+                        messagesForLLM.append(LLMMessage(role: .system, text: "[Injected Task Context]\n" + taskSuffix))
                     }
                 }
 
+                let llmStartTime = Date()
                 let response = try await provider.send(
                     messages: messagesForLLM,
                     tools: toolDefinitions
                 )
+                let llmLatencyMs = Int(Date().timeIntervalSince(llmStartTime) * 1000)
                 guard isRunning else { break }
 
                 consecutiveErrors = 0
+                consecutiveContextOverflows = 0
                 let inputDelta = Array(conversationHistory[lastTurnMessageCount...])
                 lastTurnMessageCount = conversationHistory.count
                 llmTurns.append(LLMTurnRecord(
                     inputDelta: inputDelta,
                     response: response,
                     totalMessageCount: conversationHistory.count,
-                    contextSnapshot: messagesForLLM
+                    contextSnapshot: messagesForLLM,
+                    latencyMs: llmLatencyMs,
+                    modelID: configuration.llmConfig.model,
+                    providerType: configuration.llmConfig.providerType.rawValue,
+                    temperature: configuration.llmConfig.temperature,
+                    maxOutputTokens: configuration.llmConfig.maxTokens,
+                    thinkingBudget: configuration.llmConfig.thinkingBudget
                 ))
                 if llmTurns.count > Self.maxTurnRecords {
                     llmTurns.removeFirst(llmTurns.count - Self.maxTurnRecords)
@@ -280,7 +313,46 @@ public actor AgentActor {
                 try await handleResponse(response)
             } catch {
                 guard isRunning else { break }
+
+                // Context overflow: the API rejected the request because messages + completion
+                // exceed the model's context window. Rebuild context from task state (Brown)
+                // or force-prune (others) and retry immediately — backoff won't help.
+                if Self.isContextOverflowError(error) {
+                    consecutiveContextOverflows += 1
+                    let roleName = configuration.role.displayName
+
+                    if consecutiveContextOverflows <= Self.maxContextOverflowRetries {
+                        if configuration.role == .brown {
+                            let rebuilt = await rebuildContextFromTask()
+                            if !rebuilt {
+                                // No running task found — fall back to aggressive prune
+                                forceAggressivePrune()
+                            }
+                        } else {
+                            forceAggressivePrune()
+                        }
+                        await toolContext.channel.post(ChannelMessage(
+                            sender: .system,
+                            content: "Context overflow for \(roleName) — context rebuilt (attempt \(consecutiveContextOverflows)/\(Self.maxContextOverflowRetries)).",
+                            metadata: ["isError": .bool(true), "agentRole": .string(configuration.role.rawValue)]
+                        ))
+                        continue  // Retry immediately with smaller context
+                    } else {
+                        await toolContext.channel.post(ChannelMessage(
+                            sender: .system,
+                            content: "Agent \(roleName) stopped: context overflow persists after \(Self.maxContextOverflowRetries) rebuild attempts.",
+                            metadata: ["isError": .bool(true), "agentRole": .string(configuration.role.rawValue)]
+                        ))
+                        isRunning = false
+                        break
+                    }
+                }
+
+                // Log unhandled 400 errors so we can detect patterns that need specific handling.
+                Self.logUnhandled400(error)
+
                 consecutiveErrors += 1
+                consecutiveContextOverflows = 0  // Reset overflow counter on non-overflow errors
 
                 let backoff = min(
                     3.0 * pow(2.0, Double(min(consecutiveErrors - 1, 10))),
@@ -462,6 +534,12 @@ public actor AgentActor {
             let roleName = configuration.role.displayName
             let ctx = toolContext
 
+            // Track Jones active state across concurrent evaluations.
+            // Counter increments when each evaluation starts, decrements when it finishes.
+            // Jones indicator turns off only when the last concurrent evaluation completes.
+            let jonesActiveCount = OSAllocatedUnfairLock(initialState: 0)
+            let jonesCallback = ctx.onJonesProcessingStateChange
+
             let results: [ParallelToolResult] = await withTaskGroup(
                 of: ParallelToolResult.self,
                 returning: [ParallelToolResult].self
@@ -471,6 +549,12 @@ public actor AgentActor {
                     let toolParamDefs = AgentActor.formatToolParameterDefinitions(toolDef.parameters)
                     group.addTask {
                         // Evaluate security directly (concurrent LLM calls).
+                        let shouldSignalStart = jonesActiveCount.withLock { count -> Bool in
+                            count += 1
+                            return count == 1
+                        }
+                        if shouldSignalStart { jonesCallback(true) }
+
                         let disposition = await evaluator.evaluate(
                             toolName: entry.call.name,
                             toolParams: entry.call.arguments,
@@ -482,6 +566,12 @@ public actor AgentActor {
                             siblingCalls: entry.siblings.isEmpty ? nil : entry.siblings,
                             agentRoleName: roleName
                         )
+
+                        let shouldSignalEnd = jonesActiveCount.withLock { count -> Bool in
+                            count -= 1
+                            return count == 0
+                        }
+                        if shouldSignalEnd { jonesCallback(false) }
 
                         // Post security review status to channel.
                         await AgentActor.postSecurityReviewToChannel(
@@ -501,6 +591,12 @@ public actor AgentActor {
                                 result: result, call: entry.call, role: role, channel: channel
                             )
                         } else {
+                            if let taskID = currentTask?.id {
+                                let update = AgentActor.securityDenialUpdateMessage(
+                                    call: entry.call, disposition: disposition, isParallelBatch: true
+                                )
+                                await ctx.taskStore.addUpdate(id: taskID, message: update)
+                            }
                             result = "Tool execution denied: \(disposition.message ?? "No reason given")"
                         }
 
@@ -580,6 +676,7 @@ public actor AgentActor {
         // After completing a task, stop and wait for Smith's review.
         // This takes priority over the sentMessage check since task_complete also posts a message.
         if calledTaskComplete {
+            awaitingTaskReview = true
             hasUnprocessedInput = false
             return
         }
@@ -636,6 +733,7 @@ public actor AgentActor {
         }
 
         let siblings = siblingCallSummaries.isEmpty ? nil : siblingCallSummaries.joined(separator: "\n")
+        toolContext.onJonesProcessingStateChange(true)
         let disposition = await evaluator.evaluate(
             toolName: call.name,
             toolParams: call.arguments,
@@ -647,6 +745,7 @@ public actor AgentActor {
             siblingCalls: siblings,
             agentRoleName: configuration.role.displayName
         )
+        toolContext.onJonesProcessingStateChange(false)
 
         // Post approval/denial status.
         await Self.postSecurityReviewToChannel(
@@ -661,6 +760,12 @@ public actor AgentActor {
             )
             return result
         } else {
+            if let task = currentTask {
+                let update = Self.securityDenialUpdateMessage(
+                    call: call, disposition: disposition, isParallelBatch: parallelCount > 1
+                )
+                await toolContext.taskStore.addUpdate(id: task.id, message: update)
+            }
             return "Tool execution denied: \(disposition.message ?? "No reason given")"
         }
     }
@@ -763,13 +868,15 @@ public actor AgentActor {
         ]
         if isTruncated {
             outputMetadata["truncatedContent"] = .string(truncated)
-            // Store a larger excerpt for "Show more" — but not the entire output.
+            // Store a larger excerpt for "Show more" — cap at 10K to avoid bloating the UI.
             let expandedLimit = 10_000
             if trimmedResult.count > expandedLimit {
                 let remaining = trimmedResult.count - expandedLimit
                 outputMetadata["expandedContent"] = .string(
                     String(trimmedResult.prefix(expandedLimit)) + "\n… (\(remaining) more characters, see conversation history)"
                 )
+            } else {
+                outputMetadata["expandedContent"] = .string(trimmedResult)
             }
         }
         await channel.post(ChannelMessage(
@@ -831,6 +938,11 @@ public actor AgentActor {
     /// into the conversation so the LLM knows to review the current state.
     private func checkScheduledWake() {
         guard let wakeAt = scheduledWakeAt, Date() >= wakeAt else { return }
+        guard !awaitingTaskReview else {
+            // Don't wake during task review — the scheduled timer is stale.
+            scheduledWakeAt = nil
+            return
+        }
         scheduledWakeAt = nil
         conversationHistory.append(LLMMessage(
             role: .user,
@@ -841,7 +953,20 @@ public actor AgentActor {
 
     private func drainPendingMessages() {
         guard !pendingChannelMessages.isEmpty else { return }
-        hasUnprocessedInput = true
+
+        // When awaiting task review, only wake if a private message addressed to this
+        // agent arrived (Smith sending revision feedback). Other messages (system banners,
+        // public notifications) are still drained into history but don't trigger a new LLM call.
+        if awaitingTaskReview {
+            let hasPrivateMessage = pendingChannelMessages.contains { $0.recipientID == id }
+            if hasPrivateMessage {
+                awaitingTaskReview = false
+                hasUnprocessedInput = true
+            }
+            // else: drain messages into history below, but leave hasUnprocessedInput as-is
+        } else {
+            hasUnprocessedInput = true
+        }
 
         // Collect all images across pending messages
         var allImages: [LLMImageContent] = []
@@ -970,6 +1095,49 @@ public actor AgentActor {
     /// Prevents massive outputs (e.g., binary blobs, multi-MB command output) from blowing up LLM context.
     private static let maxToolResultCharacters = 50_000
 
+    /// Maximum characters per argument value in security denial task updates.
+    private static let maxArgCharsForUpdate = 50
+
+    static func securityDenialUpdateMessage(
+        call: LLMToolCall,
+        disposition: SecurityDisposition,
+        isParallelBatch: Bool
+    ) -> String {
+        let label = disposition.isWarning ? "WARN" : "UNSAFE"
+        let reason = disposition.message ?? "no reason given"
+        let batchNote = isParallelBatch ? " (part of parallel batch)" : ""
+
+        // Truncate each argument value to keep updates readable.
+        let truncatedArgs: String
+        do {
+            guard let data = call.arguments.data(using: .utf8) else {
+                throw NSError(domain: "AgentActor", code: 0, userInfo: [NSLocalizedDescriptionKey: "Non-UTF8 arguments"])
+            }
+            guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw NSError(domain: "AgentActor", code: 0, userInfo: [NSLocalizedDescriptionKey: "Arguments not a JSON object"])
+            }
+            let pairs = dict.map { key, value in
+                let raw = String(describing: value)
+                let capped = raw.count > maxArgCharsForUpdate
+                    ? String(raw.prefix(maxArgCharsForUpdate)) + "…"
+                    : raw
+                return "\"\(key)\": \"\(capped)\""
+            }
+            truncatedArgs = pairs.joined(separator: ", ")
+        } catch {
+            let raw = call.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
+            truncatedArgs = raw.count > maxArgCharsForUpdate
+                ? String(raw.prefix(maxArgCharsForUpdate)) + "…"
+                : raw
+        }
+
+        return """
+            Tool call "\(call.name)"\(batchNote) execution denied by security agent:
+            - Arguments: \(truncatedArgs)
+            - Security response: \(label) \(reason)
+            """
+    }
+
     /// Caps a tool result string for conversation history, preserving the head and noting truncation.
     static func capToolResult(_ result: String) -> String {
         guard result.count > maxToolResultCharacters else { return result }
@@ -1016,6 +1184,9 @@ public actor AgentActor {
 
 
     /// Prunes conversation history when approaching the context window limit.
+    ///
+    /// The available input budget is `contextWindowSize - maxTokens` (the output reservation).
+    /// Pruning triggers at 80% of that budget to leave headroom for estimation inaccuracy.
     private func pruneHistoryIfNeeded() {
         // ~3 characters per token as a conservative estimate.
         // Include tool definitions and per-turn suffix overhead (not stored in history
@@ -1024,13 +1195,19 @@ public actor AgentActor {
             $0 + $1.estimatedCharacterCount
         } + apiOverheadChars) / 3
 
+        // The input budget is the context window minus the output token reservation.
+        // Without this subtraction, pruning triggers far too late for models where
+        // maxTokens is a large fraction of contextWindowSize (e.g., deepseek-reasoner
+        // with 65K output in a 131K window).
         let contextLimit = configuration.llmConfig.contextWindowSize
-        let pruneThreshold = contextLimit * 4 / 5
+        // Floor at 25% of context window to handle misconfigured maxTokens gracefully.
+        let inputBudget = max(contextLimit / 4, contextLimit - configuration.llmConfig.maxTokens)
+        let pruneThreshold = inputBudget * 4 / 5
 
         guard estimatedTokens > pruneThreshold else { return }
 
-        // Keep enough recent messages to fill ~35% of context
-        let targetTokens = contextLimit * 7 / 20
+        // Keep enough recent messages to fill ~35% of input budget
+        let targetTokens = inputBudget * 7 / 20
         var keptTokens = 0
         var keepFromIndex = conversationHistory.count
 
@@ -1094,6 +1271,175 @@ public actor AgentActor {
                 content: "Context pruned for \(roleName): removed \(prunedCount) old messages."
             ))
         }
+    }
+
+    /// Detects whether an error is a context overflow (the request exceeded the model's context window).
+    /// Matches the error body patterns from OpenAI-compatible APIs (DeepSeek, Mistral, etc.).
+    private static func isContextOverflowError(_ error: Error) -> Bool {
+        guard let providerError = error as? LLMProviderError,
+              case .httpError(let statusCode, let body, _) = providerError else {
+            return false
+        }
+        // HTTP 400 with body indicating the request exceeded the model's context window.
+        // Each pattern matches a substantial, provider-specific substring to avoid false
+        // positives. Unmatched 400s are logged by logUnhandled400 so we can add new patterns.
+        //
+        // Known formats:
+        // - OpenAI/DeepSeek/Mistral: "This model's maximum context length is N tokens"
+        // - OpenAI error code: "context_length_exceeded"
+        // - Anthropic: "prompt is too long: N tokens"
+        // - Generic: "Please reduce the length of the messages"
+        if statusCode == 400 {
+            let lower = body.lowercased()
+            return lower.contains("maximum context length is")
+                || lower.contains("context_length_exceeded")
+                || lower.contains("reduce the length of the messages")
+                || lower.contains("prompt is too long:")
+        }
+        return false
+    }
+
+    /// Emergency prune for non-Brown agents: keeps system prompt and the most recent 20%
+    /// of messages. Brown uses `rebuildContextFromTask` instead.
+    private func forceAggressivePrune() {
+        guard conversationHistory.count > 3 else { return }
+
+        // Keep only the most recent ~20% of messages (by count, not tokens)
+        let keepCount = max(4, conversationHistory.count / 5)
+        var keepFromIndex = conversationHistory.count - keepCount
+
+        // Don't split tool call/result pairs
+        while keepFromIndex > 1, conversationHistory[keepFromIndex].role == .tool {
+            keepFromIndex -= 1
+        }
+        keepFromIndex = max(1, keepFromIndex)
+
+        let prunedCount = keepFromIndex - 1
+        guard prunedCount > 0 else { return }
+
+        var newHistory = [conversationHistory[0]]  // System prompt
+        newHistory.append(LLMMessage(
+            role: .user,
+            text: "[System: \(prunedCount) earlier messages were aggressively pruned after a context overflow error. Continue from the recent context below.]"
+        ))
+        newHistory.append(contentsOf: conversationHistory[keepFromIndex...])
+        conversationHistory = newHistory
+        lastTurnMessageCount = conversationHistory.count
+    }
+
+    /// Rebuilds Brown's conversation history from the current running task's data.
+    ///
+    /// Completely replaces the conversation history with:
+    /// 1. The original system prompt
+    /// 2. A synthesized task instruction built from the task's current state (title, description,
+    ///    all progress updates, relevant memories/prior tasks)
+    ///
+    /// This is far more efficient than pruning because task updates are a compressed log
+    /// of accomplishments (~1 line each) vs the verbose tool call/result pairs they replaced.
+    ///
+    /// - Returns: `true` if a running task was found and context was rebuilt; `false` otherwise.
+    private func rebuildContextFromTask() async -> Bool {
+        let allTasks = await toolContext.taskStore.allTasks()
+        guard let task = allTasks.first(where: { $0.status == .running }) else {
+            return false
+        }
+
+        // Capture a brief hint about the last action before clearing history.
+        let lastActionHint = lastActionSummary()
+
+        // Post a task update so the rebuild is visible in the task's progress log.
+        await toolContext.taskStore.addUpdate(
+            id: task.id,
+            message: "Context cleared due to size limits — rebuilding from task state and continuing work."
+        )
+
+        // Rebuild conversation: system prompt + fresh task instruction.
+        var parts: [String] = []
+
+        if let memories = task.relevantMemories, !memories.isEmpty {
+            let memoryLines = memories.map { "- \($0.content) (similarity: \(String(format: "%.2f", $0.similarity)))" }
+            parts.append("Relevant memories:\n\(memoryLines.joined(separator: "\n"))")
+        }
+        if let priorTasks = task.relevantPriorTasks, !priorTasks.isEmpty {
+            let taskLines = priorTasks.map { "- \($0.title): \($0.summary) (similarity: \(String(format: "%.2f", $0.similarity)))" }
+            parts.append("Relevant prior task summaries:\n\(taskLines.joined(separator: "\n"))")
+        }
+
+        parts.append("""
+            Task: "\(task.title)"
+            Task ID: \(task.id.uuidString)
+
+            \(task.description)
+            """)
+
+        if !task.updates.isEmpty {
+            let history = task.updates.map { "- \($0.message)" }.joined(separator: "\n")
+            parts.append("Progress so far:\n\(history)")
+        }
+
+        if let brownContext = task.lastBrownContext {
+            parts.append("Last known working state:\n\(brownContext)")
+        }
+
+        if let hint = lastActionHint {
+            parts.append("Your last action before this context reset: \(hint)")
+        }
+
+        parts.append("""
+            Your conversation history was cleared because it exceeded the model's context window. \
+            The task progress above reflects your work so far. Continue working on this task from where you left off. \
+            Do not repeat work that the progress updates show is already done.
+            """)
+
+        let instruction = parts.joined(separator: "\n\n")
+
+        conversationHistory = [
+            conversationHistory[0],  // System prompt
+            LLMMessage(role: .user, text: instruction)
+        ]
+        lastTurnMessageCount = conversationHistory.count
+        llmTurns.removeAll()
+        hasUnprocessedInput = true
+
+        return true
+    }
+
+    /// Returns a brief summary of the last action in the conversation history, if any.
+    /// Only captures tool call names (not arguments/results) to keep it compact.
+    private func lastActionSummary() -> String? {
+        // Walk backward to find the last assistant message with tool calls.
+        for message in conversationHistory.reversed() {
+            guard message.role == .assistant else { continue }
+            switch message.content {
+            case .toolCalls(let calls):
+                let names = calls.map(\.name).joined(separator: ", ")
+                return "called tool(s): \(names)"
+            case .mixed(let text, let calls):
+                let names = calls.map(\.name).joined(separator: ", ")
+                let preview = String(text.prefix(100))
+                return "said \"\(preview)\" and called tool(s): \(names)"
+            case .text(let text):
+                return "said: \"\(String(text.prefix(120)))\""
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+
+    /// Logs HTTP 400 errors that were NOT classified as context overflow, so we can
+    /// detect patterns that may need specific handling in the future.
+    private static let agentLogger = Logger(subsystem: "com.agentsmith", category: "AgentActor")
+
+    private static func logUnhandled400(_ error: Error) {
+        guard let providerError = error as? LLMProviderError,
+              case .httpError(let statusCode, let body, let url) = providerError,
+              statusCode == 400 else {
+            return
+        }
+        agentLogger.warning(
+            "Unhandled HTTP 400 (not context overflow): url=\(url?.absoluteString ?? "unknown", privacy: .public) body=\(body.prefix(500), privacy: .public)"
+        )
     }
 
     // MARK: - Per-turn task context (Smith only)

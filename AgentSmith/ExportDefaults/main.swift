@@ -40,7 +40,17 @@ if let data = ud.data(forKey: "agentAssignments") {
     do {
         agentAssignments = try JSONDecoder().decode([AgentRole: UUID].self, from: data)
     } catch {
-        fputs("Warning: Failed to decode agent assignments: \(error)\n", stderr)
+        // Migration: legacy alternating array format from before CodingKeyRepresentable.
+        if let array = try? JSONDecoder().decode([String].self, from: data) {
+            for i in stride(from: 0, to: array.count - 1, by: 2) {
+                if let role = AgentRole(rawValue: array[i]),
+                   let uuid = UUID(uuidString: array[i + 1]) {
+                    agentAssignments[role] = uuid
+                }
+            }
+        } else {
+            fputs("Warning: Failed to decode agent assignments: \(error)\n", stderr)
+        }
     }
 }
 

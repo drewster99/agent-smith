@@ -6,7 +6,9 @@ import AgentSmithKit
 struct ConfigValidationView: View {
     let viewModel: AppViewModel
     let onStart: () -> Void
-    let onOpenSettings: () -> Void
+    let onDismiss: () -> Void
+
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(spacing: 20) {
@@ -26,10 +28,14 @@ struct ConfigValidationView: View {
                 agentRow(role: .smith, label: "Agent Smith (Orchestrator)", color: AppColors.smithAgent)
                 agentRow(role: .brown, label: "Agent Brown (Executor)", color: AppColors.brownAgent)
                 agentRow(role: .jones, label: "Agent Jones (Safety Monitor)", color: AppColors.jonesAgent)
+                agentRow(role: .summarizer, label: "Task Summarizer", color: .secondary)
             }
 
             HStack(spacing: 12) {
-                Button("Open Settings") { onOpenSettings() }
+                Button("Open Settings") {
+                    onDismiss()
+                    openSettings()
+                }
                 Button("Start") { onStart() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!viewModel.allAgentConfigsValid)

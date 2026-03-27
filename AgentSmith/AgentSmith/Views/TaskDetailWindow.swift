@@ -69,6 +69,68 @@ struct TaskDetailWindow: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
+                // MARK: Summary
+                if let summary = task.summary, !summary.isEmpty {
+                    Divider()
+                    sectionHeader("Summary")
+                    Text(summary)
+                        .font(.body)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(.purple.opacity(0.06))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+
+                // MARK: Relevant Context
+                if hasRelevantContext {
+                    Divider()
+                    sectionHeader("Context Retrieved at Creation")
+
+                    if let memories = task.relevantMemories, !memories.isEmpty {
+                        Text("Memories")
+                            .font(.headline)
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(Array(memories.enumerated()), id: \.offset) { _, memory in
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(String(format: "%.0f%%", memory.similarity * 100))
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.tertiary)
+                                    Text(memory.content)
+                                        .font(.callout)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    if let priorTasks = task.relevantPriorTasks, !priorTasks.isEmpty {
+                        Text("Prior Tasks")
+                            .font(.headline)
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(Array(priorTasks.enumerated()), id: \.offset) { _, prior in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 8) {
+                                        Text(prior.title)
+                                            .font(.callout.bold())
+                                        Text(String(format: "%.0f%%", prior.similarity * 100))
+                                            .font(.caption.monospaced())
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                    Text(prior.summary)
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
                 Divider()
 
                 // MARK: Footer
@@ -132,6 +194,13 @@ struct TaskDetailWindow: View {
     private func sectionHeader(_ title: String) -> some View {
         Text(title)
             .font(.title3.bold())
+    }
+
+    /// Whether the task has any relevant memories or prior task summaries attached.
+    private var hasRelevantContext: Bool {
+        let hasMemories = task.relevantMemories.map { !$0.isEmpty } ?? false
+        let hasPriorTasks = task.relevantPriorTasks.map { !$0.isEmpty } ?? false
+        return hasMemories || hasPriorTasks
     }
 
     // MARK: - Elapsed time

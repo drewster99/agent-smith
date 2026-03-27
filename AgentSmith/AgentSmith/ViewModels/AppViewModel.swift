@@ -75,6 +75,11 @@ final class AppViewModel {
     /// Maps each agent role to a `ModelConfiguration.id`.
     var agentAssignments: [AgentRole: UUID] = [:]
 
+    /// All stored memories, refreshed when the memory store changes.
+    var storedMemories: [MemoryEntry] = []
+    /// All stored task summaries, refreshed when the memory store changes.
+    var storedTaskSummaries: [TaskSummaryEntry] = []
+
     let speechController = SpeechController()
 
     private var runtime: OrchestrationRuntime?
@@ -136,9 +141,26 @@ final class AppViewModel {
             do {
                 agentAssignments = try JSONDecoder().decode([AgentRole: UUID].self, from: saved)
             } catch {
-                let msg = "Failed to decode agent assignments: \(error)"
-                print("[AgentSmith] \(msg)")
-                startupError = msg
+                // Migration: before CodingKeyRepresentable conformance, [AgentRole: UUID]
+                // was encoded as an alternating array ["smith", "uuid", "brown", "uuid", ...].
+                // Try to parse that format and re-save in the new dictionary format.
+                do {
+                    let array = try JSONDecoder().decode([String].self, from: saved)
+                    var migrated: [AgentRole: UUID] = [:]
+                    for i in stride(from: 0, to: array.count - 1, by: 2) {
+                        if let role = AgentRole(rawValue: array[i]),
+                           let uuid = UUID(uuidString: array[i + 1]) {
+                            migrated[role] = uuid
+                        }
+                    }
+                    agentAssignments = migrated
+                    print("[AgentSmith] Migrated agent assignments from legacy array format")
+                    persistAgentAssignments()
+                } catch {
+                    let msg = "Failed to decode agent assignments: \(error)"
+                    print("[AgentSmith] \(msg)")
+                    startupError = msg
+                }
             }
         }
 
@@ -236,7 +258,17 @@ final class AppViewModel {
             )
         }
 
-        let newRuntime = OrchestrationRuntime(llmConfigs: configs, agentTuning: tuning)
+        let embeddingService: EmbeddingService
+        do {
+            embeddingService = try EmbeddingService()
+        } catch {
+            let msg = "Failed to initialize embedding service: \(error.localizedDescription)"
+            print("[AgentSmith] \(msg)")
+            startupError = msg
+            return
+        }
+
+        let newRuntime = OrchestrationRuntime(llmConfigs: configs, agentTuning: tuning, embeddingService: embeddingService)
         runtime = newRuntime
         isRunning = true
 
@@ -306,6 +338,31 @@ final class AppViewModel {
 
         // Archive any completed tasks older than 4 hours now that the store is live.
         await taskStore.archiveStaleCompleted()
+
+        // Restore persisted memories and task summaries into the memory store.
+        let memoryStore = await newRuntime.memoryStore
+        do {
+            let savedMemories = try await persistenceManager.loadMemories()
+            let savedTaskSummaries = try await persistenceManager.loadTaskSummaries()
+            if !savedMemories.isEmpty || !savedTaskSummaries.isEmpty {
+                await memoryStore.restore(memories: savedMemories, taskSummaries: savedTaskSummaries)
+            }
+        } catch {
+            print("[AgentSmith] Failed to load memories: \(error)")
+        }
+
+        // Wire memory persistence and UI refresh — save to disk and update published
+        // arrays whenever memories change.
+        await memoryStore.setOnChange { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.persistMemories(memoryStore: memoryStore)
+                await self.refreshMemories()
+            }
+        }
+
+        // Initial population of the memory arrays for the UI.
+        await refreshMemories()
 
         await newRuntime.start()
 
@@ -571,7 +628,7 @@ final class AppViewModel {
 
     /// Whether all agent roles have valid assigned configurations.
     var allAgentConfigsValid: Bool {
-        AgentRole.allCases.allSatisfy { role in
+        AgentRole.requiredRoles.allSatisfy { role in
             guard let configID = agentAssignments[role],
                   let config = llmKit.configurations.first(where: { $0.id == configID }),
                   config.isValid else { return false }
@@ -641,6 +698,40 @@ final class AppViewModel {
                 try await persistenceManager.saveChannelLog(snapshot)
             } catch {
                 print("[AgentSmith] Failed to persist messages: \(error)")
+            }
+        }
+    }
+
+    // MARK: - Memory Editor Support
+
+    /// Refreshes the published memory arrays from the memory store.
+    func refreshMemories() async {
+        guard let memoryStore = await runtime?.memoryStore else { return }
+        storedMemories = await memoryStore.allMemories()
+        storedTaskSummaries = await memoryStore.allTaskSummaries()
+    }
+
+    /// Deletes a memory by ID.
+    func deleteMemory(id: UUID) async {
+        guard let memoryStore = await runtime?.memoryStore else { return }
+        await memoryStore.delete(id: id)
+    }
+
+    /// Updates a memory's content and/or tags. Re-embeds if content changed.
+    func updateMemory(id: UUID, content: String? = nil, tags: [String]? = nil) async throws {
+        guard let memoryStore = await runtime?.memoryStore else { return }
+        try await memoryStore.update(id: id, content: content, tags: tags)
+    }
+
+    private func persistMemories(memoryStore: MemoryStore) {
+        Task.detached { [persistenceManager] in
+            do {
+                let memories = await memoryStore.allMemories()
+                let taskSummaries = await memoryStore.allTaskSummaries()
+                try await persistenceManager.saveMemories(memories)
+                try await persistenceManager.saveTaskSummaries(taskSummaries)
+            } catch {
+                print("[AgentSmith] Failed to persist memories: \(error)")
             }
         }
     }

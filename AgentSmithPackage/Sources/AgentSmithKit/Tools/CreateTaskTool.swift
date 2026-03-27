@@ -38,16 +38,73 @@ public struct CreateTaskTool: AgentTool {
 
         let task = await context.taskStore.addTask(title: title, description: description)
 
+        // Search semantic memory for relevant context to attach to this task.
+        let searchQuery = title + " " + description
+        var contextNote = ""
+        do {
+            let results = try await context.memoryStore.searchAll(
+                query: searchQuery,
+                memoryLimit: 3,
+                taskLimit: 3
+            )
+            if !results.isEmpty {
+                let memories: [RelevantMemory]? = results.memories.isEmpty ? nil : results.memories.map {
+                    RelevantMemory(content: $0.memory.content, tags: $0.memory.tags, similarity: $0.similarity)
+                }
+                let priorTasks: [RelevantPriorTask]? = results.taskSummaries.isEmpty ? nil : results.taskSummaries.map {
+                    RelevantPriorTask(title: $0.summary.title, summary: $0.summary.summary, similarity: $0.similarity)
+                }
+                await context.taskStore.setRelevantContext(
+                    id: task.id,
+                    memories: memories,
+                    priorTasks: priorTasks
+                )
+
+                var parts: [String] = []
+                if let memories, !memories.isEmpty {
+                    parts.append("\(memories.count) relevant memor\(memories.count == 1 ? "y" : "ies")")
+                }
+                if let priorTasks, !priorTasks.isEmpty {
+                    parts.append("\(priorTasks.count) relevant prior task\(priorTasks.count == 1 ? "" : "s")")
+                }
+                if !parts.isEmpty {
+                    contextNote = " Attached: \(parts.joined(separator: ", "))."
+                }
+            }
+        } catch {
+            // Memory search failure is non-fatal — task still gets created.
+        }
+
+        // Build metadata for the task_created channel message, including any retrieved context.
+        var meta: [String: AnyCodable] = [
+            "messageKind": .string("task_created"),
+            "taskID": .string(task.id.uuidString),
+            "taskDescription": .string(description)
+        ]
+        if let task = await context.taskStore.task(id: task.id) {
+            if let memories = task.relevantMemories, !memories.isEmpty {
+                meta["contextMemoryCount"] = .int(memories.count)
+                meta["contextMemories"] = .string(memories.map { m in
+                    let pct = String(format: "%.0f%%", m.similarity * 100)
+                    let tags = m.tags.isEmpty ? "" : " [\(m.tags.joined(separator: ", "))]"
+                    return "\(pct) — \(m.content)\(tags)"
+                }.joined(separator: "\n"))
+            }
+            if let priorTasks = task.relevantPriorTasks, !priorTasks.isEmpty {
+                meta["contextPriorTaskCount"] = .int(priorTasks.count)
+                meta["contextPriorTasks"] = .string(priorTasks.map { p in
+                    let pct = String(format: "%.0f%%", p.similarity * 100)
+                    return "\(pct) — \(p.title): \(p.summary)"
+                }.joined(separator: "\n"))
+            }
+        }
+
         await context.channel.post(ChannelMessage(
             sender: .system,
             content: title,
-            metadata: [
-                "messageKind": .string("task_created"),
-                "taskID": .string(task.id.uuidString),
-                "taskDescription": .string(description)
-            ]
+            metadata: meta
         ))
 
-        return "Task created (ID: \(task.id), title: \"\(title)\"). Call `run_task` with this task ID to start it."
+        return "Task created (ID: \(task.id), title: \"\(title)\").\(contextNote) Call `run_task` with this task ID to start it."
     }
 }

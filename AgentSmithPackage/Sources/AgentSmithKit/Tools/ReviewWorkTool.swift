@@ -100,6 +100,9 @@ public struct ReviewWorkTool: AgentTool {
                 ))
             }
 
+            // Trigger background summarization and embedding of the completed task.
+            await context.summarizeCompletedTask(taskID)
+
             return "Task '\(task.title)' accepted and completed. Agents terminated. Result delivered to user (do not deliver it again yourself, Agent Smith)."
         } else {
             // ---- Reject path ----

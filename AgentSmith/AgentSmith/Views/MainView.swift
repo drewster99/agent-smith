@@ -178,9 +178,8 @@ struct MainView: View {
                     showValidationSheet = false
                     Task { await viewModel.start() }
                 },
-                onOpenSettings: {
+                onDismiss: {
                     showValidationSheet = false
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
                 }
             )
         }

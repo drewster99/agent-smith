@@ -123,6 +123,16 @@ struct SettingsView: View {
                     exportDefaults()
                 }
             }
+
+            if !viewModel.llmKit.refreshErrors.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(viewModel.llmKit.refreshErrors.sorted(by: { $0.key < $1.key }), id: \.key) { provider, error in
+                        Label("\(provider): \(error)", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
         }
         .sheet(isPresented: $isCreatingConfig) {
             ModelConfigurationEditorView(
@@ -245,6 +255,12 @@ struct SettingsView: View {
                 label: "Agent Jones (Safety Monitor)",
                 description: "Reviews every tool call Brown attempts and approves, warns, or blocks based on safety analysis.",
                 color: AppColors.jonesAgent
+            )
+            agentAssignmentRow(
+                role: .summarizer,
+                label: "Task Summarizer",
+                description: "Generates concise summaries of completed and failed tasks for semantic memory and future task context.",
+                color: .secondary
             )
         }
     }

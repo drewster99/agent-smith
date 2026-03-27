@@ -257,6 +257,20 @@ struct ModelConfigurationEditorView: View {
         if let maxIn = model.maxInputTokens {
             maxContextTokens = maxIn
         }
+        // Auto-suggest a name when creating a new config and the user hasn't typed one yet.
+        if existingConfig == nil && name.isEmpty {
+            name = suggestedName(provider: selectedProviderID, model: model)
+        }
+    }
+
+    /// Builds a suggested configuration name from the provider and model display name.
+    private func suggestedName(provider providerID: String, model: ModelInfo) -> String {
+        let providerName = llmKit.providers.first { $0.id == providerID }?.name
+        let modelName = model.displayName
+        if let providerName, !providerName.isEmpty {
+            return "\(providerName) — \(modelName)"
+        }
+        return modelName
     }
 
     private func populateFromExisting() {

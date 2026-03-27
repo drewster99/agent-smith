@@ -20,6 +20,12 @@ public struct AgentTask: Identifiable, Codable, Sendable {
     public var updates: [TaskUpdate]
     /// Compressed summary of Brown's last working state, saved on termination for resumability.
     public var lastBrownContext: String?
+    /// LLM-generated summary of the task (populated after completion/failure).
+    public var summary: String?
+    /// Relevant memories retrieved at task creation, for Brown's context.
+    public var relevantMemories: [RelevantMemory]?
+    /// Relevant prior task summaries retrieved at task creation.
+    public var relevantPriorTasks: [RelevantPriorTask]?
 
     /// A single progress update recorded on a task.
     public struct TaskUpdate: Codable, Sendable {
@@ -72,7 +78,10 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         startedAt: Date? = nil,
         completedAt: Date? = nil,
         updates: [TaskUpdate] = [],
-        lastBrownContext: String? = nil
+        lastBrownContext: String? = nil,
+        summary: String? = nil,
+        relevantMemories: [RelevantMemory]? = nil,
+        relevantPriorTasks: [RelevantPriorTask]? = nil
     ) {
         self.id = id
         self.title = title
@@ -88,12 +97,15 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         self.completedAt = completedAt
         self.updates = updates
         self.lastBrownContext = lastBrownContext
+        self.summary = summary
+        self.relevantMemories = relevantMemories
+        self.relevantPriorTasks = relevantPriorTasks
     }
 
     // MARK: - Codable (backward-compatible with persisted data lacking `disposition`)
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt, startedAt, completedAt, updates, lastBrownContext
+        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt, startedAt, completedAt, updates, lastBrownContext, summary, relevantMemories, relevantPriorTasks
     }
 
     public init(from decoder: Decoder) throws {
@@ -112,6 +124,9 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
         updates = try c.decodeIfPresent([TaskUpdate].self, forKey: .updates) ?? []
         lastBrownContext = try c.decodeIfPresent(String.self, forKey: .lastBrownContext)
+        summary = try c.decodeIfPresent(String.self, forKey: .summary)
+        relevantMemories = try c.decodeIfPresent([RelevantMemory].self, forKey: .relevantMemories)
+        relevantPriorTasks = try c.decodeIfPresent([RelevantPriorTask].self, forKey: .relevantPriorTasks)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -132,5 +147,8 @@ public struct AgentTask: Identifiable, Codable, Sendable {
             try c.encode(updates, forKey: .updates)
         }
         try c.encodeIfPresent(lastBrownContext, forKey: .lastBrownContext)
+        try c.encodeIfPresent(summary, forKey: .summary)
+        try c.encodeIfPresent(relevantMemories, forKey: .relevantMemories)
+        try c.encodeIfPresent(relevantPriorTasks, forKey: .relevantPriorTasks)
     }
 }

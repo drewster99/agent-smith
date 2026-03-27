@@ -64,6 +64,40 @@ public actor PersistenceManager {
         return try JSONDecoder().decode([AgentTask].self, from: data)
     }
 
+    // MARK: - Memories
+
+    /// Saves semantic memories to disk.
+    public func saveMemories(_ memories: [MemoryEntry]) throws {
+        try ensureDirectories()
+        let data = try JSONEncoder().encode(memories)
+        let url = baseDirectory.appendingPathComponent("memories.json")
+        try data.write(to: url, options: .atomic)
+    }
+
+    /// Loads semantic memories from disk.
+    public func loadMemories() throws -> [MemoryEntry] {
+        let url = baseDirectory.appendingPathComponent("memories.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode([MemoryEntry].self, from: data)
+    }
+
+    /// Saves task summary embeddings to disk.
+    public func saveTaskSummaries(_ summaries: [TaskSummaryEntry]) throws {
+        try ensureDirectories()
+        let data = try JSONEncoder().encode(summaries)
+        let url = baseDirectory.appendingPathComponent("task_summaries.json")
+        try data.write(to: url, options: .atomic)
+    }
+
+    /// Loads task summary embeddings from disk.
+    public func loadTaskSummaries() throws -> [TaskSummaryEntry] {
+        let url = baseDirectory.appendingPathComponent("task_summaries.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode([TaskSummaryEntry].self, from: data)
+    }
+
     // MARK: - Attachments
 
     /// Saves attachment file data to disk. Call this when the user adds an attachment.

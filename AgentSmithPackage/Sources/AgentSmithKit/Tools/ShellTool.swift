@@ -3,7 +3,7 @@ import Foundation
 /// Executes shell commands. Has a hard blocklist of dangerous patterns.
 public struct ShellTool: AgentTool {
     public let name = "shell"
-    public let toolDescription = "Execute a shell command and return its output. Dangerous commands are blocked."
+    public let toolDescription = "Execute a shell command and return its output. Dangerous commands are blocked. Default timeout is 300 seconds — pass a higher `timeout` for long-running commands."
 
     public func description(for role: AgentRole) -> String {
         switch role {
@@ -68,70 +68,19 @@ public struct ShellTool: AgentTool {
             workingDir = nil
         }
 
-        return try await runProcess(
-            command: command,
+        let result = try await ProcessRunner.run(
+            executable: "/bin/zsh",
+            arguments: ["-c", command],
             workingDirectory: workingDir,
             timeout: TimeInterval(timeoutSeconds)
         )
-    }
 
-    private func runProcess(
-        command: String,
-        workingDirectory: String?,
-        timeout: TimeInterval
-    ) async throws -> String {
-        // Dispatch blocking Process operations to a GCD thread to avoid
-        // blocking Swift concurrency's cooperative thread pool.
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                let pipe = Pipe()
-
-                process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-                process.arguments = ["-c", command]
-                process.standardOutput = pipe
-                process.standardError = pipe
-
-                if let workingDirectory {
-                    process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
-                }
-
-                let timeoutItem = DispatchWorkItem {
-                    if process.isRunning {
-                        process.terminate()
-                    }
-                }
-                DispatchQueue.global().asyncAfter(
-                    deadline: .now() + timeout,
-                    execute: timeoutItem
-                )
-
-                do {
-                    try process.run()
-
-                    // Read pipe data BEFORE waitUntilExit to avoid deadlock:
-                    // if output exceeds pipe buffer (~64KB), the process blocks
-                    // on write while we'd block waiting for exit.
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    process.waitUntilExit()
-                    timeoutItem.cancel()
-
-                    let output = String(data: data, encoding: .utf8)
-                        ?? "Error: output could not be decoded as UTF-8 (\(data.count) bytes)"
-                    let status = process.terminationStatus
-
-                    if status == 0 {
-                        continuation.resume(returning: output.isEmpty ? "(no output)" : output)
-                    } else {
-                        continuation.resume(
-                            returning: "Exit code \(status)\n\(output)"
-                        )
-                    }
-                } catch {
-                    timeoutItem.cancel()
-                    continuation.resume(throwing: error)
-                }
-            }
+        if result.timedOut {
+            return "Command timed out after \(timeoutSeconds) seconds\n\(result.output)"
+        } else if result.exitCode == 0 {
+            return result.output.isEmpty ? "(no output)" : result.output
+        } else {
+            return "Exit code \(result.exitCode)\n\(result.output)"
         }
     }
 }

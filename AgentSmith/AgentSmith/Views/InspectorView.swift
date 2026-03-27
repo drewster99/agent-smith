@@ -18,16 +18,64 @@ struct InspectorView: View {
     let onUpdatePollInterval: (AgentRole, TimeInterval) -> Void
     let onUpdateMaxToolCalls: (AgentRole, Int) -> Void
 
+    /// Compact status label for the pinned status bar.
+    private func statusLabel(for role: AgentRole) -> String {
+        if processingRoles.contains(role) {
+            return role == .jones ? "Evaluating" : (role == .summarizer ? "Summarizing" : "Thinking")
+        }
+        let roleMessages = messages.filter {
+            if case .agent(let r) = $0.sender { return r == role }
+            return false
+        }
+        if !roleMessages.isEmpty { return "Idle" }
+        return "—"
+    }
+
+    private func statusColor(for role: AgentRole) -> Color {
+        if processingRoles.contains(role) { return AppColors.color(for: .agent(role)) }
+        let roleMessages = messages.filter {
+            if case .agent(let r) = $0.sender { return r == role }
+            return false
+        }
+        if !roleMessages.isEmpty { return AppColors.color(for: .agent(role)) }
+        return Color.secondary.opacity(0.4)
+    }
+
+    private func displayName(for role: AgentRole) -> String {
+        role == .jones ? "Security" : role.displayName
+    }
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+        VStack(spacing: 0) {
+            // Pinned status bar — always visible
+            VStack(alignment: .leading, spacing: 6) {
                 Text("Agents")
                     .font(AppFonts.sectionHeader)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 12)
-                    .padding(.bottom, 10)
 
-                ForEach(AgentRole.allCases, id: \.self) { role in
+                HStack(spacing: 12) {
+                    ForEach(AgentRole.allCases, id: \.self) { role in
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(statusColor(for: role))
+                                .frame(width: 6, height: 6)
+                            Text(displayName(for: role))
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .foregroundStyle(statusColor(for: role))
+                        }
+                        .help("\(displayName(for: role)): \(statusLabel(for: role))")
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
+
+            Divider()
+
+            // Scrollable agent details
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                ForEach(AgentRole.allCases.filter { $0 != .summarizer }, id: \.self) { role in
                     let roleMessages = messages.filter {
                         if case .agent(let r) = $0.sender { return r == role }
                         return false
@@ -63,9 +111,15 @@ struct InspectorView: View {
                         onUpdateMaxToolCalls: { count in onUpdateMaxToolCalls(role, count) }
                     )
                 }
+
+                SummarizerCard(
+                    messages: messages,
+                    isProcessing: processingRoles.contains(.summarizer)
+                )
             }
         }
-        .inspectorColumnWidth(min: 280, ideal: 320, max: 460)
+    }
+    .inspectorColumnWidth(min: 280, ideal: 320, max: 460)
     }
 }
 
@@ -95,6 +149,11 @@ private struct AgentCard: View {
     private var roleColor: Color { AppColors.color(for: .agent(role)) }
     private var isSpeechEnabled: Bool { speechController.agentEnabled[role] ?? false }
 
+    /// Display name override for the inspector panel.
+    private var inspectorDisplayName: String {
+        role == .jones ? "Security Agent" : role.displayName
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header row
@@ -107,7 +166,7 @@ private struct AgentCard: View {
                             .fill(hasActivity ? roleColor : Color.secondary.opacity(0.4))
                             .frame(width: 8, height: 8)
 
-                        Text(role.displayName)
+                        Text(inspectorDisplayName)
                             .font(.headline)
                             .foregroundStyle(hasActivity ? roleColor : .secondary)
 
@@ -117,18 +176,20 @@ private struct AgentCard: View {
                             HStack(spacing: 4) {
                                 ProgressView()
                                     .controlSize(.mini)
-                                Text("Thinking")
+                                Text(role == .jones ? "Evaluating" : "Thinking")
                                     .font(AppFonts.inspectorLabel)
                                     .foregroundStyle(.secondary)
                             }
-                        } else if hasActivity && !availableTools.isEmpty {
-                            Text("Idle")
-                                .font(AppFonts.inspectorLabel)
-                                .foregroundStyle(.secondary)
-                        } else if !contextMessages.isEmpty {
-                            Text("Terminated")
-                                .font(AppFonts.inspectorLabel)
-                                .foregroundStyle(.orange)
+                        } else if hasActivity {
+                            if role != .jones && availableTools.isEmpty && !contextMessages.isEmpty {
+                                Text("Terminated")
+                                    .font(AppFonts.inspectorLabel)
+                                    .foregroundStyle(.orange)
+                            } else {
+                                Text("Idle")
+                                    .font(AppFonts.inspectorLabel)
+                                    .foregroundStyle(.secondary)
+                            }
                         } else {
                             Text("Not active")
                                 .font(AppFonts.inspectorLabel)
@@ -356,6 +417,10 @@ private struct InspectorMessageRow: View {
 /// A single entry from an agent's LLM context window. Tap to expand the full content.
 private struct ContextMessageRow: View {
     let message: LLMMessage
+    /// Optional message index displayed before the role label (e.g. "#1").
+    var index: Int?
+    /// When true, the message starts fully expanded (used in FullContextSheet).
+    var initiallyExpanded: Bool = false
 
     @State private var expanded = false
 
@@ -364,24 +429,51 @@ private struct ContextMessageRow: View {
             withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
         }, label: {
             HStack(alignment: .top, spacing: 5) {
+                if let index {
+                    Text("#\(index)")
+                        .font(.system(size: 8, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 22, alignment: .trailing)
+                }
+
                 Text(roleLabel)
                     .font(AppFonts.inspectorBody.weight(.bold))
                     .foregroundStyle(roleColor)
                     .frame(width: 14, alignment: .center)
-                    .help(roleTooltip)
+
+                if isTaskContext {
+                    Text("TC")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.purple)
+                        .help("Injected Task Context — dynamic state appended each turn")
+                }
 
                 Text(expanded ? fullContent : contentSummary)
                     .font(AppFonts.inspectorBody)
                     .foregroundStyle(.primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .multilineTextAlignment(.leading)
+                    .textSelection(.enabled)
             }
             .padding(.vertical, 2)
             .padding(.horizontal, 4)
             .background(rowBackground)
             .clipShape(RoundedRectangle(cornerRadius: 3))
+            .help(roleTooltip)
         })
         .buttonStyle(.plain)
+        .onAppear {
+            if initiallyExpanded { expanded = true }
+        }
+    }
+
+    /// Detects the `[Injected Task Context]` prefix added by Smith's per-turn injection.
+    private var isTaskContext: Bool {
+        guard message.role == .system else { return false }
+        if case .text(let s) = message.content {
+            return s.hasPrefix("[Injected Task Context]")
+        }
+        return false
     }
 
     private var roleLabel: String {
@@ -395,10 +487,10 @@ private struct ContextMessageRow: View {
 
     private var roleTooltip: String {
         switch message.role {
-        case .system: return "System — the agent's system prompt"
-        case .user: return "User — input from the user or channel messages"
-        case .assistant: return "Assistant — the LLM's response (text or tool calls)"
-        case .tool: return "Tool — result returned by a tool call"
+        case .system: return "S = System prompt — the agent's base instructions"
+        case .user: return "U = User input — messages from the orchestrator, channel, or injected context"
+        case .assistant: return "A = Assistant — the LLM's response (text and/or tool calls)"
+        case .tool: return "T = Tool result — output returned by a tool call execution"
         }
     }
 
@@ -434,11 +526,16 @@ private struct ContextMessageRow: View {
     private var fullContent: String {
         switch message.content {
         case .text(let s): return s
-        case .toolCalls(let calls): return calls.map { "[\($0.name)]" }.joined(separator: ", ")
+        case .toolCalls(let calls):
+            return calls.map { call in
+                "\(call.name)(\(call.arguments))"
+            }.joined(separator: "\n\n")
         case .mixed(let text, let calls):
-            return text + " " + calls.map { "[\($0.name)]" }.joined(separator: ", ")
+            var parts = [text]
+            parts.append(contentsOf: calls.map { "\($0.name)(\($0.arguments))" })
+            return parts.joined(separator: "\n\n")
         case .toolResult(let callID, let content):
-            return "→ \(callID): \(content)"
+            return "→ \(callID):\n\(content)"
         }
     }
 
@@ -532,6 +629,9 @@ private let inspectorTimestampFormatter: DateFormatter = {
 }()
 
 /// A single LLM turn entry in the per-turn inspection log.
+///
+/// Shows a clear Outgoing (what was sent) / Response (what came back) structure
+/// with latency timing.
 private struct LLMTurnDisclosureRow: View {
     let turn: LLMTurnRecord
     let turnNumber: Int
@@ -541,27 +641,58 @@ private struct LLMTurnDisclosureRow: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 8) {
+                // --- Outgoing ---
                 if !turn.inputDelta.isEmpty {
-                    Text("Input (\(turn.inputDelta.count) new msg\(turn.inputDelta.count == 1 ? "" : "s")):")
-                        .font(AppFonts.inspectorLabel.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    ForEach(turn.inputDelta.indices, id: \.self) { i in
-                        ContextMessageRow(message: turn.inputDelta[i])
+                    turnSectionHeader("Outgoing", icon: "arrow.up.circle.fill", color: .blue)
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(turn.inputDelta.indices, id: \.self) { i in
+                            ContextMessageRow(message: turn.inputDelta[i])
+                        }
                     }
                 }
-                Text("Response:")
-                    .font(AppFonts.inspectorLabel.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text(responseSummary)
-                    .font(AppFonts.inspectorBody)
-                    .foregroundStyle(.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .multilineTextAlignment(.leading)
 
+                // --- Response ---
+                turnSectionHeader(
+                    "Response",
+                    icon: "arrow.down.circle.fill",
+                    color: .green,
+                    trailing: turn.latencyMs > 0 ? formatLatency(turn.latencyMs) : nil
+                )
+
+                // Reasoning (thinking)
+                if let reasoning = turn.response.reasoning, !reasoning.isEmpty {
+                    Text(reasoning)
+                        .font(AppFonts.inspectorBody)
+                        .foregroundStyle(.purple)
+                        .italic()
+                        .padding(.leading, 4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                // Tool calls
+                if !turn.response.toolCalls.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(Array(turn.response.toolCalls.enumerated()), id: \.offset) { _, call in
+                            toolCallRow(call)
+                        }
+                    }
+                }
+
+                // Text response
+                if let text = turn.response.text, !text.isEmpty {
+                    Text(text)
+                        .font(AppFonts.inspectorBody)
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .multilineTextAlignment(.leading)
+                        .padding(.leading, 4)
+                }
+
+                // Full context link
                 if !turn.contextSnapshot.isEmpty {
                     Button(action: { showingFullContext = true }) {
-                        Label("View Full Context (\(turn.contextSnapshot.count))", systemImage: "doc.text.magnifyingglass")
+                        Label("Full Context (\(turn.contextSnapshot.count) messages)", systemImage: "doc.text.magnifyingglass")
                             .font(AppFonts.inspectorBody)
                     }
                     .buttonStyle(.plain)
@@ -570,11 +701,9 @@ private struct LLMTurnDisclosureRow: View {
                 }
             }
             .padding(.top, 4)
-            .padding(.leading, 8)
+            .padding(.leading, 4)
         } label: {
-            Text(turnLabel)
-                .font(AppFonts.inspectorBody)
-                .foregroundStyle(.primary)
+            turnHeaderLabel
         }
         .padding(.vertical, 2)
         .padding(.horizontal, 4)
@@ -585,28 +714,98 @@ private struct LLMTurnDisclosureRow: View {
         }
     }
 
-    private var turnLabel: String {
-        let ts = inspectorTimestampFormatter.string(from: turn.timestamp)
-        let responseDesc: String
-        switch turn.response {
-        case .text: responseDesc = "text"
-        case .toolCalls(let c): responseDesc = "\(c.count) tool call\(c.count == 1 ? "" : "s")"
-        case .mixed(_, let c): responseDesc = "text + \(c.count) tool call\(c.count == 1 ? "" : "s")"
+    // MARK: - Subviews
+
+    private var turnHeaderLabel: some View {
+        HStack(spacing: 6) {
+            Text("Turn \(turnNumber)")
+                .font(AppFonts.inspectorBody.weight(.semibold))
+                .foregroundStyle(.primary)
+
+            if !turn.modelID.isEmpty {
+                Text(turn.modelID)
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Text(inspectorTimestampFormatter.string(from: turn.timestamp))
+                .font(AppFonts.inspectorBody)
+                .foregroundStyle(.tertiary)
+
+            Spacer()
+
+            if turn.latencyMs > 0 {
+                Text(formatLatency(turn.latencyMs))
+                    .font(AppFonts.inspectorBody)
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+            }
+
+            responseTypeBadge
         }
-        return "\(ts)  Turn \(turnNumber) · \(turn.inputDelta.count) in → \(responseDesc)"
     }
 
-    private var responseSummary: String {
-        switch turn.response {
-        case .text(let s):
-            return s
-        case .toolCalls(let calls):
-            return calls.map { "\($0.name)(\($0.arguments))" }.joined(separator: "\n\n")
-        case .mixed(let text, let calls):
-            let textPart = text.isEmpty ? "" : text + "\n\n"
-            let callPart = calls.map { "\($0.name)(\($0.arguments))" }.joined(separator: "\n\n")
-            return textPart + callPart
+    private var responseTypeBadge: some View {
+        let r = turn.response
+        let label: String
+        let color: Color
+        if !r.toolCalls.isEmpty, let text = r.text, !text.isEmpty {
+            label = "text+\(r.toolCalls.count) calls"
+            color = .orange
+        } else if !r.toolCalls.isEmpty {
+            label = "\(r.toolCalls.count) call\(r.toolCalls.count == 1 ? "" : "s")"
+            color = .orange
+        } else {
+            label = "text"
+            color = .green
         }
+        return Text(label)
+            .font(.system(size: 9, weight: .medium, design: .monospaced))
+            .foregroundStyle(color)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(color.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+
+    private func turnSectionHeader(_ title: String, icon: String, color: Color, trailing: String? = nil) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 9))
+                .foregroundStyle(color)
+            Text(title)
+                .font(AppFonts.inspectorLabel.weight(.semibold))
+                .foregroundStyle(color)
+            if let trailing {
+                Spacer()
+                Text(trailing)
+                    .font(AppFonts.inspectorBody)
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+            }
+        }
+    }
+
+    private func toolCallRow(_ call: LLMToolCall) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                Text(call.name)
+                    .font(AppFonts.inspectorBody.weight(.semibold))
+                    .foregroundStyle(.primary)
+            }
+            Text(call.arguments)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(4)
+        .background(Color.orange.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 3))
     }
 }
 
@@ -615,9 +814,11 @@ private struct FullContextSheet: View {
     let turnNumber: Int
 
     @Environment(\.dismiss) private var dismiss
+    @State private var allExpanded = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Header
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Full Context — Turn \(turnNumber)")
@@ -627,6 +828,10 @@ private struct FullContextSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button(allExpanded ? "Collapse All" : "Expand All") {
+                    allExpanded.toggle()
+                }
+                .controlSize(.small)
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
@@ -634,16 +839,86 @@ private struct FullContextSheet: View {
 
             Divider()
 
+            // Model / config info bar
+            if !turn.modelID.isEmpty {
+                modelInfoBar
+                Divider()
+            }
+
+            // Legend
+            HStack(spacing: 16) {
+                legendItem("S", color: .secondary, label: "System prompt")
+                legendItem("TC", color: .purple, label: "Task Context")
+                legendItem("U", color: .blue, label: "User / orchestrator input")
+                legendItem("A", color: .green, label: "Assistant (LLM response)")
+                legendItem("T", color: .orange, label: "Tool result")
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+
+            Divider()
+
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 3) {
+                LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(turn.contextSnapshot.indices, id: \.self) { i in
-                        ContextMessageRow(message: turn.contextSnapshot[i])
+                        ContextMessageRow(
+                            message: turn.contextSnapshot[i],
+                            index: i + 1,
+                            initiallyExpanded: allExpanded
+                        )
+                        // Force re-creation when expand/collapse all toggles
+                        .id("\(i)-\(allExpanded)")
                     }
                 }
                 .padding(16)
             }
         }
-        .frame(minWidth: 600, idealWidth: 800, minHeight: 400, idealHeight: 600)
+        .frame(minWidth: 700, idealWidth: 900, minHeight: 500, idealHeight: 700)
+    }
+
+    private var modelInfoBar: some View {
+        HStack(spacing: 12) {
+            Label(turn.modelID, systemImage: "cpu")
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+            Text(turn.providerType)
+                .font(.caption)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(.quaternary)
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+            Text("temp \(String(format: "%.1f", turn.temperature))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("max \(turn.maxOutputTokens) tokens")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let thinking = turn.thinkingBudget, thinking > 0 {
+                Text("thinking \(thinking)")
+                    .font(.caption)
+                    .foregroundStyle(.purple)
+            }
+            if turn.latencyMs > 0 {
+                Text(formatLatency(turn.latencyMs))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+    }
+
+    private func legendItem(_ tag: String, color: Color, label: String) -> some View {
+        HStack(spacing: 4) {
+            Text(tag)
+                .font(AppFonts.inspectorBody.weight(.bold))
+                .foregroundStyle(color)
+                .frame(minWidth: 14, alignment: .center)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -896,5 +1171,222 @@ struct VoicePickerRow: View {
                 .help("Test voice")
             }
         }
+    }
+}
+
+// MARK: - Summarizer Card
+
+/// Inspector card for the TaskSummarizer, matching AgentCard visual style.
+///
+/// The summarizer is transient (fires once per task completion), so it doesn't have
+/// persistent context, tools, or LLM turns. Instead, we show activity history and stats.
+private struct SummarizerCard: View {
+    let messages: [ChannelMessage]
+    let isProcessing: Bool
+
+    @State private var expanded = true
+
+    private var summarizerMessages: [ChannelMessage] {
+        messages.filter {
+            if case .agent(let r) = $0.sender { return r == .summarizer }
+            return false
+        }
+    }
+
+    private var hasActivity: Bool { !summarizerMessages.isEmpty }
+
+    private var summaryCount: Int {
+        summarizerMessages.filter {
+            if case .string("task_summarized") = $0.metadata?["messageKind"] { return true }
+            return false
+        }.count
+    }
+
+    private var errorCount: Int {
+        summarizerMessages.filter {
+            if case .bool(true) = $0.metadata?["isError"] { return true }
+            return false
+        }.count
+    }
+
+    private static let roleColor = AppColors.summarizerAgent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header — matches AgentCard header style
+            HStack(spacing: 8) {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                }, label: {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(hasActivity ? Self.roleColor : Color.secondary.opacity(0.4))
+                            .frame(width: 8, height: 8)
+
+                        Text("Summarizer")
+                            .font(.headline)
+                            .foregroundStyle(hasActivity ? Self.roleColor : .secondary)
+
+                        Spacer()
+
+                        if isProcessing {
+                            HStack(spacing: 4) {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                Text("Summarizing")
+                                    .font(AppFonts.inspectorLabel)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else if hasActivity {
+                            Text("Idle")
+                                .font(AppFonts.inspectorLabel)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Not active")
+                                .font(AppFonts.inspectorLabel)
+                                .foregroundStyle(.tertiary)
+                        }
+
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                    }
+                    .contentShape(Rectangle())
+                })
+                .buttonStyle(.plain)
+
+                Image(systemName: "speaker.slash")
+                    .font(.caption)
+                    .foregroundStyle(Color.secondary.opacity(0.3))
+                    .help("Coming soon")
+
+                Image(systemName: "gearshape")
+                    .font(.caption)
+                    .foregroundStyle(Color.secondary.opacity(0.3))
+                    .padding(.leading, 4)
+                    .help("Coming soon")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 10) {
+                    // Stats row
+                    if hasActivity {
+                        InspectorSection(title: "Activity") {
+                            HStack(spacing: 12) {
+                                Label("\(summaryCount) summarized", systemImage: "checkmark.circle.fill")
+                                    .font(AppFonts.inspectorBody)
+                                    .foregroundStyle(.green)
+                                if errorCount > 0 {
+                                    Label("\(errorCount) failed", systemImage: "xmark.circle.fill")
+                                        .font(AppFonts.inspectorBody)
+                                        .foregroundStyle(.red)
+                                }
+                            }
+                        }
+                    }
+
+                    // Recent summaries
+                    if hasActivity {
+                        InspectorSection(title: "Recent (\(summarizerMessages.count))") {
+                            ForEach(Array(summarizerMessages.suffix(8).reversed()), id: \.id) { msg in
+                                SummarizerActivityRow(message: msg)
+                            }
+                        }
+                    } else {
+                        Text("No summarization activity yet.")
+                            .font(AppFonts.inspectorBody)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
+            }
+
+            Divider()
+        }
+    }
+}
+
+/// A single row in the summarizer activity log.
+private struct SummarizerActivityRow: View {
+    let message: ChannelMessage
+
+    @State private var isExpanded = false
+
+    private var isError: Bool {
+        if case .bool(true) = message.metadata?["isError"] { return true }
+        return false
+    }
+
+    private var taskID: String? {
+        if case .string(let id) = message.metadata?["taskID"] { return id }
+        return nil
+    }
+
+    private var latencyMs: Int? {
+        if case .int(let ms) = message.metadata?["latencyMs"] { return ms }
+        return nil
+    }
+
+    var body: some View {
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+        }, label: {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Image(systemName: isError ? "xmark.circle.fill" : "checkmark.circle.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(isError ? .red : .green)
+
+                    Text(isExpanded ? message.content : String(message.content.prefix(80)) + (message.content.count > 80 ? "…" : ""))
+                        .font(AppFonts.inspectorBody)
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .multilineTextAlignment(.leading)
+
+                    if let latencyMs {
+                        Text(formatLatency(latencyMs))
+                            .font(AppFonts.inspectorBody)
+                            .foregroundStyle(.tertiary)
+                            .monospacedDigit()
+                    }
+
+                    if !isExpanded {
+                        Text(message.timestamp, style: .time)
+                            .font(AppFonts.inspectorBody)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+
+                if isExpanded, let taskID {
+                    Text("Task: \(taskID)")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(.vertical, 3)
+            .padding(.horizontal, 6)
+            .background(isError ? Color.red.opacity(0.05) : Color.green.opacity(0.05))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .contentShape(Rectangle())
+        })
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Shared Helpers
+
+/// Formats a latency in milliseconds to a human-readable string (e.g. "342ms", "1.8s", "12s").
+private func formatLatency(_ ms: Int) -> String {
+    if ms < 1000 {
+        return "\(ms)ms"
+    } else if ms < 10_000 {
+        return String(format: "%.1fs", Double(ms) / 1000.0)
+    } else {
+        return String(format: "%.0fs", Double(ms) / 1000.0)
     }
 }

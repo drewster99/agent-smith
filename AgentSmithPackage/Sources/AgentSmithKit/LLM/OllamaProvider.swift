@@ -289,22 +289,17 @@ public struct OllamaProvider: LLMProvider {
 
             if !parsedCalls.isEmpty {
                 let remainingText = strippedContent.trimmingCharacters(in: .whitespacesAndNewlines)
-                if remainingText.isEmpty {
-                    return .toolCalls(parsedCalls)
-                } else {
-                    return .mixed(text: remainingText, toolCalls: parsedCalls)
-                }
+                return LLMResponse(
+                    text: remainingText.isEmpty ? nil : remainingText,
+                    toolCalls: parsedCalls
+                )
             }
         }
 
-        let hasText = text != nil && !(text ?? "").isEmpty
-        if hasText && !toolCalls.isEmpty {
-            return .mixed(text: text!, toolCalls: toolCalls)
-        } else if !toolCalls.isEmpty {
-            return .toolCalls(toolCalls)
-        } else {
-            return .text(text ?? "")
-        }
+        return LLMResponse(
+            text: text?.isEmpty == true ? nil : text,
+            toolCalls: toolCalls
+        )
     }
 
     // MARK: - XML tool call parsing

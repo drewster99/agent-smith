@@ -127,6 +127,29 @@ public actor TaskStore {
         onChange?()
     }
 
+    /// Stores an LLM-generated summary on a completed or failed task.
+    public func setSummary(id: UUID, summary: String) {
+        guard var task = tasks[id] else { return }
+        task.summary = summary
+        task.updatedAt = Date()
+        tasks[id] = task
+        onChange?()
+    }
+
+    /// Stores relevant memories and prior tasks on a task (set at creation time).
+    public func setRelevantContext(
+        id: UUID,
+        memories: [RelevantMemory]?,
+        priorTasks: [RelevantPriorTask]?
+    ) {
+        guard var task = tasks[id] else { return }
+        task.relevantMemories = memories
+        task.relevantPriorTasks = priorTasks
+        task.updatedAt = Date()
+        tasks[id] = task
+        onChange?()
+    }
+
     /// Clears the stored result and commentary on a task.
     public func clearResult(id: UUID) {
         guard var task = tasks[id] else { return }

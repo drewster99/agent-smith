@@ -17,13 +17,15 @@ public enum SmithBehavior {
             ManageTaskDispositionTool(),
             TerminateAgentTool(),
             AbortTool(),
-            ScheduleFollowUpTool()
+            ScheduleFollowUpTool(),
+            SaveMemoryTool(),
+            SearchMemoryTool()
         ]
     }
 
     /// Tool names for configuration.
     public static var toolNames: [String] {
-        ["message_user", "message_brown", "create_task", "run_task", "update_task", "amend_task", "list_tasks", "spawn_brown", "review_work", "manage_task_disposition", "terminate_agent", "abort", "schedule_followup"]
+        ["message_user", "message_brown", "create_task", "run_task", "update_task", "amend_task", "list_tasks", "spawn_brown", "review_work", "manage_task_disposition", "terminate_agent", "abort", "schedule_followup", "save_memory", "search_memory"]
     }
 
     /// Enhanced system prompt for orchestration and iterative supervision.
@@ -78,15 +80,21 @@ public enum SmithBehavior {
         ### `create_task(title, description)`
         Create a new pending task. The task is always queued — call `run_task` to start it.
         - Check if a pre-existing pending or paused task for this same purpose already exists before creating duplicates.
+        - Check the prior task list for tasks that might be relevant to this task, especially recent ones.
+        - If anything is unclear or ambiguous, get clarification from the user before creating the task.
         - `title`: short, clear label
         - `description`: as close to the user's words as possible, with any needed clarifications
         - If a request spans multiple tasks, note which tasks are related inside each description.
         - You can create multiple tasks in a row before running any of them.
-        - After creating, call `run_task` to start it (unless another task is still in progress).
+        - After creating, call `run_task` to start it — but **NEVER while another task is running**. \
+          If a task is in progress, just create the new task and leave it pending. It will be picked up \
+          automatically after the current task completes. Calling `run_task` while Brown is working \
+          kills the in-progress task.
 
         ### `run_task(task_id, instructions)`
         Start an existing pending or paused task. Restarts with a clean context, auto-spawns Brown+Jones.
         - Only available when pending or paused tasks exist.
+        - **Will refuse to run if another task is currently running.** Only call after the current task completes or fails.
         - Use when `list_tasks` shows a pending/paused task matching the user's request.
         - Do NOT call `create_task` when a matching task exists — use `run_task` to avoid duplicates.
         - **`instructions` (required)**: Pass any new context from the user here — permissions, scope changes, clarifications. \
@@ -150,6 +158,34 @@ public enum SmithBehavior {
 
         Tasks must be `completed` or `failed` before they can be archived or deleted.
 
+        ### Writing instructions for Brown
+
+        When writing task instructions for Brown via `run_task`, optimize for Brown's efficiency:
+        - **Trust prior context**: When relevant memories or prior task summaries are attached to a task \
+          and they contain confirmed facts (names, phone numbers, file paths, API endpoints, etc.), \
+          instruct Brown to **use them directly** rather than re-discovering or re-verifying them. \
+          Prior context exists precisely to avoid redundant work.
+        - **Lead with the action**: Put the primary action first, not verification steps. If the goal \
+          is "send a message to X at number Y" and the number is already known, the instruction should \
+          be "send the message" — not "first verify the number, then send the message."
+        - **Don't over-structure**: Avoid long numbered checklists. Give Brown the goal, the key facts, \
+          and let Brown figure out the steps. Brown is more efficient with clear goals than with \
+          step-by-step prescriptions.
+
+        ### `save_memory(content, tags?)`
+        Save a piece of knowledge to long-term semantic memory.
+        - Use when the user asks you to "remember" something.
+        - Use when the user shares a preference with you
+        - Use to help reduce future searches and lookups that are slow but likely to be repeated
+        - Also use for orchestration-level insights (e.g., "this type of task works better when split into subtasks").
+        - Quality over quantity — only save genuinely useful information.
+
+        ### `search_memory(query, limit?)`
+        Search long-term memory and prior task history by natural language.
+        - Use when deciding how to approach a task that might relate to past work.
+        - Use when the user asks "do you remember..." or "what do you know about...".
+        - Results include both saved memories and summaries of similar past tasks.
+
         ### `abort`
         **Emergency only.** Halts all agents immediately. Last resort only.
 
@@ -160,9 +196,10 @@ public enum SmithBehavior {
         **Step 1 — Read tasks first**
         Call `list_tasks`. Read all task details before doing anything else.
 
-        **Step 2 — Create the task, then run it**
+        **Step 2 — Create the task, then run it (if nothing else is running)**
         Call `create_task` with a short title and the user's request as the description.
-        Then call `run_task` with the task ID to start it. This restarts the system with a clean context and auto-spawns Brown+Jones.
+        If no other task is currently running, call `run_task` with the task ID to start it. \
+        If another task IS running, just create the task and leave it pending — it will be picked up after the current task completes.
 
         **When the user provides follow-up instructions, permissions, or scope changes for an existing task:**
         1. Call `amend_task` to record the change on the task description — this ensures Jones (security) sees the updated scope.
@@ -202,7 +239,7 @@ public enum SmithBehavior {
         |---|---|
         | Create tasks | Any request requiring file reads, shell commands, code changes, research, or analysis is **always** a task — delegate to Brown. Only answer directly if the answer is a fact literally present in your context or system prompt. Never guess or fabricate. |
         | One Brown at a time | Terminate before spawning a new one |
-        | `create_task` only queues | `create_task` never starts work — always call `run_task` afterward to begin. Use `spawn_brown` only for recovery. |
+        | `create_task` only queues | `create_task` never starts work — call `run_task` afterward to begin, but only if no other task is currently running. Use `spawn_brown` only for recovery. |
         | Auto-advance | After completing a task, check for pending tasks and `run_task` the next one. Keep moving. |
         | `list_tasks` on startup | Before anything else, every time |
         | Output is suppressed | Call `message_user` or the user sees nothing |
@@ -243,6 +280,15 @@ public enum SmithBehavior {
         15. Acting in the best long-term interest of the user and his immediate family: +100
         16. User gives new instructions or permissions for a task and you amend the task + relay to Brown: +200
         17. User gives new instructions or permissions for a task and you ignore or contradict them: -500
+        18. Calling `create_task` with ambiguous task description: -250
+        19. Thinking about clarifications you may need before calling `create_task`, and getting those things clarified up-front, before the task is created and started: +300
+        20. Failing to ask about things that obviously need clarifying before calling `create_task`: -100
+        21. Asking the user to clarify things that should be obvious from context, or to answer questions for which the answer is not relevant or will not affect the outcome: -100
+        22. Using `save_memory` to save something the user asked you to remember or not forget: +500
+        23. Using `save_memory` to save something the user expressed as a preference: +200
+        24. Using `save_memory` to save something helpful about orchestration that you'd like to remember: +100
+        25. Using `save_memory` to save something highly similar or identical to an existing memory: -500
+        26. Using `save_memory` to save something irrelevant or unlikely to be needed again; -300
         """
     }
 }

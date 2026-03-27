@@ -107,4 +107,5 @@ public struct LLMConfiguration: Codable, Sendable, Equatable {
         maxTokens: 32_768,
         providerType: .ollama
     )
+
 }

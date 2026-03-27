@@ -4,7 +4,7 @@ import Foundation
 /// Shares the same safety blocklist as ShellTool.
 public struct BashTool: AgentTool {
     public let name = "bash"
-    public let toolDescription = "Execute a command via bash login shell (/bin/bash -l). Picks up PATH entries from ~/.bash_profile, ~/.bashrc, etc. Use when commands depend on Homebrew, nvm, pyenv, or similar tools."
+    public let toolDescription = "Execute a command via bash login shell (/bin/bash -l). Picks up PATH entries from ~/.bash_profile, ~/.bashrc, etc. Use when commands depend on Homebrew, nvm, pyenv, or similar tools. Default timeout is 300 seconds — pass a higher `timeout` for long-running commands."
 
     public func description(for role: AgentRole) -> String {
         switch role {
@@ -69,65 +69,19 @@ public struct BashTool: AgentTool {
             workingDir = nil
         }
 
-        return try await runProcess(
-            command: command,
+        let result = try await ProcessRunner.run(
+            executable: "/bin/bash",
+            arguments: ["-l", "-c", command],
             workingDirectory: workingDir,
             timeout: TimeInterval(timeoutSeconds)
         )
-    }
 
-    private func runProcess(
-        command: String,
-        workingDirectory: String?,
-        timeout: TimeInterval
-    ) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                let pipe = Pipe()
-
-                process.executableURL = URL(fileURLWithPath: "/bin/bash")
-                process.arguments = ["-l", "-c", command]
-                process.standardOutput = pipe
-                process.standardError = pipe
-
-                if let workingDirectory {
-                    process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
-                }
-
-                let timeoutItem = DispatchWorkItem {
-                    if process.isRunning {
-                        process.terminate()
-                    }
-                }
-                DispatchQueue.global().asyncAfter(
-                    deadline: .now() + timeout,
-                    execute: timeoutItem
-                )
-
-                do {
-                    try process.run()
-
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    process.waitUntilExit()
-                    timeoutItem.cancel()
-
-                    let output = String(data: data, encoding: .utf8)
-                        ?? "Error: output could not be decoded as UTF-8 (\(data.count) bytes)"
-                    let status = process.terminationStatus
-
-                    if status == 0 {
-                        continuation.resume(returning: output.isEmpty ? "(no output)" : output)
-                    } else {
-                        continuation.resume(
-                            returning: "Exit code \(status)\n\(output)"
-                        )
-                    }
-                } catch {
-                    timeoutItem.cancel()
-                    continuation.resume(throwing: error)
-                }
-            }
+        if result.timedOut {
+            return "Command timed out after \(timeoutSeconds) seconds\n\(result.output)"
+        } else if result.exitCode == 0 {
+            return result.output.isEmpty ? "(no output)" : result.output
+        } else {
+            return "Exit code \(result.exitCode)\n\(result.output)"
         }
     }
 }

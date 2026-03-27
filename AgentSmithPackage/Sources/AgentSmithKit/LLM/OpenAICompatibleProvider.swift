@@ -160,6 +160,7 @@ public struct OpenAICompatibleProvider: LLMProvider {
         }
 
         let text = message["content"] as? String
+        let reasoningContent = message["reasoning_content"] as? String
         let toolCallsRaw = message["tool_calls"] as? [[String: Any]]
 
         var toolCalls: [LLMToolCall] = []
@@ -192,13 +193,11 @@ public struct OpenAICompatibleProvider: LLMProvider {
             }
         }
 
-        if let text, !toolCalls.isEmpty {
-            return .mixed(text: text, toolCalls: toolCalls)
-        } else if !toolCalls.isEmpty {
-            return .toolCalls(toolCalls)
-        } else {
-            return .text(text ?? "")
-        }
+        return LLMResponse(
+            text: text?.isEmpty == true ? nil : text,
+            toolCalls: toolCalls,
+            reasoning: reasoningContent
+        )
     }
 }
 

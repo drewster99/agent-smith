@@ -1,27 +1,18 @@
 import Foundation
 
 /// The response from an LLM call.
-public enum LLMResponse: Sendable {
-    case text(String)
-    case toolCalls([LLMToolCall])
-    /// Some models return both text and tool calls in one response.
-    case mixed(text: String, toolCalls: [LLMToolCall])
+public struct LLMResponse: Sendable {
+    /// The text content of the response, if any.
+    public let text: String?
+    /// Tool calls requested by the model, if any.
+    public let toolCalls: [LLMToolCall]
+    /// Reasoning/thinking content from models that support it (e.g., DeepSeek-R1, o1).
+    /// Not part of the visible response — used for inspector display only.
+    public let reasoning: String?
 
-    /// All tool calls present in this response, if any.
-    public var toolCalls: [LLMToolCall] {
-        switch self {
-        case .text: return []
-        case .toolCalls(let calls): return calls
-        case .mixed(_, let calls): return calls
-        }
-    }
-
-    /// The text portion of the response, if any.
-    public var text: String? {
-        switch self {
-        case .text(let value): return value
-        case .toolCalls: return nil
-        case .mixed(let value, _): return value
-        }
+    public init(text: String? = nil, toolCalls: [LLMToolCall] = [], reasoning: String? = nil) {
+        self.text = text
+        self.toolCalls = toolCalls
+        self.reasoning = reasoning
     }
 }

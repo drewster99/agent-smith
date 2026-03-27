@@ -4,6 +4,7 @@ import Foundation
 public actor OrchestrationRuntime {
     public let channel: MessageChannel
     public let taskStore: TaskStore
+    public let memoryStore: MemoryStore
 
     /// Fixed UUID representing the human user for private Smith→User messages.
     public static let userID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
@@ -25,6 +26,9 @@ public actor OrchestrationRuntime {
     /// Preserved evaluation records from terminated Browns, for inspector display.
     private var archivedEvaluationRecords: [UUID: [EvaluationRecord]] = [:]
 
+    /// Summarizer for generating task summaries after completion/failure.
+    private var taskSummarizer: TaskSummarizer?
+
     private var llmConfigs: [AgentRole: LLMConfiguration]
     private var agentTuning: [AgentRole: AgentTuningConfig]
     private var monitoringTimer: MonitoringTimer?
@@ -43,10 +47,12 @@ public actor OrchestrationRuntime {
 
     public init(
         llmConfigs: [AgentRole: LLMConfiguration],
-        agentTuning: [AgentRole: AgentTuningConfig] = [:]
+        agentTuning: [AgentRole: AgentTuningConfig] = [:],
+        embeddingService: EmbeddingService
     ) {
         self.channel = MessageChannel()
         self.taskStore = TaskStore()
+        self.memoryStore = MemoryStore(embeddingService: embeddingService)
         self.llmConfigs = llmConfigs
         self.agentTuning = agentTuning
     }
@@ -125,6 +131,18 @@ public actor OrchestrationRuntime {
         let powerMgr = PowerAssertionManager(taskStore: taskStore)
         await powerMgr.start()
         powerManager = powerMgr
+
+        // Create the TaskSummarizer only if a summarizer model is explicitly configured.
+        // If not configured, task summarization is silently skipped.
+        if let summarizerConfig = llmConfigs[.summarizer] {
+            taskSummarizer = TaskSummarizer(
+                provider: makeProvider(config: summarizerConfig),
+                memoryStore: memoryStore,
+                channel: channel
+            )
+        } else {
+            taskSummarizer = nil
+        }
 
         var smithConfig = llmConfigs[.smith] ?? .ollamaDefault
         smithConfig.verboseLogging = LLMRequestLogger.logSmith
@@ -212,7 +230,19 @@ public actor OrchestrationRuntime {
         // and instruct Smith to spawn Brown and begin work immediately.
         if let resumingTaskID {
             if let resumingTask = await taskStore.task(id: resumingTaskID) {
-                var parts = ["""
+                var parts: [String] = []
+
+                // Semantic context first — so Smith sees known facts before the action instructions.
+                if let memories = resumingTask.relevantMemories, !memories.isEmpty {
+                    let memoryLines = memories.map { "- \($0.content) (similarity: \(String(format: "%.2f", $0.similarity)))" }
+                    parts.append("Relevant memories:\n\(memoryLines.joined(separator: "\n"))")
+                }
+                if let priorTasks = resumingTask.relevantPriorTasks, !priorTasks.isEmpty {
+                    let taskLines = priorTasks.map { "- \($0.title): \($0.summary) (similarity: \(String(format: "%.2f", $0.similarity)))" }
+                    parts.append("Relevant prior task summaries:\n\(taskLines.joined(separator: "\n"))")
+                }
+
+                parts.append("""
                     A new task has been created: "\(resumingTask.title)"
 
                     \(resumingTask.description)
@@ -220,8 +250,10 @@ public actor OrchestrationRuntime {
                     Spawn Brown and begin work on this task immediately (task ID: \(resumingTaskID.uuidString)). \
                     Do not ask the user for confirmation — they just requested this task. \
                     Do NOT call `run_task` or `create_task` — the system has already restarted for this task. \
-                    Call `spawn_brown` directly and give Brown the task instructions via `message_brown`.
-                    """]
+                    Call `spawn_brown` directly and give Brown the task instructions via `message_brown`. \
+                    If relevant memories or prior task summaries are provided above, use those facts directly \
+                    in your instructions to Brown — do not ask Brown to re-discover or re-verify them.
+                    """)
 
                 // Include prior progress context for resumed tasks
                 if !resumingTask.updates.isEmpty {
@@ -460,6 +492,19 @@ public actor OrchestrationRuntime {
         )
         securityEvaluators[brownID] = evaluator
 
+        // Brown's message filter: drop security review messages and tool execution trace messages.
+        // Brown already receives all security feedback directly as tool results — approved calls
+        // return the tool output, denied calls return "Tool execution denied: <reason>".
+        // Echoing these through the channel as [System] messages wastes tokens and adds noise.
+        let brownMessageFilter: @Sendable (ChannelMessage) -> Bool = { message in
+            // Drop all security disposition messages (SAFE/WARN/UNSAFE/ABORT).
+            if message.metadata?["securityDisposition"] != nil { return false }
+            // Drop tool_request and tool_output echo messages (posted for UI visibility only).
+            if case .string(let kind) = message.metadata?["messageKind"],
+               kind == "tool_request" || kind == "tool_output" { return false }
+            return true
+        }
+
         let brownContext = makeToolContext(agentID: brownID, role: .brown)
         let brownAgent = AgentActor(
             id: brownID,
@@ -471,6 +516,7 @@ public actor OrchestrationRuntime {
                 requiresToolApproval: true,
                 pollInterval: agentTuning[.brown]?.pollInterval ?? 25,
                 messageDebounceInterval: agentTuning[.brown]?.messageDebounceInterval ?? 1,
+                messageAcceptFilter: brownMessageFilter,
                 maxToolCallsPerIteration: agentTuning[.brown]?.maxToolCalls ?? 100
             ),
             provider: makeProvider(config: brownConfig),
@@ -563,6 +609,23 @@ public actor OrchestrationRuntime {
         guard let task = await taskStore.task(id: taskID) else { return }
         for agentID in task.assigneeIDs {
             _ = await terminateAgent(id: agentID)
+        }
+    }
+
+    /// Summarizes a completed or failed task and saves the embedding to the memory store.
+    ///
+    /// Runs as a fire-and-forget operation — errors are posted to the channel.
+    public func summarizeAndEmbedTask(taskID: UUID) async {
+        guard let task = await taskStore.task(id: taskID) else { return }
+        guard task.status == .completed || (task.status == .failed && !task.updates.isEmpty) else { return }
+
+        if let summarizer = taskSummarizer {
+            await notifyProcessingStateChange(role: .summarizer, isProcessing: true)
+            let summary = await summarizer.summarizeAndEmbed(task: task)
+            await notifyProcessingStateChange(role: .summarizer, isProcessing: false)
+            if let summary {
+                await taskStore.setSummary(id: taskID, summary: summary)
+            }
         }
     }
 
@@ -689,6 +752,10 @@ public actor OrchestrationRuntime {
                 guard let self else { return }
                 Task { await self.notifyProcessingStateChange(role: role, isProcessing: isProcessing) }
             },
+            onJonesProcessingStateChange: { [weak self] isProcessing in
+                guard let self else { return }
+                Task { await self.notifyProcessingStateChange(role: .jones, isProcessing: isProcessing) }
+            },
             scheduleFollowUp: { [followUpScheduler] delay in
                 await followUpScheduler?.schedule(after: delay)
             },
@@ -696,7 +763,12 @@ public actor OrchestrationRuntime {
                 guard let self else { return }
                 await self.restartForNewTask(taskID: taskID)
             },
-            currentResumingTaskID: currentResumingTaskID
+            currentResumingTaskID: currentResumingTaskID,
+            memoryStore: memoryStore,
+            summarizeCompletedTask: { [weak self] taskID in
+                guard let self else { return }
+                await self.summarizeAndEmbedTask(taskID: taskID)
+            }
         )
     }
 
@@ -725,10 +797,17 @@ public actor OrchestrationRuntime {
         agentRoles.removeValue(forKey: id)
         await unsubscribeAgent(id: id)
 
-        // Mark any running tasks assigned to this agent as failed — no agent is working on them anymore
+        // Mark any running tasks assigned to this agent as failed — no agent is working on them anymore.
+        // Trigger summarization for tasks that had progress (updates).
         let allTasks = await taskStore.allTasks()
         for task in allTasks where task.assigneeIDs.contains(id) && task.status == .running {
             await taskStore.updateStatus(id: task.id, status: .failed)
+            if !task.updates.isEmpty {
+                Task.detached { [weak self] in
+                    guard let self else { return }
+                    await self.summarizeAndEmbedTask(taskID: task.id)
+                }
+            }
         }
 
         if currentBrownID == id {

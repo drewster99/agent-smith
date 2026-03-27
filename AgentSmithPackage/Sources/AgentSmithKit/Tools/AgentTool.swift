@@ -95,6 +95,8 @@ public struct ToolContext: Sendable {
     public let onSelfTerminate: @Sendable () async -> Void
     /// Called with `true` when the agent begins an LLM API call, and `false` when it completes.
     public let onProcessingStateChange: @Sendable (Bool) -> Void
+    /// Called with `true` when Jones begins a security evaluation LLM call, `false` when it completes.
+    public let onJonesProcessingStateChange: @Sendable (Bool) -> Void
     /// Schedules a deferred wake-up for the agent after the given number of seconds.
     public let scheduleFollowUp: @Sendable (TimeInterval) async -> Void
     /// Signals a full system restart for a new task. Called by create_task.
@@ -102,6 +104,10 @@ public struct ToolContext: Sendable {
     /// The task ID that the current session was started/restarted for, if any.
     /// Used by `run_task` to prevent restart loops when Smith re-invokes it on the same task.
     public let currentResumingTaskID: UUID?
+    /// Semantic memory store for saving and searching memories and task summaries.
+    public let memoryStore: MemoryStore
+    /// Triggers summarization and embedding of a completed or failed task.
+    public let summarizeCompletedTask: @Sendable (UUID) async -> Void
 
     public init(
         agentID: UUID,
@@ -115,9 +121,12 @@ public struct ToolContext: Sendable {
         agentIDForRole: @escaping @Sendable (AgentRole) async -> UUID? = { _ in nil },
         onSelfTerminate: @escaping @Sendable () async -> Void = {},
         onProcessingStateChange: @escaping @Sendable (Bool) -> Void = { _ in },
+        onJonesProcessingStateChange: @escaping @Sendable (Bool) -> Void = { _ in },
         scheduleFollowUp: @escaping @Sendable (TimeInterval) async -> Void = { _ in },
         restartForNewTask: @escaping @Sendable (UUID) async -> Void = { _ in },
-        currentResumingTaskID: UUID? = nil
+        currentResumingTaskID: UUID? = nil,
+        memoryStore: MemoryStore,
+        summarizeCompletedTask: @escaping @Sendable (UUID) async -> Void = { _ in }
     ) {
         self.agentID = agentID
         self.agentRole = agentRole
@@ -130,8 +139,11 @@ public struct ToolContext: Sendable {
         self.agentIDForRole = agentIDForRole
         self.onSelfTerminate = onSelfTerminate
         self.onProcessingStateChange = onProcessingStateChange
+        self.onJonesProcessingStateChange = onJonesProcessingStateChange
         self.scheduleFollowUp = scheduleFollowUp
         self.restartForNewTask = restartForNewTask
         self.currentResumingTaskID = currentResumingTaskID
+        self.memoryStore = memoryStore
+        self.summarizeCompletedTask = summarizeCompletedTask
     }
 }

@@ -45,7 +45,11 @@ struct ChannelLogView: View {
                                 TaskCreatedBanner(
                                     title: message.content,
                                     description: message.stringMetadata("taskDescription"),
-                                    timestamp: message.timestamp
+                                    timestamp: message.timestamp,
+                                    contextMemories: message.stringMetadata("contextMemories"),
+                                    contextPriorTasks: message.stringMetadata("contextPriorTasks"),
+                                    memoryCount: message.intMetadata("contextMemoryCount") ?? 0,
+                                    priorTaskCount: message.intMetadata("contextPriorTaskCount") ?? 0
                                 )
                                     .id(message.id)
                             } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_completed" {
@@ -53,6 +57,28 @@ struct ChannelLogView: View {
                                     title: message.content,
                                     durationSeconds: message.doubleMetadata("durationSeconds"),
                                     timestamp: message.timestamp
+                                )
+                                    .id(message.id)
+                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "memory_saved" {
+                                MemoryBanner(
+                                    kind: .saved,
+                                    summary: message.content,
+                                    detail: message.stringMetadata("memoryContent"),
+                                    tags: message.stringMetadata("memoryTags"),
+                                    source: message.stringMetadata("memorySource"),
+                                    timestamp: message.timestamp
+                                )
+                                    .id(message.id)
+                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "memory_searched" {
+                                MemoryBanner(
+                                    kind: .searched,
+                                    summary: message.stringMetadata("searchQuery") ?? message.content,
+                                    detail: nil,
+                                    tags: nil,
+                                    source: nil,
+                                    timestamp: message.timestamp,
+                                    memoryCount: message.intMetadata("memoryCount") ?? 0,
+                                    taskCount: message.intMetadata("taskCount") ?? 0
                                 )
                                     .id(message.id)
                             } else {
@@ -554,6 +580,11 @@ private extension ChannelMessage {
         return nil
     }
 
+    func intMetadata(_ key: String) -> Int? {
+        if case .int(let value) = metadata?[key] { return value }
+        return nil
+    }
+
     func doubleMetadata(_ key: String) -> Double? {
         switch metadata?[key] {
         case .double(let value): return value
@@ -568,8 +599,15 @@ private struct TaskCreatedBanner: View {
     let title: String
     let description: String?
     let timestamp: Date
+    let contextMemories: String?
+    let contextPriorTasks: String?
+    let memoryCount: Int
+    let priorTaskCount: Int
+
+    @State private var isContextExpanded = false
 
     private let accentColor = AppColors.taskCreatedAccent
+    private var hasContext: Bool { memoryCount > 0 || priorTaskCount > 0 }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -600,7 +638,7 @@ private struct TaskCreatedBanner: View {
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 10)
-                .padding(.bottom, description != nil ? 2 : 6)
+                .padding(.bottom, description != nil || hasContext ? 2 : 6)
 
             if let description {
                 Text(description)
@@ -608,7 +646,77 @@ private struct TaskCreatedBanner: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 10)
+                    .padding(.bottom, hasContext ? 2 : 6)
+            }
+
+            // Semantic context retrieved at task creation
+            if hasContext {
+                Divider().opacity(0.3).padding(.horizontal, 10)
+
+                HStack(spacing: 6) {
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.purple)
+
+                    let parts = [
+                        memoryCount > 0
+                            ? "\(memoryCount) memor\(memoryCount == 1 ? "y" : "ies")"
+                            : nil,
+                        priorTaskCount > 0
+                            ? "\(priorTaskCount) prior task\(priorTaskCount == 1 ? "" : "s")"
+                            : nil
+                    ].compactMap { $0 }
+
+                    Text("Context: \(parts.joined(separator: ", "))")
+                        .font(AppFonts.channelBody)
+                        .foregroundStyle(.purple.opacity(0.8))
+
+                    Text(isContextExpanded ? "(hide)" : "(show)")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+                .onTapGesture { isContextExpanded.toggle() }
+
+                if isContextExpanded {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let contextMemories {
+                            Text("Memories")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                            ForEach(
+                                Array(contextMemories.components(separatedBy: "\n").enumerated()),
+                                id: \.offset
+                            ) { _, line in
+                                Text(line)
+                                    .font(AppFonts.inspectorBody)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        if let contextPriorTasks {
+                            Text("Prior Tasks")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                            ForEach(
+                                Array(contextPriorTasks.components(separatedBy: "\n").enumerated()),
+                                id: \.offset
+                            ) { _, line in
+                                Text(line)
+                                    .font(AppFonts.inspectorBody)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 14)
                     .padding(.bottom, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
 
             // Bottom rule
@@ -690,6 +798,120 @@ private struct TaskCompletedBanner: View {
         let hours = minutes / 60
         let mins = minutes % 60
         return mins > 0 ? "\(hours)h \(mins)m" : "\(hours)h"
+    }
+
+    private static let timestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SS"
+        return f
+    }()
+}
+
+/// Green mini-banner for memory save/search events in the channel log.
+private struct MemoryBanner: View {
+    enum Kind { case saved, searched }
+
+    let kind: Kind
+    let summary: String
+    let detail: String?
+    let tags: String?
+    let source: String?
+    let timestamp: Date
+    var memoryCount: Int = 0
+    var taskCount: Int = 0
+
+    @State private var isExpanded = false
+
+    private let accentColor: Color = .green
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            accentColor.frame(height: 1).opacity(0.3)
+
+            Button(action: {
+                guard hasExpandableContent else { return }
+                withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+            }, label: {
+                HStack(spacing: 6) {
+                    Image(systemName: kind == .saved ? "brain.head.profile" : "magnifyingglass")
+                        .font(.system(size: 10))
+                        .foregroundStyle(accentColor)
+
+                    Text(headerText)
+                        .font(AppFonts.channelTimestamp)
+                        .foregroundStyle(accentColor)
+
+                    Text(summaryPreview)
+                        .font(AppFonts.channelTimestamp)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
+                    Spacer()
+
+                    if hasExpandableContent {
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    Text(Self.timestampFormatter.string(from: timestamp))
+                        .font(AppFonts.channelTimestamp)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+            })
+            .buttonStyle(.plain)
+
+            if isExpanded, let detail, !detail.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(detail)
+                        .font(AppFonts.channelBody)
+                        .foregroundStyle(.primary)
+                        .textSelection(.enabled)
+
+                    if let tags, !tags.isEmpty {
+                        Text("Tags: \(tags)")
+                            .font(AppFonts.channelTimestamp)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let source, !source.isEmpty {
+                        Text("Source: \(source)")
+                            .font(AppFonts.channelTimestamp)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 4)
+            }
+
+            accentColor.frame(height: 1).opacity(0.3)
+        }
+        .background(accentColor.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+        .padding(.vertical, 1)
+    }
+
+    private var headerText: String {
+        switch kind {
+        case .saved: return "Memory Saved"
+        case .searched:
+            if memoryCount == 0 && taskCount == 0 {
+                return "Memory Search — no results"
+            }
+            var parts: [String] = []
+            if memoryCount > 0 { parts.append("\(memoryCount) memor\(memoryCount == 1 ? "y" : "ies")") }
+            if taskCount > 0 { parts.append("\(taskCount) task\(taskCount == 1 ? "" : "s")") }
+            return "Memory Search — \(parts.joined(separator: ", "))"
+        }
+    }
+
+    private var summaryPreview: String {
+        String(summary.prefix(80))
+    }
+
+    private var hasExpandableContent: Bool {
+        kind == .saved && detail != nil && !(detail ?? "").isEmpty
     }
 
     private static let timestampFormatter: DateFormatter = {

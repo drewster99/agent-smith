@@ -34,6 +34,8 @@ public final class LLMKitManager {
     public private(set) var isRefreshing: Bool = false
     /// Most recent persistence error, if any. Observable so UI can show an alert/banner.
     public var persistenceError: String?
+    /// Errors from the most recent model refresh, keyed by provider name.
+    public private(set) var refreshErrors: [String: String] = [:]
 
     // MARK: - Services
 
@@ -257,6 +259,7 @@ public final class LLMKitManager {
 
         // 2. Fetch models from each provider
         var allModels: [ModelInfo] = []
+        var errors: [String: String] = [:]
         for provider in providers {
             let apiKey = keychain.apiKey(forProviderID: provider.id)
             do {
@@ -288,14 +291,18 @@ public final class LLMKitManager {
                     }
                 }
 
+                logger.info("Fetched \(providerModels.count, privacy: .public) models from \(provider.name, privacy: .public)")
                 allModels.append(contentsOf: providerModels)
             } catch {
-                logger.error("Failed to fetch models from \(provider.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                let errorMsg = error.localizedDescription
+                logger.error("Failed to fetch models from \(provider.name, privacy: .public): \(errorMsg, privacy: .public)")
+                errors[provider.name] = errorMsg
                 // Keep any previously cached models for this provider
                 let cached = models.filter { $0.providerID == provider.id }
                 allModels.append(contentsOf: cached)
             }
         }
+        refreshErrors = errors
 
         models = allModels
         saveModelCatalog()

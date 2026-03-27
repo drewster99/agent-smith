@@ -6,6 +6,7 @@ enum AppColors {
     static let smithAgent = Color.green
     static let brownAgent = Color.orange
     static let jonesAgent = Color.red
+    static let summarizerAgent = Color.purple
     static let userMessage = Color.blue
     static let systemMessage = Color.gray
     static let background = Color(.windowBackgroundColor)
@@ -25,6 +26,7 @@ enum AppColors {
         case .agent(.smith): return smithAgent
         case .agent(.brown): return brownAgent
         case .agent(.jones): return jonesAgent
+        case .agent(.summarizer): return summarizerAgent
         case .user: return userMessage
         case .system: return systemMessage
         }
