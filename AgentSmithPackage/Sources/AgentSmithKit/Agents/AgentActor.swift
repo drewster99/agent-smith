@@ -87,12 +87,11 @@ public actor AgentActor {
         self.messageDebounceInterval = configuration.messageDebounceInterval
         self.maxToolCallsPerIteration = configuration.maxToolCallsPerIteration
 
-        // Worst-case overhead: all tool definitions + Smith's per-turn task context suffix.
+        // Worst-case overhead: all tool definitions sent with each API call.
         let toolChars = tools.reduce(0) {
             $0 + $1.definition(for: configuration.role).estimatedCharacterCount
         }
-        let taskSuffixBudget = configuration.role == .smith ? 1500 : 0
-        self.apiOverheadChars = toolChars + taskSuffixBudget
+        self.apiOverheadChars = toolChars
 
         conversationHistory.append(LLMMessage(
             role: .system,
@@ -274,14 +273,7 @@ public actor AgentActor {
                 toolContext.onProcessingStateChange(true)
                 defer { toolContext.onProcessingStateChange(false) }
 
-                // Inject per-turn task context for Smith so it always knows current task state.
-                var messagesForLLM = conversationHistory
-                if configuration.role == .smith {
-                    let taskSuffix = await buildTaskContextSuffix()
-                    if !taskSuffix.isEmpty {
-                        messagesForLLM.append(LLMMessage(role: .system, text: "[Injected Task Context]\n" + taskSuffix))
-                    }
-                }
+                let messagesForLLM = conversationHistory
 
                 let llmStartTime = Date()
                 let response = try await provider.send(
@@ -1442,36 +1434,4 @@ public actor AgentActor {
         )
     }
 
-    // MARK: - Per-turn task context (Smith only)
-
-    /// Builds a system prompt suffix summarizing active tasks for Smith's situational awareness.
-    /// Includes up to 5 in-progress tasks with previews; remaining tasks are summarized as a count.
-    private func buildTaskContextSuffix() async -> String {
-        let allTasks = await toolContext.taskStore.allTasks()
-        let activeTasks = allTasks.filter { $0.disposition == .active }
-        guard !activeTasks.isEmpty else {
-            return "[Current task state: No active tasks. Use list_tasks to check for tasks in other dispositions.]"
-        }
-
-        let maxInlined = 5
-        var lines: [String] = ["[Current task state as of this turn:]"]
-        for task in activeTasks.prefix(maxInlined) {
-            var entry = "• \(task.title) (id: \(task.id.uuidString)) — status: \(task.status.rawValue)"
-            if !task.description.isEmpty {
-                let descPreview = task.description.prefix(200)
-                entry += "\n  Description: \(descPreview)\(task.description.count > 200 ? "…" : "")"
-            }
-            if let result = task.result, !result.isEmpty {
-                let resultPreview = result.prefix(200)
-                entry += "\n  Result: \(resultPreview)\(result.count > 200 ? "…" : "")"
-            }
-            lines.append(entry)
-        }
-        let remaining = activeTasks.count - maxInlined
-        if remaining > 0 {
-            lines.append("…plus \(remaining) more active task\(remaining == 1 ? "" : "s"). Use list_tasks to fetch additional details.")
-        }
-        lines.append("Use list_tasks to fetch full details including complete descriptions and results.")
-        return lines.joined(separator: "\n")
-    }
 }

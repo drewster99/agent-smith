@@ -441,13 +441,6 @@ private struct ContextMessageRow: View {
                     .foregroundStyle(roleColor)
                     .frame(width: 14, alignment: .center)
 
-                if isTaskContext {
-                    Text("TC")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.purple)
-                        .help("Injected Task Context — dynamic state appended each turn")
-                }
-
                 Text(expanded ? fullContent : contentSummary)
                     .font(AppFonts.inspectorBody)
                     .foregroundStyle(.primary)
@@ -465,15 +458,6 @@ private struct ContextMessageRow: View {
         .onAppear {
             if initiallyExpanded { expanded = true }
         }
-    }
-
-    /// Detects the `[Injected Task Context]` prefix added by Smith's per-turn injection.
-    private var isTaskContext: Bool {
-        guard message.role == .system else { return false }
-        if case .text(let s) = message.content {
-            return s.hasPrefix("[Injected Task Context]")
-        }
-        return false
     }
 
     private var roleLabel: String {
@@ -848,7 +832,6 @@ private struct FullContextSheet: View {
             // Legend
             HStack(spacing: 16) {
                 legendItem("S", color: .secondary, label: "System prompt")
-                legendItem("TC", color: .purple, label: "Task Context")
                 legendItem("U", color: .blue, label: "User / orchestrator input")
                 legendItem("A", color: .green, label: "Assistant (LLM response)")
                 legendItem("T", color: .orange, label: "Tool result")
