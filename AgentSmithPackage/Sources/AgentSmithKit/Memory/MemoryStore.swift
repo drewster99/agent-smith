@@ -233,24 +233,23 @@ public actor MemoryStore {
 
     /// Searches both memories and task summaries using tiered relevance thresholds.
     ///
-    /// Applies a graduated threshold to avoid returning low-quality results:
-    /// - Tier 1 (≥0.80): up to 3 results
-    /// - Tier 2 (0.75–0.80): up to 2 results, only if tier 1 is empty
-    /// - Tier 3 (0.70–0.75): up to 1 result, only if tiers 1 and 2 are empty
+    /// Local embedding models produce lower cosine similarity scores than cloud models,
+    /// so thresholds are calibrated for local embeddings (~0.40–0.98 range):
+    /// - Tier 1 (≥0.55): up to 3 results
+    /// - Tier 2 (0.45–0.55): up to 2 results, only if tier 1 is empty
+    /// - Tier 3 (0.35–0.45): up to 1 result, only if tiers 1 and 2 are empty
     /// Maximum 4 results total across both memories and task summaries.
     public func searchAll(
         query: String,
         memoryLimit: Int = 3,
         taskLimit: Int = 3
     ) throws -> SemanticSearchResults {
-        // Fetch all candidates above the lowest tier threshold.
-        let allMemories = try searchMemories(query: query, limit: memoryLimit, threshold: 0.70)
-        let allTasks = try searchTaskSummaries(query: query, limit: taskLimit, threshold: 0.70)
+        let allMemories = try searchMemories(query: query, limit: memoryLimit, threshold: 0.35)
+        let allTasks = try searchTaskSummaries(query: query, limit: taskLimit, threshold: 0.35)
 
-        // Tag each result with its similarity for unified ranking.
         enum Candidate {
-            case memory(Int)  // index into allMemories
-            case task(Int)    // index into allTasks
+            case memory(Int)
+            case task(Int)
         }
         var candidates: [(similarity: Float, candidate: Candidate)] = []
         for (i, m) in allMemories.enumerated() {
@@ -261,10 +260,9 @@ public actor MemoryStore {
         }
         candidates.sort { $0.similarity > $1.similarity }
 
-        // Apply tiered selection across the combined pool.
-        let tier1 = candidates.filter { $0.similarity >= 0.80 }
-        let tier2 = candidates.filter { $0.similarity >= 0.75 && $0.similarity < 0.80 }
-        let tier3 = candidates.filter { $0.similarity >= 0.70 && $0.similarity < 0.75 }
+        let tier1 = candidates.filter { $0.similarity >= 0.55 }
+        let tier2 = candidates.filter { $0.similarity >= 0.45 && $0.similarity < 0.55 }
+        let tier3 = candidates.filter { $0.similarity >= 0.35 && $0.similarity < 0.45 }
 
         let selected: ArraySlice<(similarity: Float, candidate: Candidate)>
         if !tier1.isEmpty {
@@ -277,7 +275,6 @@ public actor MemoryStore {
             return SemanticSearchResults(memories: [], taskSummaries: [])
         }
 
-        // Split back into typed arrays, capped at 4 total.
         var memoryResults: [MemorySearchResult] = []
         var taskResults: [TaskSummarySearchResult] = []
         for item in selected.prefix(4) {

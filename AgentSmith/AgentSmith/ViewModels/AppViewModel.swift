@@ -717,6 +717,26 @@ final class AppViewModel {
         await memoryStore.delete(id: id)
     }
 
+    /// Searches memories by semantic similarity, returning results with scores.
+    func searchMemories(query: String, limit: Int = 20) async -> [MemorySearchResult] {
+        guard let memoryStore = await runtime?.memoryStore else { return [] }
+        do {
+            return try await memoryStore.searchMemories(query: query, limit: limit, threshold: 0.0)
+        } catch {
+            return []
+        }
+    }
+
+    /// Searches task summaries by semantic similarity, returning results with scores.
+    func searchTaskSummaries(query: String, limit: Int = 20) async -> [TaskSummarySearchResult] {
+        guard let memoryStore = await runtime?.memoryStore else { return [] }
+        do {
+            return try await memoryStore.searchTaskSummaries(query: query, limit: limit, threshold: 0.0)
+        } catch {
+            return []
+        }
+    }
+
     /// Updates a memory's content and/or tags. Re-embeds if content changed.
     func updateMemory(id: UUID, content: String? = nil, tags: [String]? = nil) async throws {
         guard let memoryStore = await runtime?.memoryStore else { return }

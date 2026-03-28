@@ -12,6 +12,9 @@ struct MemoryEditorView: View {
     @State private var editTags = ""
     @State private var showTaskSummaries = false
     @State private var editError: String?
+    @State private var memorySimilarities: [UUID: Float] = [:]
+    @State private var taskSummarySimilarities: [UUID: Float] = [:]
+    @State private var searchTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,6 +29,32 @@ struct MemoryEditorView: View {
         .frame(minWidth: 600, minHeight: 400)
         .task {
             await viewModel.refreshMemories()
+        }
+        .onChange(of: searchText) {
+            searchTask?.cancel()
+            let query = searchText.trimmingCharacters(in: .whitespaces)
+            if query.isEmpty {
+                memorySimilarities.removeAll()
+                taskSummarySimilarities.removeAll()
+                return
+            }
+            searchTask = Task {
+                // Debounce
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled else { return }
+
+                let memResults = await viewModel.searchMemories(query: query)
+                let taskResults = await viewModel.searchTaskSummaries(query: query)
+                guard !Task.isCancelled else { return }
+
+                var memScores: [UUID: Float] = [:]
+                for r in memResults { memScores[r.memory.id] = r.similarity }
+                memorySimilarities = memScores
+
+                var taskScores: [UUID: Float] = [:]
+                for r in taskResults { taskScores[r.summary.id] = r.similarity }
+                taskSummarySimilarities = taskScores
+            }
         }
         .alert("Error", isPresented: Binding(
             get: { editError != nil },
@@ -60,7 +89,7 @@ struct MemoryEditorView: View {
 
             Spacer()
 
-            TextField("Search", text: $searchText)
+            TextField("Semantic search…", text: $searchText)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 250)
         }
@@ -74,12 +103,10 @@ struct MemoryEditorView: View {
         if let source = filterSource {
             result = result.filter { $0.source == source }
         }
-        if !searchText.isEmpty {
-            let query = searchText.lowercased()
-            result = result.filter {
-                $0.content.lowercased().contains(query) ||
-                $0.tags.contains(where: { $0.lowercased().contains(query) })
-            }
+        if !searchText.isEmpty && !memorySimilarities.isEmpty {
+            // Semantic search: only show memories that have similarity scores, sorted by score
+            let scored = result.filter { memorySimilarities[$0.id] != nil }
+            return scored.sorted { (memorySimilarities[$0.id] ?? 0) > (memorySimilarities[$1.id] ?? 0) }
         }
         return result
     }
@@ -106,6 +133,12 @@ struct MemoryEditorView: View {
                     .textSelection(.enabled)
 
                 Spacer()
+
+                if let score = memorySimilarities[memory.id] {
+                    Text(String(format: "%.0f%%", score * 100))
+                        .font(.caption.bold().monospaced())
+                        .foregroundStyle(similarityColor(score))
+                }
 
                 sourceBadge(memory.source)
             }
@@ -210,12 +243,11 @@ struct MemoryEditorView: View {
     // MARK: - Task Summary List
 
     private var filteredTaskSummaries: [TaskSummaryEntry] {
-        guard !searchText.isEmpty else { return viewModel.storedTaskSummaries }
-        let query = searchText.lowercased()
-        return viewModel.storedTaskSummaries.filter {
-            $0.title.lowercased().contains(query) ||
-            $0.summary.lowercased().contains(query)
+        if !searchText.isEmpty && !taskSummarySimilarities.isEmpty {
+            let scored = viewModel.storedTaskSummaries.filter { taskSummarySimilarities[$0.id] != nil }
+            return scored.sorted { (taskSummarySimilarities[$0.id] ?? 0) > (taskSummarySimilarities[$1.id] ?? 0) }
         }
+        return viewModel.storedTaskSummaries
     }
 
     private var taskSummaryList: some View {
@@ -226,6 +258,11 @@ struct MemoryEditorView: View {
                         Text(summary.title)
                             .font(.body.bold())
                         Spacer()
+                        if let score = taskSummarySimilarities[summary.id] {
+                            Text(String(format: "%.0f%%", score * 100))
+                                .font(.caption.bold().monospaced())
+                                .foregroundStyle(similarityColor(score))
+                        }
                         Text(summary.status.rawValue)
                             .font(.caption2)
                             .padding(.horizontal, 5)
@@ -268,6 +305,13 @@ struct MemoryEditorView: View {
         case .smith: return .green
         case .brown: return .orange
         }
+    }
+
+    private func similarityColor(_ score: Float) -> Color {
+        if score >= 0.55 { return .green }
+        if score >= 0.45 { return .yellow }
+        if score >= 0.35 { return .orange }
+        return .red
     }
 
     private func statusColor(_ status: AgentTask.Status) -> Color {
