@@ -9,6 +9,8 @@ public actor TaskSummarizer {
     private let provider: any LLMProvider
     private let memoryStore: MemoryStore
     private let channel: MessageChannel
+    private let contextWindowSize: Int
+    private let maxOutputTokens: Int
 
     private static let systemPrompt = """
         You are a task summarizer for an AI agent system. Given a completed or failed task's \
@@ -27,11 +29,15 @@ public actor TaskSummarizer {
     public init(
         provider: any LLMProvider,
         memoryStore: MemoryStore,
-        channel: MessageChannel
+        channel: MessageChannel,
+        contextWindowSize: Int,
+        maxOutputTokens: Int
     ) {
         self.provider = provider
         self.memoryStore = memoryStore
         self.channel = channel
+        self.contextWindowSize = contextWindowSize
+        self.maxOutputTokens = maxOutputTokens
     }
 
     /// Summarizes a task and saves the embedded summary to the memory store.
@@ -93,17 +99,36 @@ public actor TaskSummarizer {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Computes the maximum character budget for the result field based on the
+    /// summarizer model's context window, leaving room for output tokens and
+    /// the other prompt sections (system prompt, title, description, updates, etc.).
+    private var resultCharBudget: Int {
+        let inputTokenBudget = contextWindowSize - maxOutputTokens
+        // Conservative estimate: ~3 characters per token
+        let totalInputChars = inputTokenBudget * 3
+        // Reserve space for system prompt (~300 chars) + other fields (~2000 chars generous)
+        let overhead = 2300
+        return max(1000, totalInputChars - overhead)
+    }
+
     private func buildUserPrompt(for task: AgentTask) -> String {
         var sections: [String] = []
 
+        sections.append("Task ID: \(task.id.uuidString)")
         sections.append("Title: \(task.title)")
         sections.append("Description: \(task.description)")
         sections.append("Status: \(task.status.rawValue)")
 
+        if let completedAt = task.completedAt {
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss zzz"
+            sections.append("Completed: \(dateFormatter.string(from: completedAt))")
+        }
+
         if let result = task.result, !result.isEmpty {
-            // Cap result length to avoid blowing up the prompt.
-            let cappedResult = result.count > 2000
-                ? String(result.prefix(2000)) + "\n[truncated]"
+            let budget = resultCharBudget
+            let cappedResult = result.count > budget
+                ? String(result.prefix(budget)) + "\n[truncated at \(budget) of \(result.count) chars]"
                 : result
             sections.append("Result:\n\(cappedResult)")
         }

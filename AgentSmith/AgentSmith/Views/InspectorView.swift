@@ -47,28 +47,12 @@ struct InspectorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Pinned status bar — always visible
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Agents")
-                    .font(AppFonts.sectionHeader)
-
-                HStack(spacing: 12) {
-                    ForEach(AgentRole.allCases, id: \.self) { role in
-                        HStack(spacing: 4) {
-                            Circle()
-                                .fill(statusColor(for: role))
-                                .frame(width: 6, height: 6)
-                            Text(displayName(for: role))
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                .foregroundStyle(statusColor(for: role))
-                        }
-                        .help("\(displayName(for: role)): \(statusLabel(for: role))")
-                    }
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
+            Text("Agents")
+                .font(AppFonts.sectionHeader)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
 
             Divider()
 
@@ -142,16 +126,25 @@ private struct AgentCard: View {
     let onUpdatePollInterval: (TimeInterval) -> Void
     let onUpdateMaxToolCalls: (Int) -> Void
 
+    @Environment(\.openWindow) private var openWindow
     @State private var expanded = true
     @State private var showingConfig = false
     @State private var expandedTurnIDs: Set<UUID> = []
+
+    /// Smith and Brown open in a separate window; Jones expands inline.
+    private var opensInWindow: Bool { role == .smith || role == .brown }
 
     private var roleColor: Color { AppColors.color(for: .agent(role)) }
     private var isSpeechEnabled: Bool { speechController.agentEnabled[role] ?? false }
 
     /// Display name override for the inspector panel.
     private var inspectorDisplayName: String {
-        role == .jones ? "Security Agent" : role.displayName
+        switch role {
+        case .smith: return "Agent Smith"
+        case .brown: return "Agent Brown"
+        case .jones: return "Security Agent"
+        case .summarizer: return "Summarizer"
+        }
     }
 
     var body: some View {
@@ -159,7 +152,11 @@ private struct AgentCard: View {
             // Header row
             HStack(spacing: 8) {
                 Button(action: {
-                    withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                    if opensInWindow {
+                        openWindow(value: role.rawValue)
+                    } else {
+                        withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                    }
                 }, label: {
                     HStack(spacing: 8) {
                         Circle()
@@ -196,10 +193,16 @@ private struct AgentCard: View {
                                 .foregroundStyle(.tertiary)
                         }
 
-                        Image(systemName: "chevron.right")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                        if opensInWindow {
+                            Image(systemName: "arrow.up.forward.square")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        } else {
+                            Image(systemName: "chevron.right")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .rotationEffect(.degrees(expanded ? 90 : 0))
+                        }
                     }
                     .contentShape(Rectangle())
                 })
@@ -226,7 +229,7 @@ private struct AgentCard: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
 
-            if expanded {
+            if expanded && !opensInWindow {
                 VStack(alignment: .leading, spacing: 10) {
                     if !availableTools.isEmpty {
                         InspectorSection(title: "Available Tools") {
@@ -334,7 +337,7 @@ private struct AgentCard: View {
 
 // MARK: - Subviews
 
-private struct AvailableToolsGrid: View {
+struct AvailableToolsGrid: View {
     let toolNames: [String]
 
     var body: some View {
@@ -353,7 +356,7 @@ private struct AvailableToolsGrid: View {
     }
 }
 
-private struct InspectorSection<Content: View>: View {
+struct InspectorSection<Content: View>: View {
     let title: String
     @ViewBuilder let content: () -> Content
 
@@ -367,7 +370,7 @@ private struct InspectorSection<Content: View>: View {
     }
 }
 
-private struct InspectorToolRow: View {
+struct InspectorToolRow: View {
     let message: ChannelMessage
 
     private var toolName: String {
@@ -395,7 +398,7 @@ private struct InspectorToolRow: View {
     }
 }
 
-private struct InspectorMessageRow: View {
+struct InspectorMessageRow: View {
     let message: ChannelMessage
 
     var body: some View {
@@ -415,7 +418,7 @@ private struct InspectorMessageRow: View {
 }
 
 /// A single entry from an agent's LLM context window. Tap to expand the full content.
-private struct ContextMessageRow: View {
+struct ContextMessageRow: View {
     let message: LLMMessage
     /// Optional message index displayed before the role label (e.g. "#1").
     var index: Int?
@@ -616,7 +619,7 @@ private let inspectorTimestampFormatter: DateFormatter = {
 ///
 /// Shows a clear Outgoing (what was sent) / Response (what came back) structure
 /// with latency timing.
-private struct LLMTurnDisclosureRow: View {
+struct LLMTurnDisclosureRow: View {
     let turn: LLMTurnRecord
     let turnNumber: Int
     @Binding var isExpanded: Bool
@@ -793,7 +796,7 @@ private struct LLMTurnDisclosureRow: View {
     }
 }
 
-private struct FullContextSheet: View {
+struct FullContextSheet: View {
     let turn: LLMTurnRecord
     let turnNumber: Int
 
@@ -905,7 +908,7 @@ private struct FullContextSheet: View {
     }
 }
 
-private struct DirectMessageInputRow: View {
+struct DirectMessageInputRow: View {
     let placeholder: String
     let onSend: (String) -> Void
 

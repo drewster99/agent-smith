@@ -6,7 +6,7 @@ enum AppColors {
     static let smithAgent = Color.green
     static let brownAgent = Color.orange
     static let jonesAgent = Color.red
-    static let summarizerAgent = Color.purple
+    static let summarizerAgent = Color.blue
     static let userMessage = Color.blue
     static let systemMessage = Color.gray
     static let background = Color(.windowBackgroundColor)

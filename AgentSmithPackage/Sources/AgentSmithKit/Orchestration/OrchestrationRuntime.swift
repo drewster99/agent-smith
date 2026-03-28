@@ -138,7 +138,9 @@ public actor OrchestrationRuntime {
             taskSummarizer = TaskSummarizer(
                 provider: makeProvider(config: summarizerConfig),
                 memoryStore: memoryStore,
-                channel: channel
+                channel: channel,
+                contextWindowSize: summarizerConfig.contextWindowSize,
+                maxOutputTokens: summarizerConfig.maxTokens
             )
         } else {
             taskSummarizer = nil
@@ -162,10 +164,12 @@ public actor OrchestrationRuntime {
             if case .agent(let role) = message.sender, role == .smith {
                 return false
             }
-            // Drop all public messages from Brown or Jones, except their online announcements
-            // which Smith needs to know about for coordination.
+            // Drop all public messages from Brown, Jones, or Summarizer, except online
+            // announcements which Smith needs for coordination. Summarizer results are
+            // persisted to the memory store and task record — Smith doesn't need them
+            // in its conversation history (and they can distract from pending user messages).
             if case .agent(let role) = message.sender, message.recipientID == nil,
-               role == .brown || role == .jones {
+               role == .brown || role == .jones || role == .summarizer {
                 guard case .string(let kind) = message.metadata?["messageKind"],
                       kind == "agent_online" else { return false }
             }

@@ -29,6 +29,13 @@ struct AgentSmithApp: App {
             }
         }
 
+        WindowGroup("Agent Inspector", for: String.self) { $roleRaw in
+            if let roleRaw, let role = AgentRole(rawValue: roleRaw) {
+                AgentInspectorWindow(viewModel: viewModel, role: role)
+            }
+        }
+        .defaultSize(width: 800, height: 700)
+
         WindowGroup("Task Detail", for: UUID.self) { $taskID in
             if let taskID, let task = viewModel.tasks.first(where: { $0.id == taskID }) {
                 TaskDetailWindow(task: task)
