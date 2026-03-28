@@ -5,6 +5,7 @@ import AgentSmithKit
 /// Primary app view: sidebar with tasks, detail with channel log and input.
 struct MainView: View {
     @Bindable var viewModel: AppViewModel
+    @Environment(\.openWindow) private var openWindow
     @State private var showValidationSheet = false
     @State private var showWelcomeSheet = false
 
@@ -137,6 +138,10 @@ struct MainView: View {
                         viewModel.speechController.setGloballyEnabled(true)
                     }
                     .foregroundStyle(.secondary)
+                }
+
+                Button("Memory Browser", systemImage: "brain") {
+                    openWindow(id: "memory-browser")
                 }
 
                 Button("Clear Log", systemImage: "trash") {

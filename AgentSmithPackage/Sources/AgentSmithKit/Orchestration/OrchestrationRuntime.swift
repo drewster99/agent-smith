@@ -365,8 +365,7 @@ public actor OrchestrationRuntime {
                             if !task.description.isEmpty {
                                 entry += "\n  Description: \(task.description)"
                             }
-                            if !task.updates.isEmpty {
-                                let lastUpdate = task.updates.last!
+                            if let lastUpdate = task.updates.last {
                                 entry += "\n  Last update: \(lastUpdate.message)"
                             }
                             return entry

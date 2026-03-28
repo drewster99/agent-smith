@@ -723,6 +723,7 @@ final class AppViewModel {
         do {
             return try await memoryStore.searchMemories(query: query, limit: limit, threshold: 0.0)
         } catch {
+            print("[AppViewModel] Memory search failed: \(error)")
             return []
         }
     }
@@ -733,6 +734,7 @@ final class AppViewModel {
         do {
             return try await memoryStore.searchTaskSummaries(query: query, limit: limit, threshold: 0.0)
         } catch {
+            print("[AppViewModel] Task summary search failed: \(error)")
             return []
         }
     }

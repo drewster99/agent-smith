@@ -15,6 +15,7 @@ struct MemoryEditorView: View {
     @State private var memorySimilarities: [UUID: Float] = [:]
     @State private var taskSummarySimilarities: [UUID: Float] = [:]
     @State private var searchTask: Task<Void, Never>?
+    @State private var isSearching = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,10 +37,11 @@ struct MemoryEditorView: View {
             if query.isEmpty {
                 memorySimilarities.removeAll()
                 taskSummarySimilarities.removeAll()
+                isSearching = false
                 return
             }
+            isSearching = true
             searchTask = Task {
-                // Debounce
                 try? await Task.sleep(for: .milliseconds(300))
                 guard !Task.isCancelled else { return }
 
@@ -54,7 +56,11 @@ struct MemoryEditorView: View {
                 var taskScores: [UUID: Float] = [:]
                 for r in taskResults { taskScores[r.summary.id] = r.similarity }
                 taskSummarySimilarities = taskScores
+                isSearching = false
             }
+        }
+        .onDisappear {
+            searchTask?.cancel()
         }
         .alert("Error", isPresented: Binding(
             get: { editError != nil },
@@ -75,17 +81,17 @@ struct MemoryEditorView: View {
                 Text("Task Summaries (\(viewModel.storedTaskSummaries.count))").tag(true)
             }
             .pickerStyle(.segmented)
-            .frame(maxWidth: 350)
+            .fixedSize()
 
-            if !showTaskSummaries {
-                Picker("Source", selection: $filterSource) {
-                    Text("All Sources").tag(Optional<MemoryEntry.Source>.none)
-                    Text("User").tag(Optional<MemoryEntry.Source>.some(.user))
-                    Text("Smith").tag(Optional<MemoryEntry.Source>.some(.smith))
-                    Text("Brown").tag(Optional<MemoryEntry.Source>.some(.brown))
-                }
-                .frame(maxWidth: 140)
+            Picker("Source", selection: $filterSource) {
+                Text("All Sources").tag(Optional<MemoryEntry.Source>.none)
+                Text("User").tag(Optional<MemoryEntry.Source>.some(.user))
+                Text("Smith").tag(Optional<MemoryEntry.Source>.some(.smith))
+                Text("Brown").tag(Optional<MemoryEntry.Source>.some(.brown))
             }
+            .frame(width: 160)
+            .opacity(showTaskSummaries ? 0 : 1)
+            .disabled(showTaskSummaries)
 
             Spacer()
 
@@ -103,8 +109,8 @@ struct MemoryEditorView: View {
         if let source = filterSource {
             result = result.filter { $0.source == source }
         }
-        if !searchText.isEmpty && !memorySimilarities.isEmpty {
-            // Semantic search: only show memories that have similarity scores, sorted by score
+        if !searchText.isEmpty {
+            if isSearching { return [] }
             let scored = result.filter { memorySimilarities[$0.id] != nil }
             return scored.sorted { (memorySimilarities[$0.id] ?? 0) > (memorySimilarities[$1.id] ?? 0) }
         }
@@ -243,7 +249,8 @@ struct MemoryEditorView: View {
     // MARK: - Task Summary List
 
     private var filteredTaskSummaries: [TaskSummaryEntry] {
-        if !searchText.isEmpty && !taskSummarySimilarities.isEmpty {
+        if !searchText.isEmpty {
+            if isSearching { return [] }
             let scored = viewModel.storedTaskSummaries.filter { taskSummarySimilarities[$0.id] != nil }
             return scored.sorted { (taskSummarySimilarities[$0.id] ?? 0) > (taskSummarySimilarities[$1.id] ?? 0) }
         }
