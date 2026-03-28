@@ -852,14 +852,44 @@ struct FullContextSheet: View {
                             index: i + 1,
                             initiallyExpanded: allExpanded
                         )
-                        // Force re-creation when expand/collapse all toggles
                         .id("\(i)-\(allExpanded)")
+                    }
+
+                    // Show the LLM response at the end of the context
+                    Divider()
+                        .padding(.vertical, 4)
+
+                    Text("Response")
+                        .font(.caption.bold())
+                        .foregroundStyle(.green)
+
+                    if let responseMessage = responseAsMessage {
+                        ContextMessageRow(
+                            message: responseMessage,
+                            index: turn.contextSnapshot.count + 1,
+                            initiallyExpanded: allExpanded
+                        )
+                        .id("response-\(allExpanded)")
                     }
                 }
                 .padding(16)
             }
         }
         .frame(minWidth: 700, idealWidth: 900, minHeight: 500, idealHeight: 700)
+    }
+
+    /// Converts the LLM response into an LLMMessage for display in the context view.
+    private var responseAsMessage: LLMMessage? {
+        let response = turn.response
+        if !response.toolCalls.isEmpty {
+            if let text = response.text, !text.isEmpty {
+                return LLMMessage(role: .assistant, content: .mixed(text: text, toolCalls: response.toolCalls))
+            }
+            return LLMMessage(role: .assistant, content: .toolCalls(response.toolCalls))
+        } else if let text = response.text, !text.isEmpty {
+            return LLMMessage(role: .assistant, text: text)
+        }
+        return nil
     }
 
     private var modelInfoBar: some View {

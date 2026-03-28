@@ -42,7 +42,8 @@ public struct TaskUpdateTool: AgentTool {
             sender: .agent(context.agentRole),
             recipientID: smithID,
             recipient: .agent(.smith),
-            content: "Task update for '\(task.title)': \(message)"
+            content: "Task update for '\(task.title)': \(message)",
+            metadata: ["messageKind": .string("task_lifecycle")]
         ))
 
         return "Update sent to Agent Smith."

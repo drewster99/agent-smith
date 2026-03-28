@@ -957,7 +957,18 @@ public actor AgentActor {
             }
             // else: drain messages into history below, but leave hasUnprocessedInput as-is
         } else {
-            hasUnprocessedInput = true
+            // For Smith: task lifecycle messages (task_acknowledged, task_update) are
+            // informational — drain them into history but don't trigger a re-query.
+            // Only messages that aren't purely lifecycle should wake the agent.
+            let hasNonLifecycleMessage = pendingChannelMessages.contains { msg in
+                if case .string("task_lifecycle") = msg.metadata?["messageKind"] {
+                    return false
+                }
+                return true
+            }
+            if hasNonLifecycleMessage {
+                hasUnprocessedInput = true
+            }
         }
 
         // Collect all images across pending messages
