@@ -18,33 +18,6 @@ struct InspectorView: View {
     let onUpdatePollInterval: (AgentRole, TimeInterval) -> Void
     let onUpdateMaxToolCalls: (AgentRole, Int) -> Void
 
-    /// Compact status label for the pinned status bar.
-    private func statusLabel(for role: AgentRole) -> String {
-        if processingRoles.contains(role) {
-            return role == .jones ? "Evaluating" : (role == .summarizer ? "Summarizing" : "Thinking")
-        }
-        let roleMessages = messages.filter {
-            if case .agent(let r) = $0.sender { return r == role }
-            return false
-        }
-        if !roleMessages.isEmpty { return "Idle" }
-        return "—"
-    }
-
-    private func statusColor(for role: AgentRole) -> Color {
-        if processingRoles.contains(role) { return AppColors.color(for: .agent(role)) }
-        let roleMessages = messages.filter {
-            if case .agent(let r) = $0.sender { return r == role }
-            return false
-        }
-        if !roleMessages.isEmpty { return AppColors.color(for: .agent(role)) }
-        return Color.secondary.opacity(0.4)
-    }
-
-    private func displayName(for role: AgentRole) -> String {
-        role == .jones ? "Security" : role.displayName
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             Text("Agents")
@@ -856,14 +829,14 @@ struct FullContextSheet: View {
                     }
 
                     // Show the LLM response at the end of the context
-                    Divider()
-                        .padding(.vertical, 4)
-
-                    Text("Response")
-                        .font(.caption.bold())
-                        .foregroundStyle(.green)
-
                     if let responseMessage = responseAsMessage {
+                        Divider()
+                            .padding(.vertical, 4)
+
+                        Text("Response")
+                            .font(.caption.bold())
+                            .foregroundStyle(.green)
+
                         ContextMessageRow(
                             message: responseMessage,
                             index: turn.contextSnapshot.count + 1,

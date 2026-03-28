@@ -81,13 +81,13 @@ struct AgentInspectorWindow: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     if !availableTools.isEmpty {
-                        inspectorSection(title: "Available Tools") {
+                        InspectorSection(title: "Available Tools") {
                             AvailableToolsGrid(toolNames: availableTools)
                         }
                     }
 
                     if !recentToolUses.isEmpty {
-                        inspectorSection(title: "Recent Tool Calls") {
+                        InspectorSection(title: "Recent Tool Calls") {
                             ForEach(recentToolUses) { msg in
                                 InspectorToolRow(message: msg)
                             }
@@ -95,7 +95,7 @@ struct AgentInspectorWindow: View {
                     }
 
                     if !recentMessages.isEmpty {
-                        inspectorSection(title: "Recent Messages") {
+                        InspectorSection(title: "Recent Messages") {
                             ForEach(recentMessages) { msg in
                                 InspectorMessageRow(message: msg)
                             }
@@ -103,7 +103,7 @@ struct AgentInspectorWindow: View {
                     }
 
                     if !contextMessages.isEmpty {
-                        inspectorSection(title: "Context (\(contextMessages.count) entries)") {
+                        InspectorSection(title: "Context (\(contextMessages.count) entries)") {
                             ScrollView(.vertical) {
                                 VStack(alignment: .leading, spacing: 3) {
                                     ForEach(contextMessages.indices, id: \.self) { i in
@@ -116,7 +116,7 @@ struct AgentInspectorWindow: View {
                     }
 
                     if !llmTurns.isEmpty {
-                        inspectorSection(title: "LLM Turns (\(llmTurns.count))") {
+                        InspectorSection(title: "LLM Turns (\(llmTurns.count))") {
                             VStack(alignment: .leading, spacing: 2) {
                                 ForEach(Array(llmTurns.enumerated()), id: \.element.id) { i, turn in
                                     LLMTurnDisclosureRow(
@@ -142,7 +142,7 @@ struct AgentInspectorWindow: View {
                     }
 
                     // Direct message input
-                    inspectorSection(title: "Direct Message") {
+                    InspectorSection(title: "Direct Message") {
                         DirectMessageInputRow(
                             placeholder: "Message \(role.displayName) privately…",
                             onSend: { text in
@@ -157,12 +157,4 @@ struct AgentInspectorWindow: View {
         .frame(minWidth: 600, idealWidth: 800, minHeight: 500, idealHeight: 700)
     }
 
-    private func inspectorSection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.headline)
-                .foregroundStyle(.secondary)
-            content()
-        }
-    }
 }
