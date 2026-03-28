@@ -243,11 +243,7 @@ public actor OrchestrationRuntime {
                 }
                 if let priorTasks = resumingTask.relevantPriorTasks, !priorTasks.isEmpty {
                     let taskLines = priorTasks.map { task in
-                        var line = "- \(task.title): \(task.summary) (similarity: \(String(format: "%.2f", task.similarity)))"
-                        if let id = task.taskID {
-                            line += " — full details: `get_task_details(task_id: \"\(id.uuidString)\")`"
-                        }
-                        return line
+                        "- \(task.title): \(task.summary) (similarity: \(String(format: "%.2f", task.similarity))) — full details: `get_task_details(task_id: \"\(task.taskID.uuidString)\")`"
                     }
                     parts.append("Relevant prior task summaries:\n\(taskLines.joined(separator: "\n"))")
                 }

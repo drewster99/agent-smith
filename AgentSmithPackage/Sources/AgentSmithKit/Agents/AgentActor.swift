@@ -1365,11 +1365,7 @@ public actor AgentActor {
         }
         if let priorTasks = task.relevantPriorTasks, !priorTasks.isEmpty {
             let taskLines = priorTasks.map { priorTask in
-                var line = "- \(priorTask.title): \(priorTask.summary) (similarity: \(String(format: "%.2f", priorTask.similarity)))"
-                if let id = priorTask.taskID {
-                    line += " — full details: `get_task_details(task_id: \"\(id.uuidString)\")`"
-                }
-                return line
+                "- \(priorTask.title): \(priorTask.summary) (similarity: \(String(format: "%.2f", priorTask.similarity))) — full details: `get_task_details(task_id: \"\(priorTask.taskID.uuidString)\")`"
             }
             parts.append("Relevant prior task summaries:\n\(taskLines.joined(separator: "\n"))")
         }
