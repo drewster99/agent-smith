@@ -21,11 +21,15 @@ Switching models previously required 5-6 manual steps. Created a reusable Swift 
 - `AnthropicProvider` updated to support extended thinking (`thinkingBudget`)
 - `AppDefaults` schema v2 with providers, model configurations, and agent assignments
 
-### Auto-start when all agents have valid configurations
+### Auto-start when all agents have valid configurations ✅
 When all three agent roles have valid, assigned configurations on launch, skip the manual "Start" button and begin the orchestration runtime automatically. Currently the user must always click Start even when nothing has changed.
 
-### Copy button for channel messages
+**Implemented:** `AppViewModel.autoStartEnabled` (defaults to `true`, persisted in UserDefaults). `MainView.onChange(of: viewModel.hasLoadedPersistedState)` checks: if nickname set, all configs valid, and autoStartEnabled → calls `viewModel.start()` automatically.
+
+### Copy button for channel messages ✅
 Text selection in the channel log is limited to one line at a time because each line is a separate SwiftUI `Text` view. Add a copy button (or context menu item) to each message row that copies the full message content to the clipboard, so users can easily grab multi-line output without fighting the selection model.
+
+**Implemented:** Copy button exists on hover. Known low-priority UX issue: the button disappears when the cursor moves toward it, making it difficult to click.
 
 ### Completed tasks must always include a final result
 When a task reaches `completed` status, its `result` field should contain a clear, meaningful summary of what was accomplished. Currently, completed tasks can end up with an empty or missing result — making it hard for the user (and Smith) to understand what was done without digging through the channel log. Enforce that `accept_work` requires a non-empty result, and ensure Brown's `task_complete` call always provides one.
@@ -65,15 +69,10 @@ When the model-list refresh button in Agent LLM Configuration gets an error resp
 [AgentConfig]   Response: HTTP 401 body={"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"},"request_id":"req_011CZGnZBBAcZALmp7nmj87a"}
 ```
 
-### Task update history
+### Task update history ✅
 Store Brown's `task_update` messages as a `updates: [(Date, String)]` array on `AgentTask`. Currently these updates are only sent as ephemeral channel messages to Smith — they're lost on restart. Persisting them on the task gives a restarted Brown useful context about where the previous Brown left off.
 
-**Design notes:**
-- Only Brown's `task_update` calls are stored (not `message_brown` content)
-- Full text retained (updates are already encouraged to be brief)
-- Cap at last ~20 entries or ~4K character budget to avoid unbounded growth
-- On task restart, include the update history in Brown's initial instruction so it knows prior progress
-- Consider adding a source tag (`.brown` / `.smith`) if Smith is later given the ability to annotate tasks
+**Implemented:** Brown's `task_update` calls are persisted on `AgentTask.updates` as `[(date: Date, message: String)]`. Displayed in task detail view.
 
 ### Remove implementation instructions from user-visible task descriptions
 `CreateTaskTool` appends `"\n\nReport the detailed results to the user using task_complete."` to the task description at creation time (CreateTaskTool.swift:33). This implementation detail is persisted on the task and visible in the task list UI. The instruction should either be injected into Brown's initial message separately (not stored on the task), or moved into Brown's system prompt so it doesn't pollute user-facing task descriptions.
@@ -91,5 +90,21 @@ The SwiftLLMKit package refactor is structurally complete but the runtime still 
 - Minimal test coverage (only one test for composite ID format) — add tests for provider CRUD, config validation, persistence round-trips, and request preparation
 - No protocol abstraction for networking in `ModelFetchService`/`ModelMetadataService` — makes unit testing difficult
 
-### Add `bash` tool for better environment availability
+### Add `bash` tool for better environment availability ✅
 The current `shell` tool may not provide full PATH and environment variable availability. Add a `bash` tool that executes commands via `/bin/bash -c <arguments>`, which sources the user's shell profile and provides access to the full PATH and environment values that the user would have in an interactive terminal session. This improves reliability for commands that depend on tools installed via Homebrew, nvm, pyenv, etc.
+
+**Implemented:** `ShellTool` renamed to `BashTool` (`/bin/bash -c`). The old `shell` tool name removed. `BashTool` is now the sole command execution tool for Agent Brown.
+
+### `get_task_details` tool ✅
+Add a tool for both Smith and Brown to fetch full task details by ID, including title, description, commentary, progress updates, and summary.
+
+**Implemented:** `GetTaskDetailsTool` available to both Smith and Brown via their respective behavior tool lists.
+
+### Web Search tool
+Given a query and optional `allowed_domains` and `blocked_domains` arrays, perform a web search. Only return results from `allowed_domains` (if non-empty) and exclude results from `blocked_domains` (if non-empty).
+
+### Web Fetch tool
+Given a URL and a prompt, fetch the URL content, convert to markdown, then run the prompt against the content to extract useful details. Useful for reading documentation, articles, and other web content.
+
+### Grep tool
+Ripgrep-based content search tool for Agent Brown. Parameters: `pattern` (required, regex), `path` (required), `output_mode` (enum: files_with_matches / content / count), `glob` (file filter), `type` (file type filter), `-i` (case insensitive), `-n` (line numbers), `-A`/`-B`/`-C` (context lines), `multiline`, `head_limit`, `offset`.

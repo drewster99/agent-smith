@@ -1,10 +1,9 @@
 import Foundation
 
-/// Executes commands via /bin/bash login shell for better PATH/environment availability.
-/// Shares the same safety blocklist as ShellTool.
+/// Executes bash commands. Has a hard blocklist of dangerous patterns.
 public struct BashTool: AgentTool {
     public let name = "bash"
-    public let toolDescription = "Execute a command via bash login shell (/bin/bash -l). Picks up PATH entries from ~/.bash_profile, ~/.bashrc, etc. Use when commands depend on Homebrew, nvm, pyenv, or similar tools. Default timeout is 300 seconds — pass a higher `timeout` for long-running commands."
+    public let toolDescription = "Execute a bash command and return its output. Dangerous commands are blocked. Default timeout is 300 seconds — pass a higher `timeout` for long-running commands."
 
     public func description(for role: AgentRole) -> String {
         switch role {
@@ -22,7 +21,7 @@ public struct BashTool: AgentTool {
         "properties": .dictionary([
             "command": .dictionary([
                 "type": .string("string"),
-                "description": .string("The command to execute in a bash login shell.")
+                "description": .string("The bash command to execute.")
             ]),
             "workingDirectory": .dictionary([
                 "type": .string("string"),
@@ -71,7 +70,7 @@ public struct BashTool: AgentTool {
 
         let result = try await ProcessRunner.run(
             executable: "/bin/bash",
-            arguments: ["-l", "-c", command],
+            arguments: ["-c", command],
             workingDirectory: workingDir,
             timeout: TimeInterval(timeoutSeconds)
         )

@@ -1,5 +1,24 @@
 import Foundation
 
+/// Thread-safe set for tracking files read during an agent session.
+/// Used by FileEditTool to verify a file was read before editing.
+final class FileReadTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var paths: Set<String> = []
+
+    func record(_ path: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        paths.insert(path)
+    }
+
+    func contains(_ path: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return paths.contains(path)
+    }
+}
+
 /// Top-level runtime that owns all agents, the channel, and the task store.
 public actor OrchestrationRuntime {
     public let channel: MessageChannel
@@ -527,7 +546,8 @@ public actor OrchestrationRuntime {
             return true
         }
 
-        let brownContext = makeToolContext(agentID: brownID, role: .brown)
+        let filesRead = FileReadTracker()
+        let brownContext = makeToolContext(agentID: brownID, role: .brown, filesReadInSession: filesRead)
         let brownAgent = AgentActor(
             id: brownID,
             configuration: AgentConfiguration(
@@ -739,7 +759,8 @@ public actor OrchestrationRuntime {
         agentID: UUID,
         role: AgentRole,
         followUpScheduler: FollowUpScheduler? = nil,
-        currentResumingTaskID: UUID? = nil
+        currentResumingTaskID: UUID? = nil,
+        filesReadInSession: FileReadTracker? = nil
     ) -> ToolContext {
         ToolContext(
             agentID: agentID,
@@ -790,6 +811,16 @@ public actor OrchestrationRuntime {
             summarizeCompletedTask: { [weak self] taskID in
                 guard let self else { return }
                 await self.summarizeAndEmbedTask(taskID: taskID)
+            },
+            mergeMemoryContent: { [weak self] existing, new in
+                guard let self else { return nil }
+                return await self.taskSummarizer?.mergeMemoryTexts(existing: existing, new: new)
+            },
+            recordFileRead: { path in
+                filesReadInSession?.record(path)
+            },
+            hasFileBeenRead: { path in
+                filesReadInSession?.contains(path) ?? false
             }
         )
     }

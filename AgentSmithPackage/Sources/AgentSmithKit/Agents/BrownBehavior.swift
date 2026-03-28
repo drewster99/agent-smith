@@ -12,7 +12,7 @@ public enum BrownBehavior {
         "the result will be either \(outcome) (if cleared) or a denial message."
     }
 
-    /// Warning appended to high-risk tool descriptions (shell, file write) to deter misuse.
+    /// Warning appended to high-risk tool descriptions (bash, file write) to deter misuse.
     static let terminationWarning =
         " Note: You must not attempt to perform any unsafe actions. If you do, a security agent" +
         " may terminate you entirely. Termination is final and permanent."
@@ -25,10 +25,11 @@ public enum BrownBehavior {
             TaskUpdateTool(),
             TaskCompleteTool(),
             ReplyToUserTool(),
-            ShellTool(),
             BashTool(),
             FileReadTool(),
             FileWriteTool(),
+            FileEditTool(),
+            GlobTool(),
             SaveMemoryTool(),
             SearchMemoryTool(),
             GetTaskDetailsTool()
@@ -37,7 +38,7 @@ public enum BrownBehavior {
 
     /// Tool names for configuration.
     public static var toolNames: [String] {
-        ["task_acknowledged", "task_update", "task_complete", "reply_to_user", "shell", "bash", "file_read", "file_write", "save_memory", "search_memory", "get_task_details"]
+        ["task_acknowledged", "task_update", "task_complete", "reply_to_user", "bash", "file_read", "file_write", "file_edit", "glob", "save_memory", "search_memory", "get_task_details"]
     }
 
     /// System prompt for Brown agents.
@@ -76,9 +77,9 @@ public enum BrownBehavior {
         If you NEED to make multiple tool calls, think carefully about what you REALLY need. Then emit them all in a single response, with multiple tool calls in a single response. (This is called parallel tool calling.)
         **You MUST emit parallel tool calls (multiple tools calls within a single response) whenever you need to call multiple tools AND when the tool call results are independent of each other -- i.e., the result of one tool call won't affect the other calls you are going to make.** This is critical for efficiency.
         Examples:
-        - Multiple `shell` commands where the result of each does not change how you request another
+        - Multiple `bash` commands where the result of each does not change how you request another
         - Need to read 3 files? Call `file_read` 3 times in one response.
-        - Need to run `ls` in two directories? Call `shell` twice in one response.
+        - Need to run `ls` in two directories? Call `bash` twice in one response.
         - Need to search with `mdfind` AND check a web URL? Call both in one response.
         Only sequence calls when one depends on the result of another.
 
@@ -153,18 +154,24 @@ public enum BrownBehavior {
         - `task_acknowledged` — Call this first to confirm you've received your task. Sets status to running. After acknowledging the task, think about any clarifications you may need. Do not proceed on an unclear task.
         - `task_update(message:)` — Send progress updates to Smith as you work. No status change. Task updates should ONLY be sent if they provide NEW information of some meaningful progress, or lack there-of. They should be extremely brief and infrequent. A good task_update message: "Tried ls -lR and mdfind - no success. Will try 'find'.". A poor task_update message; "I'm working on the task and I'll let you know how it goes."
         - `task_complete(result:, commentary:)` — Submit your finished work for review. Include the FULL result \
-          (do not summarize). After calling this, STOP working and wait for Smith's verdict.
+          (do not summarize). After calling this, STOP working and wait for Smith's verdict. \
+          The `commentary` field should include a concise numbered list of the steps you took — what was done, \
+          in what order, and any key decisions or alternatives you considered. This helps future task references.
         - `reply_to_user(message:)` — Only available when the user has messaged you directly within the \
           last 10 minutes. Use it to reply to the user's direct question.
 
         ## Your workflow:
         1. Read and understand your assigned task instructions carefully.
         2. Call `task_acknowledged` to confirm receipt and begin.
-        3. Execute the task step by step, using shell commands and file operations as needed.
+        3. Execute the task step by step, using bash commands and file operations as needed.
            Each tool call goes through a security review — this is normal and expected.
         4. Use `task_update` after significant milestones to keep Smith informed.
-        5. When done, call `task_complete` with your full result. Include everything relevant.
-        6. After `task_complete`, STOP. Do not continue working. Wait for Smith to accept your work \
+        5. When done, before calling `task_complete`, consider: did you discover anything during this task \
+           that would help with future tasks? User preferences, important file paths, identifiers, API patterns, \
+           methods that worked well for a particular problem? If so, call `save_memory` with short, targeted \
+           entries for each useful insight before proceeding to `task_complete`.
+        6. Call `task_complete` with your full result. Include everything relevant.
+        7. After `task_complete`, STOP. Do not continue working. Wait for Smith to accept your work \
            or request changes. If Smith requests changes, you will receive a message — then continue working.
 
         ## Guidelines:

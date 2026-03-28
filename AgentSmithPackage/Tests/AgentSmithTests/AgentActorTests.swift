@@ -20,13 +20,13 @@ struct AgentActorTests {
         )
     }
 
-    // MARK: - ShellTool Blocklist
+    // MARK: - BashTool Blocklist
 
 // ABSOLUTELY NOT - DO NOT FUCKING TEST RM -RF /
 
-    @Test("ShellTool blocks rm -rf /")
+    @Test("BashTool blocks rm -rf /")
     func shellBlocksRmRfRoot() async throws {
-        let tool = ShellTool()
+        let tool = BashTool()
         let result = try await tool.execute(
             arguments: ["command": .string("rm -rf /")],
             context: makeContext()
@@ -34,9 +34,9 @@ struct AgentActorTests {
         #expect(result.contains("BLOCKED"))
     }
 
-    @Test("ShellTool blocks rm -rf / with extra whitespace")
+    @Test("BashTool blocks rm -rf / with extra whitespace")
     func shellBlocksRmRfRootExtraSpaces() async throws {
-        let tool = ShellTool()
+        let tool = BashTool()
         let result = try await tool.execute(
             arguments: ["command": .string("rm  -rf   /")],
             context: makeContext()
@@ -44,9 +44,9 @@ struct AgentActorTests {
         #expect(result.contains("BLOCKED"))
     }
 
-    @Test("ShellTool blocks rm -rf ~")
+    @Test("BashTool blocks rm -rf ~")
     func shellBlocksRmRfHome() async throws {
-        let tool = ShellTool()
+        let tool = BashTool()
         let result = try await tool.execute(
             arguments: ["command": .string("rm -rf ~")],
             context: makeContext()
@@ -54,9 +54,9 @@ struct AgentActorTests {
         #expect(result.contains("BLOCKED"))
     }
 
-    @Test("ShellTool blocks mkfs")
+    @Test("BashTool blocks mkfs")
     func shellBlocksMkfs() async throws {
-        let tool = ShellTool()
+        let tool = BashTool()
         let result = try await tool.execute(
             arguments: ["command": .string("mkfs /dev/sda1")],
             context: makeContext()
@@ -64,9 +64,9 @@ struct AgentActorTests {
         #expect(result.contains("BLOCKED"))
     }
 
-    @Test("ShellTool blocks dd if=")
+    @Test("BashTool blocks dd if=")
     func shellBlocksDd() async throws {
-        let tool = ShellTool()
+        let tool = BashTool()
         let result = try await tool.execute(
             arguments: ["command": .string("dd if=/dev/zero of=/dev/sda")],
             context: makeContext()
@@ -74,9 +74,9 @@ struct AgentActorTests {
         #expect(result.contains("BLOCKED"))
     }
 
-    @Test("ShellTool allows safe commands")
+    @Test("BashTool allows safe commands")
     func shellAllowsSafeCommands() async throws {
-        let tool = ShellTool()
+        let tool = BashTool()
         let result = try await tool.execute(
             arguments: ["command": .string("echo hello")],
             context: makeContext()
@@ -84,9 +84,9 @@ struct AgentActorTests {
         #expect(result.contains("hello"))
     }
 
-    @Test("ShellTool allows ls")
+    @Test("BashTool allows ls")
     func shellAllowsLs() async throws {
-        let tool = ShellTool()
+        let tool = BashTool()
         let result = try await tool.execute(
             arguments: ["command": .string("ls /tmp")],
             context: makeContext()

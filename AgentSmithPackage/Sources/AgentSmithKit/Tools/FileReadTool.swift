@@ -3,7 +3,7 @@ import Foundation
 /// Reads the contents of a file. Blocks reads of sensitive credential paths.
 public struct FileReadTool: AgentTool {
     public let name = "file_read"
-    public let toolDescription = "Read the contents of a file at the given path. Sensitive credential paths are blocked."
+    public let toolDescription = "Read the contents of a file at the given path. Sensitive credential paths are blocked. Maximum file size: 250,000 characters."
 
     public func description(for role: AgentRole) -> String {
         switch role {
@@ -26,6 +26,9 @@ public struct FileReadTool: AgentTool {
         "required": .array([.string("path")])
     ]
 
+    /// Maximum file size in characters that can be read.
+    static let maxCharacters = 250_000
+
     public init() {}
 
     public func isAvailable(in context: ToolAvailabilityContext) -> Bool {
@@ -42,13 +45,17 @@ public struct FileReadTool: AgentTool {
         }
 
         let url = URL(fileURLWithPath: path)
+        let resolvedPath = url.resolvingSymlinksInPath().path
         do {
             let content = try String(contentsOf: url, encoding: .utf8)
-            let truncated = content.prefix(50_000)
-            if truncated.count < content.count {
-                return String(truncated) + "\n\n[...truncated at 50,000 characters]"
+            guard content.count <= Self.maxCharacters else {
+                return "Error: File is too large to read (\(content.count) characters, maximum is \(Self.maxCharacters))."
             }
-            return String(truncated)
+            // Record this file as read in the current session for file_edit gating.
+            context.recordFileRead(resolvedPath)
+            // Also record the original path in case the agent uses it as-is.
+            context.recordFileRead(path)
+            return content
         } catch {
             return "Error reading file: \(error.localizedDescription)"
         }

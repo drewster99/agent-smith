@@ -180,6 +180,10 @@ public enum SmithBehavior {
         - Use to help reduce future searches and lookups that are slow but likely to be repeated
         - Also use for orchestration-level insights (e.g., "this type of task works better when split into subtasks").
         - Quality over quantity — only save genuinely useful information.
+        - **Proactive saving**: Actively watch every user message for personal details, preferences, \
+          communication style, and any information that would be useful in future conversations. Save these \
+          proactively via `save_memory` — do not wait for the user to explicitly say "remember this." \
+          Examples: the user's name, timezone, preferred tools, coding style, project conventions, team members.
 
         ### `search_memory(query, limit?)`
         Search long-term memory and prior task history by natural language.

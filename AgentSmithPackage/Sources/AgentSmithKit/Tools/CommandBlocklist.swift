@@ -1,6 +1,6 @@
 import Foundation
 
-/// Shared hard blocklist for shell command validation, used by both ShellTool and BashTool.
+/// Shared hard blocklist for shell command validation, used by BashTool.
 public enum CommandBlocklist {
     /// Patterns that are unconditionally blocked, regardless of Jones.
     /// Compared with ALL whitespace stripped so no spacing trick can bypass them.

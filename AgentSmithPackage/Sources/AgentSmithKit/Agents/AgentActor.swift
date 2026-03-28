@@ -1044,7 +1044,7 @@ public actor AgentActor {
             .joined(separator: "\n")
     }
 
-    /// Formats a tool call as a concise one-liner for channel display, e.g. `"shell: ls -la ~/"`.
+    /// Formats a tool call as a concise one-liner for channel display, e.g. `"bash: ls -la ~/"`.
     /// Produces a short human-readable description for a tool call.
     /// For `file_write`, returns just `file_write <path>` — the view layer renders rich formatting
     /// using the structured metadata fields (`fileWritePath`, `fileWriteContent`).

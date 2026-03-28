@@ -82,6 +82,41 @@ public actor TaskSummarizer {
         }
     }
 
+    // MARK: - Memory Consolidation
+
+    /// Merges two related memory texts into one consolidated memory using an LLM call.
+    ///
+    /// Returns the merged text, or `nil` if the LLM call fails.
+    public func mergeMemoryTexts(existing: String, new: String) async -> String? {
+        let systemPrompt = """
+            You are merging two related memories into one consolidated memory. \
+            Retain ALL relevant details from both memories. Be concise but complete. \
+            If the memories contain conflicting information, prefer the newer memory. \
+            Output ONLY the merged memory text — no headings, bullet points, or commentary.
+            """
+        let userPrompt = "Existing memory:\n\(existing)\n\nNew memory:\n\(new)"
+
+        let messages = [
+            LLMMessage(role: .system, text: systemPrompt),
+            LLMMessage(role: .user, text: userPrompt)
+        ]
+
+        do {
+            let response = try await provider.send(messages: messages, tools: [])
+            guard let text = response.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            await channel.post(ChannelMessage(
+                sender: .agent(.summarizer),
+                content: "Memory merge failed: \(error.localizedDescription)",
+                metadata: ["isError": .bool(true)]
+            ))
+            return nil
+        }
+    }
+
     // MARK: - Private
 
     private func generateSummary(for task: AgentTask) async throws -> String {

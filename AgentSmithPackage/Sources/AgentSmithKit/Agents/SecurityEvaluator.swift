@@ -299,6 +299,14 @@ public actor SecurityEvaluator {
             - parameters: \(toolParams)
 
             """
+        // For file-targeting tools, add context about whether the target file exists.
+        if toolName == "file_write" || toolName == "file_edit" {
+            let pathKey = toolName == "file_edit" ? "file_path" : "path"
+            if let fileNote = Self.fileExistenceNote(toolParams: toolParams, pathKey: pathKey, toolName: toolName) {
+                requestSection += "\n\(fileNote)\n"
+            }
+        }
+
         if !toolParameterDefs.isEmpty {
             requestSection += "\n\(toolParameterDefs)"
         }
@@ -374,6 +382,33 @@ public actor SecurityEvaluator {
             return SecurityDisposition(approved: false, message: explanatoryText)
         default:
             return nil
+        }
+    }
+
+    /// Checks whether the target file of a file_write or file_edit tool call exists,
+    /// and returns an informational note string for the evaluation prompt.
+    private static func fileExistenceNote(toolParams: String, pathKey: String, toolName: String) -> String? {
+        guard let data = toolParams.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let path = parsed[pathKey] as? String,
+              path.hasPrefix("/") else {
+            return nil
+        }
+
+        let fm = FileManager.default
+        let resolvedPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+
+        if fm.fileExists(atPath: resolvedPath) {
+            do {
+                let attrs = try fm.attributesOfItem(atPath: resolvedPath)
+                let size = (attrs[.size] as? UInt64) ?? 0
+                let verb = toolName == "file_edit" ? "MODIFY" : "OVERWRITE"
+                return "Note: The target file ALREADY EXISTS (size: \(size) bytes). This operation will \(verb) the existing file."
+            } catch {
+                return "Note: The target file exists but its attributes could not be read."
+            }
+        } else {
+            return "Note: The target file does NOT currently exist — this is a new file creation."
         }
     }
 

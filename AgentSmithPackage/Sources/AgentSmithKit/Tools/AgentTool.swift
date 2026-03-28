@@ -108,6 +108,13 @@ public struct ToolContext: Sendable {
     public let memoryStore: MemoryStore
     /// Triggers summarization and embedding of a completed or failed task.
     public let summarizeCompletedTask: @Sendable (UUID) async -> Void
+    /// Merges two related memory texts into a single consolidated memory via LLM.
+    /// Parameters: (existingContent, newContent). Returns merged text, or nil if unavailable.
+    public let mergeMemoryContent: @Sendable (String, String) async -> String?
+    /// Records that a file at the given path was successfully read during this agent session.
+    public let recordFileRead: @Sendable (String) -> Void
+    /// Returns true if the file at the given path was read during this agent session.
+    public let hasFileBeenRead: @Sendable (String) -> Bool
 
     public init(
         agentID: UUID,
@@ -126,7 +133,10 @@ public struct ToolContext: Sendable {
         restartForNewTask: @escaping @Sendable (UUID) async -> Void = { _ in },
         currentResumingTaskID: UUID? = nil,
         memoryStore: MemoryStore,
-        summarizeCompletedTask: @escaping @Sendable (UUID) async -> Void = { _ in }
+        summarizeCompletedTask: @escaping @Sendable (UUID) async -> Void = { _ in },
+        mergeMemoryContent: @escaping @Sendable (String, String) async -> String? = { _, _ in nil },
+        recordFileRead: @escaping @Sendable (String) -> Void = { _ in },
+        hasFileBeenRead: @escaping @Sendable (String) -> Bool = { _ in false }
     ) {
         self.agentID = agentID
         self.agentRole = agentRole
@@ -145,5 +155,8 @@ public struct ToolContext: Sendable {
         self.currentResumingTaskID = currentResumingTaskID
         self.memoryStore = memoryStore
         self.summarizeCompletedTask = summarizeCompletedTask
+        self.mergeMemoryContent = mergeMemoryContent
+        self.recordFileRead = recordFileRead
+        self.hasFileBeenRead = hasFileBeenRead
     }
 }

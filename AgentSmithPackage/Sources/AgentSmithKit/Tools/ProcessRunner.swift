@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-/// Shared process execution logic for ShellTool and BashTool.
+/// Shared process execution logic for BashTool.
 ///
 /// Handles incremental output reading, process group management, and timeouts correctly —
 /// including commands that spawn backgrounded child processes (e.g., `cmd &`).
