@@ -52,7 +52,7 @@ public struct CreateTaskTool: AgentTool {
                     RelevantMemory(content: $0.memory.content, tags: $0.memory.tags, similarity: $0.similarity)
                 }
                 let priorTasks: [RelevantPriorTask]? = results.taskSummaries.isEmpty ? nil : results.taskSummaries.map {
-                    RelevantPriorTask(title: $0.summary.title, summary: $0.summary.summary, similarity: $0.similarity)
+                    RelevantPriorTask(taskID: $0.summary.id, title: $0.summary.title, summary: $0.summary.summary, similarity: $0.similarity)
                 }
                 await context.taskStore.setRelevantContext(
                     id: task.id,

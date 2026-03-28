@@ -36,11 +36,13 @@ public struct RelevantMemory: Codable, Sendable {
 
 /// Lightweight struct for attaching relevant prior task summaries to tasks.
 public struct RelevantPriorTask: Codable, Sendable {
+    public let taskID: UUID?
     public let title: String
     public let summary: String
     public let similarity: Float
 
-    public init(title: String, summary: String, similarity: Float) {
+    public init(taskID: UUID, title: String, summary: String, similarity: Float) {
+        self.taskID = taskID
         self.title = title
         self.summary = summary
         self.similarity = similarity

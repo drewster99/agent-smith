@@ -30,13 +30,14 @@ public enum BrownBehavior {
             FileReadTool(),
             FileWriteTool(),
             SaveMemoryTool(),
-            SearchMemoryTool()
+            SearchMemoryTool(),
+            GetTaskDetailsTool()
         ]
     }
 
     /// Tool names for configuration.
     public static var toolNames: [String] {
-        ["task_acknowledged", "task_update", "task_complete", "reply_to_user", "shell", "bash", "file_read", "file_write", "save_memory", "search_memory"]
+        ["task_acknowledged", "task_update", "task_complete", "reply_to_user", "shell", "bash", "file_read", "file_write", "save_memory", "search_memory", "get_task_details"]
     }
 
     /// System prompt for Brown agents.
