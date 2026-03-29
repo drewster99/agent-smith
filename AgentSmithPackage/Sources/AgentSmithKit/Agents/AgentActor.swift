@@ -1342,6 +1342,15 @@ public actor AgentActor {
         newHistory.append(contentsOf: conversationHistory[keepFromIndex...])
         conversationHistory = newHistory
         lastTurnMessageCount = conversationHistory.count
+
+        let roleName = configuration.role.displayName
+        let channel = toolContext.channel
+        Task.detached {
+            await channel.post(ChannelMessage(
+                sender: .system,
+                content: "Aggressively pruned \(prunedCount) messages for \(roleName) (no running task for rebuild)."
+            ))
+        }
     }
 
     /// Rebuilds Brown's conversation history from the current running task's data.

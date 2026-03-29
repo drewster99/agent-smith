@@ -388,9 +388,21 @@ public actor SecurityEvaluator {
     /// Checks whether the target file of a file_write or file_edit tool call exists,
     /// and returns an informational note string for the evaluation prompt.
     private static func fileExistenceNote(toolParams: String, pathKey: String, toolName: String) -> String? {
-        guard let data = toolParams.data(using: .utf8),
-              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let path = parsed[pathKey] as? String,
+        guard let data = toolParams.data(using: .utf8) else {
+            return nil
+        }
+
+        let parsed: [String: Any]
+        do {
+            guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return nil
+            }
+            parsed = obj
+        } catch {
+            return nil
+        }
+
+        guard let path = parsed[pathKey] as? String,
               path.hasPrefix("/") else {
             return nil
         }

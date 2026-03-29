@@ -99,9 +99,15 @@ public struct GlobTool: AgentTool {
         var matches: [(path: String, modDate: Date)] = []
 
         for fileURL in allURLs {
-            // Only match regular files.
-            guard let resourceValues = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey]),
-                  resourceValues.isRegularFile == true else {
+            // Only match regular files. Skip files whose metadata can't be read
+            // (e.g., permission denied) — these are not actionable glob results.
+            let resourceValues: URLResourceValues
+            do {
+                resourceValues = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey])
+            } catch {
+                continue
+            }
+            guard resourceValues.isRegularFile == true else {
                 continue
             }
 
@@ -186,14 +192,14 @@ public struct GlobTool: AgentTool {
                 result += "[^/]"
                 i = glob.index(after: i)
             } else if c == "{" {
-                // Brace expansion: {a,b,c} → (a|b|c)
-                if let closeIdx = glob[i...].firstIndex(of: "}") {
+                // Brace expansion: {a,b,c} → (a|b|c). Supports nesting via depth tracking.
+                if let closeIdx = Self.findMatchingBrace(in: glob, from: i) {
                     let inner = glob[glob.index(after: i)..<closeIdx]
-                    let alternatives = inner.split(separator: ",").map { Self.globToRegex(String($0)) }
+                    let alternatives = Self.splitBraceAlternatives(inner).map { Self.globToRegex(String($0)) }
                     result += "(\(alternatives.joined(separator: "|")))"
                     i = glob.index(after: closeIdx)
                 } else {
-                    // No closing brace — treat as literal
+                    // No matching closing brace — treat as literal
                     result += "\\{"
                     i = glob.index(after: i)
                 }
@@ -214,5 +220,46 @@ public struct GlobTool: AgentTool {
         }
 
         return result
+    }
+
+    /// Finds the matching `}` for a `{` at `openIdx`, respecting nested braces.
+    /// Returns the index of the matching `}`, or `nil` if unmatched.
+    private static func findMatchingBrace(in str: String, from openIdx: String.Index) -> String.Index? {
+        var depth = 0
+        var idx = openIdx
+        while idx < str.endIndex {
+            if str[idx] == "{" {
+                depth += 1
+            } else if str[idx] == "}" {
+                depth -= 1
+                if depth == 0 {
+                    return idx
+                }
+            }
+            idx = str.index(after: idx)
+        }
+        return nil
+    }
+
+    /// Splits brace content by commas at the top level only (depth 0),
+    /// so `{a,{b,c}}` splits into `["a", "{b,c}"]` rather than `["a", "{b", "c}"]`.
+    private static func splitBraceAlternatives(_ content: Substring) -> [Substring] {
+        var alternatives: [Substring] = []
+        var depth = 0
+        var segmentStart = content.startIndex
+
+        for idx in content.indices {
+            let c = content[idx]
+            if c == "{" {
+                depth += 1
+            } else if c == "}" {
+                depth -= 1
+            } else if c == "," && depth == 0 {
+                alternatives.append(content[segmentStart..<idx])
+                segmentStart = content.index(after: idx)
+            }
+        }
+        alternatives.append(content[segmentStart...])
+        return alternatives
     }
 }

@@ -35,7 +35,7 @@ public struct SaveMemoryTool: AgentTool {
     ]
 
     /// Minimum cosine similarity to consider two memories as candidates for consolidation.
-    private static let consolidationThreshold: Float = 0.70
+    private static let consolidationThreshold: Float = 0.82
 
     public init() {}
 

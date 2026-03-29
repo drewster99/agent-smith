@@ -70,7 +70,7 @@ public struct BashTool: AgentTool {
 
         let result = try await ProcessRunner.run(
             executable: "/bin/bash",
-            arguments: ["-c", command],
+            arguments: ["-l", "-c", command],
             workingDirectory: workingDir,
             timeout: TimeInterval(timeoutSeconds)
         )
