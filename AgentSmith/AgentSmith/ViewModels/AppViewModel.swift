@@ -594,11 +594,16 @@ final class AppViewModel {
 
     // MARK: - Attachments
 
-    /// Processes file URLs from a file picker or drag-and-drop.
+    /// Processes file URLs from a file picker, clipboard paste, or drag-and-drop.
     func addAttachments(from urls: [URL]) {
         for url in urls {
-            guard url.startAccessingSecurityScopedResource() else { continue }
-            defer { url.stopAccessingSecurityScopedResource() }
+            // Security-scoped access is needed for fileImporter URLs (sandboxed).
+            // Clipboard and drag-drop URLs are not security-scoped, so this returns false —
+            // we still proceed and attempt to read.
+            let didAccessScope = url.startAccessingSecurityScopedResource()
+            defer {
+                if didAccessScope { url.stopAccessingSecurityScopedResource() }
+            }
 
             let data: Data
             do {
@@ -622,6 +627,48 @@ final class AppViewModel {
     /// Removes a pending attachment before sending.
     func removePendingAttachment(id: UUID) {
         pendingAttachments.removeAll { $0.id == id }
+    }
+
+    /// Adds an attachment from raw data (e.g. clipboard paste).
+    func addAttachment(data: Data, filename: String, mimeType: String) {
+        let attachment = Attachment(
+            filename: filename,
+            mimeType: mimeType,
+            byteCount: data.count,
+            data: data
+        )
+        pendingAttachments.append(attachment)
+    }
+
+    /// Reads image or file data from the pasteboard and adds as pending attachments.
+    /// Returns `true` if anything was pasted.
+    func pasteFromClipboard() -> Bool {
+        let pasteboard = NSPasteboard.general
+
+        // 1. Try file URLs first (covers copied files from Finder)
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [
+            .urlReadingFileURLsOnly: true
+        ]) as? [URL], !urls.isEmpty {
+            addAttachments(from: urls)
+            return true
+        }
+
+        // 2. Try image data (covers screenshots, copied images)
+        if let tiffData = pasteboard.data(forType: .tiff),
+           let bitmap = NSBitmapImageRep(data: tiffData),
+           let pngData = bitmap.representation(using: .png, properties: [:]) {
+            let timestamp = DateFormatter.localizedString(
+                from: Date(), dateStyle: .none, timeStyle: .medium
+            ).replacingOccurrences(of: ":", with: "-")
+            addAttachment(
+                data: pngData,
+                filename: "Pasted Image \(timestamp).png",
+                mimeType: "image/png"
+            )
+            return true
+        }
+
+        return false
     }
 
     // MARK: - Persistence

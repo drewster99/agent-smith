@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftLLMKit
 import AgentSmithKit
+import UniformTypeIdentifiers
 
 /// Primary app view: sidebar with tasks, detail with channel log and input.
 struct MainView: View {
@@ -8,6 +9,7 @@ struct MainView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var showValidationSheet = false
     @State private var showWelcomeSheet = false
+    @State private var isDropTargeted = false
 
     var body: some View {
         NavigationSplitView {
@@ -66,8 +68,23 @@ struct MainView: View {
                     },
                     onHistoryDown: {
                         viewModel.navigateHistory(.down)
+                    },
+                    onPaste: {
+                        viewModel.pasteFromClipboard()
                     }
                 )
+            }
+            .onDrop(of: [.fileURL, .image], isTargeted: $isDropTargeted) { providers in
+                handleDrop(providers)
+            }
+            .overlay {
+                if isDropTargeted {
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(.blue, lineWidth: 3)
+                        .background(.blue.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .allowsHitTesting(false)
+                }
             }
         }
         .onKeyPress(.escape) {
@@ -190,6 +207,50 @@ struct MainView: View {
         }
     }
 
+    /// Processes dropped items from a drag-and-drop operation.
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        var handled = false
+
+        for provider in providers {
+            // File URLs (covers any file type dragged from Finder)
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                handled = true
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                    guard let data = item as? Data,
+                          let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                    Task { @MainActor in
+                        viewModel.addAttachments(from: [url])
+                    }
+                }
+            }
+            // Raw image data (covers dragging images from browsers, etc.)
+            else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                handled = true
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                    guard let data else { return }
+                    let timestamp = DateFormatter.localizedString(
+                        from: Date(), dateStyle: .none, timeStyle: .medium
+                    ).replacingOccurrences(of: ":", with: "-")
+                    // Convert to PNG for consistency
+                    let pngData: Data
+                    if let bitmap = NSBitmapImageRep(data: data),
+                       let converted = bitmap.representation(using: .png, properties: [:]) {
+                        pngData = converted
+                    } else {
+                        pngData = data
+                    }
+                    Task { @MainActor in
+                        viewModel.addAttachment(
+                            data: pngData,
+                            filename: "Dropped Image \(timestamp).png",
+                            mimeType: "image/png"
+                        )
+                    }
+                }
+            }
+        }
+        return handled
+    }
 }
 
 /// Banner displayed when an agent triggers an emergency abort.

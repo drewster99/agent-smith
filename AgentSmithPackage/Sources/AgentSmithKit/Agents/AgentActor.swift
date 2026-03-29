@@ -69,7 +69,7 @@ public actor AgentActor {
     private var llmTurns: [LLMTurnRecord] = []
     /// Message count at the time of the previous LLM call — used to compute inputDelta.
     private var lastTurnMessageCount: Int = 0
-    private static let maxTurnRecords = 30
+    // No cap — keep all turn records for the session lifetime.
 
     public init(
         id: UUID = UUID(),
@@ -299,9 +299,7 @@ public actor AgentActor {
                     maxOutputTokens: configuration.llmConfig.maxTokens,
                     thinkingBudget: configuration.llmConfig.thinkingBudget
                 ))
-                if llmTurns.count > Self.maxTurnRecords {
-                    llmTurns.removeFirst(llmTurns.count - Self.maxTurnRecords)
-                }
+                // All turn records kept for session lifetime — no pruning.
                 try await handleResponse(response)
             } catch {
                 guard isRunning else { break }

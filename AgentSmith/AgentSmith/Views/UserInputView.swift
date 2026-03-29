@@ -12,6 +12,7 @@ struct UserInputView: View {
     var onRemoveAttachment: (UUID) -> Void
     var onHistoryUp: () -> Bool
     var onHistoryDown: () -> Bool
+    var onPaste: () -> Bool
 
     @State private var showingFilePicker = false
 
@@ -55,6 +56,18 @@ struct UserInputView: View {
                     .onKeyPress(.downArrow) {
                         onHistoryDown() ? .handled : .ignored
                     }
+                    .onKeyPress(characters: .init(charactersIn: "v"), phases: .down, action: { keyPress in
+                        guard keyPress.modifiers == .command else { return .ignored }
+                        // Only intercept if the clipboard has non-text content (images/files).
+                        // Let normal text paste through to the TextField.
+                        let pasteboard = NSPasteboard.general
+                        let hasFiles = pasteboard.canReadObject(forClasses: [NSURL.self], options: [
+                            .urlReadingFileURLsOnly: true
+                        ])
+                        let hasImage = pasteboard.data(forType: .tiff) != nil
+                        guard hasFiles || hasImage else { return .ignored }
+                        return onPaste() ? .handled : .ignored
+                    })
 
                 Button(action: onSend) {
                     Image(systemName: "paperplane.fill")
@@ -106,14 +119,23 @@ private struct PendingAttachmentBar: View {
 }
 
 /// A single removable attachment chip in the pending bar.
+/// Shows a thumbnail preview for image attachments.
 private struct PendingAttachmentChip: View {
     let attachment: Attachment
     let onRemove: () -> Void
 
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: attachment.isImage ? "photo" : "doc")
-                .foregroundStyle(.secondary)
+            if attachment.isImage, let data = attachment.data, let nsImage = NSImage(data: data) {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 28, height: 28)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            } else {
+                Image(systemName: iconName)
+                    .foregroundStyle(.secondary)
+            }
             Text(attachment.filename)
                 .font(.caption)
                 .lineLimit(1)
@@ -130,5 +152,13 @@ private struct PendingAttachmentChip: View {
         .padding(.vertical, 4)
         .background(.quaternary)
         .clipShape(Capsule())
+    }
+
+    private var iconName: String {
+        if attachment.isPDF { return "doc.richtext" }
+        if attachment.mimeType.hasPrefix("text/") { return "doc.text" }
+        if attachment.mimeType.hasPrefix("video/") { return "film" }
+        if attachment.mimeType.hasPrefix("audio/") { return "waveform" }
+        return "doc"
     }
 }
