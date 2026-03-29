@@ -10,6 +10,8 @@ struct ChannelLogView: View {
 
     @State private var isAtBottom = true
     @State private var autoScrollEnabled = true
+    /// The attachment currently shown in the full-screen image viewer, managed by the parent.
+    @Binding var selectedImageAttachment: Attachment?
 
     private struct ScrollMetrics: Equatable {
         var isNearBottom: Bool
@@ -82,7 +84,11 @@ struct ChannelLogView: View {
                                 )
                                     .id(message.id)
                             } else {
-                                MessageRow(message: message, allMessages: messages)
+                                MessageRow(
+                                    message: message,
+                                    allMessages: messages,
+                                    selectedImageAttachment: $selectedImageAttachment
+                                )
                                     .id(message.id)
                             }
                         }
@@ -159,6 +165,7 @@ struct ChannelLogView: View {
 private struct MessageRow: View {
     let message: ChannelMessage
     let allMessages: [ChannelMessage]
+    @Binding var selectedImageAttachment: Attachment?
 
     @State private var isExpanded = false
     @State private var isHovering = false
@@ -322,8 +329,17 @@ private struct MessageRow: View {
             }
 
             if !message.attachments.isEmpty {
+                let isUserMessage = message.sender == .user
                 ForEach(message.attachments) { attachment in
-                    AttachmentView(attachment: attachment)
+                    AttachmentView(
+                        attachment: attachment,
+                        tier: isUserMessage ? .small : .medium,
+                        onTapImage: {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                selectedImageAttachment = attachment
+                            }
+                        }
+                    )
                 }
             }
         }
@@ -921,42 +937,36 @@ private struct MemoryBanner: View {
     }()
 }
 
-/// Displays an attachment inline: images as thumbnails, other files as badges.
+/// Displays an attachment inline: images as cached thumbnails, other files as badges.
+/// Uses `ImageCache` for efficient tiered rendering. Tapping an image invokes `onTapImage`.
 private struct AttachmentView: View {
     let attachment: Attachment
-
-    @State private var imageData: Data?
+    let tier: ImageCache.Tier
+    var onTapImage: (() -> Void)?
 
     var body: some View {
-        Group {
-            if attachment.isImage {
-                imageView
-            } else {
-                fileBadge
-            }
-        }
-        .task {
-            // Load image data on demand if not in memory
-            if attachment.isImage, attachment.data == nil {
-                imageData = Attachment.loadPersistedData(
-                    id: attachment.id,
-                    filename: attachment.filename
-                )
-            } else {
-                imageData = attachment.data
-            }
+        if attachment.isImage {
+            imageView
+        } else {
+            fileBadge
         }
     }
 
     private var imageView: some View {
         Group {
-            if let data = imageData ?? attachment.data,
-               let nsImage = NSImage(data: data) {
+            if let nsImage = ImageCache.shared.image(for: attachment, tier: tier) {
                 Image(nsImage: nsImage)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: 400, maxHeight: 300)
+                    .frame(maxWidth: tier == .small ? 200 : 400,
+                           maxHeight: tier == .small ? 150 : 300)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .contentShape(Rectangle())
+                    .onTapGesture { onTapImage?() }
+                    .onHover { hovering in
+                        if hovering { NSCursor.pointingHand.push() }
+                        else { NSCursor.pop() }
+                    }
             } else {
                 fileBadge
             }
@@ -988,6 +998,51 @@ private struct AttachmentView: View {
         if attachment.mimeType.hasPrefix("video/") { return "film" }
         if attachment.mimeType.hasPrefix("audio/") { return "waveform" }
         return "doc"
+    }
+}
+
+/// Full-screen overlay that displays an image at its original resolution.
+/// Dismisses on backdrop click or the close button. Escape is handled by the parent
+/// view via a @FocusState so it intercepts before MainView's stop-agents handler.
+struct ImageLightbox: View {
+    let attachment: Attachment
+    let onDismiss: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.85)
+                .ignoresSafeArea()
+                .onTapGesture { onDismiss() }
+
+            if let nsImage = ImageCache.shared.image(for: attachment, tier: .full) {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .padding(40)
+            } else {
+                ProgressView()
+            }
+
+            VStack {
+                HStack {
+                    Spacer()
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title)
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(16)
+                }
+                Spacer()
+                Text(attachment.filename)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .padding(.bottom, 16)
+            }
+        }
+        .transition(.opacity)
     }
 }
 

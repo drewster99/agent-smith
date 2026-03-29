@@ -657,18 +657,22 @@ final class AppViewModel {
         if let tiffData = pasteboard.data(forType: .tiff),
            let bitmap = NSBitmapImageRep(data: tiffData),
            let pngData = bitmap.representation(using: .png, properties: [:]) {
-            let timestamp = DateFormatter.localizedString(
-                from: Date(), dateStyle: .none, timeStyle: .medium
-            ).replacingOccurrences(of: ":", with: "-")
             addAttachment(
                 data: pngData,
-                filename: "Pasted Image \(timestamp).png",
+                filename: "Pasted Image \(Self.attachmentTimestamp()).png",
                 mimeType: "image/png"
             )
             return true
         }
 
         return false
+    }
+
+    /// Generates a filesystem-safe timestamp string for auto-named attachments.
+    static func attachmentTimestamp() -> String {
+        DateFormatter.localizedString(
+            from: Date(), dateStyle: .none, timeStyle: .medium
+        ).replacingOccurrences(of: ":", with: "-")
     }
 
     // MARK: - Persistence

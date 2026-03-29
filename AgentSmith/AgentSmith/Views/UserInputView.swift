@@ -119,18 +119,19 @@ private struct PendingAttachmentBar: View {
 }
 
 /// A single removable attachment chip in the pending bar.
-/// Shows a thumbnail preview for image attachments.
+/// Shows an aspect-fit thumbnail on a square matte for image attachments.
 private struct PendingAttachmentChip: View {
     let attachment: Attachment
     let onRemove: () -> Void
 
     var body: some View {
         HStack(spacing: 4) {
-            if attachment.isImage, let data = attachment.data, let nsImage = NSImage(data: data) {
+            if attachment.isImage, let nsImage = ImageCache.shared.image(for: attachment, tier: .chip) {
                 Image(nsImage: nsImage)
                     .resizable()
-                    .aspectRatio(contentMode: .fill)
+                    .aspectRatio(contentMode: .fit)
                     .frame(width: 28, height: 28)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(.quaternary))
                     .clipShape(RoundedRectangle(cornerRadius: 4))
             } else {
                 Image(systemName: iconName)

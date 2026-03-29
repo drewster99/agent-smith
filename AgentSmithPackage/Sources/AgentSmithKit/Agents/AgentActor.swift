@@ -299,7 +299,6 @@ public actor AgentActor {
                     maxOutputTokens: configuration.llmConfig.maxTokens,
                     thinkingBudget: configuration.llmConfig.thinkingBudget
                 ))
-                // All turn records kept for session lifetime — no pruning.
                 try await handleResponse(response)
             } catch {
                 guard isRunning else { break }

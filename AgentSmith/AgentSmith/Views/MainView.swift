@@ -10,6 +10,9 @@ struct MainView: View {
     @State private var showValidationSheet = false
     @State private var showWelcomeSheet = false
     @State private var isDropTargeted = false
+    /// The attachment currently shown in the full-screen image viewer.
+    @State private var selectedImageAttachment: Attachment?
+    @FocusState private var isLightboxFocused: Bool
 
     var body: some View {
         NavigationSplitView {
@@ -45,7 +48,8 @@ struct MainView: View {
                     messages: viewModel.messages,
                     persistedHistoryCount: viewModel.persistedHistoryCount,
                     hasRestoredHistory: viewModel.hasRestoredHistory,
-                    onRestoreHistory: { viewModel.restoreHistory() }
+                    onRestoreHistory: { viewModel.restoreHistory() },
+                    selectedImageAttachment: $selectedImageAttachment
                 )
 
                 Divider()
@@ -84,6 +88,25 @@ struct MainView: View {
                         .background(.blue.opacity(0.08))
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                         .allowsHitTesting(false)
+                }
+            }
+            .overlay {
+                if let attachment = selectedImageAttachment {
+                    ImageLightbox(attachment: attachment, onDismiss: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            selectedImageAttachment = nil
+                        }
+                    })
+                    .focusable()
+                    .focusEffectDisabled()
+                    .focused($isLightboxFocused)
+                    .onAppear { isLightboxFocused = true }
+                    .onKeyPress(.escape) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            selectedImageAttachment = nil
+                        }
+                        return .handled
+                    }
                 }
             }
         }
@@ -215,9 +238,16 @@ struct MainView: View {
             // File URLs (covers any file type dragged from Finder)
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 handled = true
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, error in
+                    if let error {
+                        print("[AgentSmith] Drop: failed to load file URL: \(error)")
+                        return
+                    }
                     guard let data = item as? Data,
-                          let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                          let url = URL(dataRepresentation: data, relativeTo: nil) else {
+                        print("[AgentSmith] Drop: could not decode file URL from dropped item")
+                        return
+                    }
                     Task { @MainActor in
                         viewModel.addAttachments(from: [url])
                     }
@@ -226,11 +256,15 @@ struct MainView: View {
             // Raw image data (covers dragging images from browsers, etc.)
             else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
                 handled = true
-                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
-                    guard let data else { return }
-                    let timestamp = DateFormatter.localizedString(
-                        from: Date(), dateStyle: .none, timeStyle: .medium
-                    ).replacingOccurrences(of: ":", with: "-")
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, error in
+                    if let error {
+                        print("[AgentSmith] Drop: failed to load image data: \(error)")
+                        return
+                    }
+                    guard let data else {
+                        print("[AgentSmith] Drop: image provider returned nil data")
+                        return
+                    }
                     // Convert to PNG for consistency
                     let pngData: Data
                     if let bitmap = NSBitmapImageRep(data: data),
@@ -242,7 +276,7 @@ struct MainView: View {
                     Task { @MainActor in
                         viewModel.addAttachment(
                             data: pngData,
-                            filename: "Dropped Image \(timestamp).png",
+                            filename: "Dropped Image \(AppViewModel.attachmentTimestamp()).png",
                             mimeType: "image/png"
                         )
                     }
