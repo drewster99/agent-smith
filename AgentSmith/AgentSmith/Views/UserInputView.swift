@@ -124,15 +124,22 @@ private struct PendingAttachmentChip: View {
     let attachment: Attachment
     let onRemove: () -> Void
 
+    @State private var chipImage: NSImage?
+
     var body: some View {
         HStack(spacing: 4) {
-            if attachment.isImage, let nsImage = ImageCache.shared.image(for: attachment, tier: .chip) {
+            if attachment.isImage, let nsImage = chipImage
+                ?? ImageCache.shared.cachedImage(for: attachment, tier: .chip) {
                 Image(nsImage: nsImage)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 28, height: 28)
                     .background(RoundedRectangle(cornerRadius: 4).fill(.quaternary))
                     .clipShape(RoundedRectangle(cornerRadius: 4))
+            } else if attachment.isImage {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 28, height: 28)
             } else {
                 Image(systemName: iconName)
                     .foregroundStyle(.secondary)
@@ -153,6 +160,10 @@ private struct PendingAttachmentChip: View {
         .padding(.vertical, 4)
         .background(.quaternary)
         .clipShape(Capsule())
+        .task(id: attachment.id) {
+            guard attachment.isImage else { return }
+            chipImage = await ImageCache.shared.image(for: attachment, tier: .chip)
+        }
     }
 
     private var iconName: String {

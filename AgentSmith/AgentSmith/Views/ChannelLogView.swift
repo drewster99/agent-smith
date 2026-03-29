@@ -170,6 +170,11 @@ private struct MessageRow: View {
     @State private var isExpanded = false
     @State private var isHovering = false
 
+    /// Image tier for this message's attachments — user messages get small, others get medium.
+    private var attachmentTier: ImageCache.Tier {
+        message.sender == .user ? .small : .medium
+    }
+
     private var senderColor: Color {
         AppColors.color(for: message.sender)
     }
@@ -329,11 +334,10 @@ private struct MessageRow: View {
             }
 
             if !message.attachments.isEmpty {
-                let isUserMessage = message.sender == .user
                 ForEach(message.attachments) { attachment in
                     AttachmentView(
                         attachment: attachment,
-                        tier: isUserMessage ? .small : .medium,
+                        tier: attachmentTier,
                         onTapImage: {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 selectedImageAttachment = attachment
@@ -944,9 +948,14 @@ private struct AttachmentView: View {
     let tier: ImageCache.Tier
     var onTapImage: (() -> Void)?
 
+    @State private var loadedImage: NSImage?
+
     var body: some View {
         if attachment.isImage {
             imageView
+                .task(id: attachment.id) {
+                    loadedImage = await ImageCache.shared.image(for: attachment, tier: tier)
+                }
         } else {
             fileBadge
         }
@@ -954,7 +963,8 @@ private struct AttachmentView: View {
 
     private var imageView: some View {
         Group {
-            if let nsImage = ImageCache.shared.image(for: attachment, tier: tier) {
+            if let nsImage = loadedImage
+                ?? ImageCache.shared.cachedImage(for: attachment, tier: tier) {
                 Image(nsImage: nsImage)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -964,11 +974,12 @@ private struct AttachmentView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { onTapImage?() }
                     .onHover { hovering in
-                        if hovering { NSCursor.pointingHand.push() }
-                        else { NSCursor.pop() }
+                        if hovering { NSCursor.pointingHand.set() }
+                        else { NSCursor.arrow.set() }
                     }
             } else {
-                fileBadge
+                ProgressView()
+                    .frame(width: 60, height: 60)
             }
         }
     }
@@ -1008,19 +1019,32 @@ struct ImageLightbox: View {
     let attachment: Attachment
     let onDismiss: () -> Void
 
+    @State private var fullImage: NSImage?
+    @State private var loadFailed = false
+
     var body: some View {
         ZStack {
             Color.black.opacity(0.85)
                 .ignoresSafeArea()
                 .onTapGesture { onDismiss() }
 
-            if let nsImage = ImageCache.shared.image(for: attachment, tier: .full) {
+            if let nsImage = fullImage {
                 Image(nsImage: nsImage)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .padding(40)
+            } else if loadFailed {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.white.opacity(0.6))
+                    Text("Image could not be loaded")
+                        .font(.callout)
+                        .foregroundStyle(.white.opacity(0.6))
+                }
             } else {
                 ProgressView()
+                    .controlSize(.large)
             }
 
             VStack {
@@ -1043,6 +1067,14 @@ struct ImageLightbox: View {
             }
         }
         .transition(.opacity)
+        .task {
+            let image = await ImageCache.shared.image(for: attachment, tier: .full)
+            if let image {
+                fullImage = image
+            } else {
+                loadFailed = true
+            }
+        }
     }
 }
 

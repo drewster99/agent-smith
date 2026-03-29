@@ -3,14 +3,15 @@ import ImageIO
 import AgentSmithKit
 
 /// Tiered image cache with efficient thumbnail generation via ImageIO.
-/// RAM cache for all tiers; disk cache for chip and small thumbnails.
+/// RAM cache for all tiers; disk cache (JPEG) for chip and small thumbnails
+/// stored in the system Caches directory so the OS can reclaim space.
 @MainActor
 final class ImageCache {
     /// Shared singleton used by all views.
     static let shared = ImageCache()
 
     /// The maximum pixel dimension for each display tier.
-    enum Tier: String, CaseIterable {
+    enum Tier: String, CaseIterable, Sendable {
         case chip   = "chip"    // 32pt square matte in the input bar
         case small  = "small"   // ~120pt for user-sent message images
         case medium = "medium"  // ~400pt for received message images
@@ -36,16 +37,19 @@ final class ImageCache {
 
     private let thumbnailDirectory: URL
 
+    /// Maximum total size of the disk thumbnail cache (100 MB).
+    private nonisolated static let maxDiskCacheBytes: UInt64 = 100 * 1024 * 1024
+
     // MARK: - Init
 
     private init() {
-        guard let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
+        guard let cachesDir = FileManager.default.urls(
+            for: .cachesDirectory,
             in: .userDomainMask
         ).first else {
-            fatalError("Application Support directory unavailable")
+            fatalError("Caches directory unavailable")
         }
-        thumbnailDirectory = appSupport
+        thumbnailDirectory = cachesDir
             .appendingPathComponent("AgentSmith", isDirectory: true)
             .appendingPathComponent("thumbnails", isDirectory: true)
         do {
@@ -56,70 +60,95 @@ final class ImageCache {
         } catch {
             print("[AgentSmith] Failed to create thumbnail cache directory: \(error)")
         }
+
+        // Evict oldest thumbnails if the cache exceeds the size limit.
+        Task.detached(priority: .utility) { [thumbnailDirectory] in
+            Self.evictIfNeeded(directory: thumbnailDirectory)
+        }
     }
 
     // MARK: - Public API
 
-    /// Returns a cached or freshly generated image for the given attachment and tier.
-    /// Returns `nil` only when no image data is available.
-    func image(for attachment: Attachment, tier: Tier) -> NSImage? {
+    /// Returns an image for the given attachment and tier.
+    /// Checks the RAM cache synchronously first; on miss, loads from disk or
+    /// generates a thumbnail off the main thread.
+    func image(for attachment: Attachment, tier: Tier) async -> NSImage? {
         let cacheKey = NSString(string: "\(attachment.id.uuidString)-\(tier.rawValue)")
 
-        // 1. RAM cache hit
+        // 1. RAM cache hit (synchronous, no I/O)
         if let cached = ramCache.object(forKey: cacheKey) {
             return cached
         }
 
-        // 2. Disk cache hit (chip and small only)
-        if tier != .full, tier != .medium {
-            if let diskImage = loadFromDisk(attachmentID: attachment.id, tier: tier) {
-                ramCache.setObject(diskImage, forKey: cacheKey)
+        // 2. Heavy work off main actor: disk lookup, source read, thumbnail gen
+        let maxDimension = tier.maxPixelDimension
+        let diskURL = (tier == .chip || tier == .small)
+            ? diskCacheURL(attachmentID: attachment.id, tier: tier)
+            : nil
+        let attachmentData = attachment.data
+        let attachmentID = attachment.id
+        let attachmentFilename = attachment.filename
+        let isFull = tier == .full
+
+        let result: NSImage? = await Task.detached(priority: .userInitiated) {
+            // Disk cache hit (chip and small only)
+            if let url = diskURL,
+               FileManager.default.fileExists(atPath: url.path),
+               let diskImage = NSImage(contentsOf: url) {
                 return diskImage
             }
-        }
 
-        // 3. Generate from source data
-        guard let sourceData = attachment.data
-                ?? Attachment.loadPersistedData(id: attachment.id, filename: attachment.filename)
-        else {
-            return nil
-        }
+            // Load source data
+            guard let sourceData = attachmentData
+                    ?? Attachment.loadPersistedData(id: attachmentID, filename: attachmentFilename)
+            else {
+                return nil
+            }
 
-        let image: NSImage
-        if tier == .full {
-            guard let nsImage = NSImage(data: sourceData) else { return nil }
-            image = nsImage
-        } else {
-            guard let thumbnail = generateThumbnail(from: sourceData, tier: tier) else { return nil }
-            image = thumbnail
-        }
+            if isFull {
+                return NSImage(data: sourceData)
+            } else {
+                return Self.generateThumbnail(from: sourceData, maxDimension: maxDimension)
+            }
+        }.value
+
+        guard let image = result else { return nil }
 
         ramCache.setObject(image, forKey: cacheKey)
 
-        // 4. Persist chip and small to disk in the background
-        if tier == .chip || tier == .small {
-            let diskURL = diskCacheURL(attachmentID: attachment.id, tier: tier)
+        // 3. Persist chip and small to disk in the background
+        if let url = diskURL {
             Task.detached(priority: .utility) {
-                Self.writeToDisk(image: image, url: diskURL)
+                Self.writeToDisk(image: image, url: url)
             }
         }
 
         return image
     }
 
+    /// Returns the image only if it is already in the RAM cache (no I/O).
+    func cachedImage(for attachment: Attachment, tier: Tier) -> NSImage? {
+        let cacheKey = NSString(string: "\(attachment.id.uuidString)-\(tier.rawValue)")
+        return ramCache.object(forKey: cacheKey)
+    }
+
     /// Pre-warms the cache for a set of attachments at a given tier.
-    /// Call from `.task` on a container view for smooth scrolling.
-    func preload(_ attachments: [Attachment], tier: Tier) {
+    /// Yields between items so the UI remains responsive.
+    func preload(_ attachments: [Attachment], tier: Tier) async {
         for attachment in attachments where attachment.isImage {
-            _ = image(for: attachment, tier: tier)
+            _ = await image(for: attachment, tier: tier)
+            await Task.yield()
         }
     }
 
     // MARK: - Thumbnail generation via ImageIO
 
     /// Efficiently generates a downsampled thumbnail without decoding the full image.
-    private func generateThumbnail(from data: Data, tier: Tier) -> NSImage? {
-        let maxDimension = tier.maxPixelDimension
+    /// This method is nonisolated so it can run on a background thread.
+    private nonisolated static func generateThumbnail(
+        from data: Data,
+        maxDimension: CGFloat
+    ) -> NSImage? {
         guard maxDimension > 0 else { return nil }
 
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
@@ -143,24 +172,74 @@ final class ImageCache {
     // MARK: - Disk persistence
 
     private func diskCacheURL(attachmentID: UUID, tier: Tier) -> URL {
-        thumbnailDirectory.appendingPathComponent("\(attachmentID.uuidString)-\(tier.rawValue).png")
+        thumbnailDirectory.appendingPathComponent("\(attachmentID.uuidString)-\(tier.rawValue).jpg")
     }
 
-    private func loadFromDisk(attachmentID: UUID, tier: Tier) -> NSImage? {
-        let url = diskCacheURL(attachmentID: attachmentID, tier: tier)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return NSImage(contentsOf: url)
-    }
-
+    /// Writes a thumbnail to disk as JPEG (much smaller than PNG for photographic content).
     private nonisolated static func writeToDisk(image: NSImage, url: URL) {
         guard let tiffData = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiffData),
-              let pngData = bitmap.representation(using: .png, properties: [:])
+              let jpegData = bitmap.representation(
+                  using: .jpeg,
+                  properties: [.compressionFactor: 0.8]
+              )
         else { return }
         do {
-            try pngData.write(to: url, options: .atomic)
+            try jpegData.write(to: url, options: .atomic)
         } catch {
             print("[AgentSmith] Failed to write thumbnail to disk: \(error)")
+        }
+    }
+
+    // MARK: - Cache eviction
+
+    /// Deletes the oldest thumbnails until total size is under `maxDiskCacheBytes`.
+    private nonisolated static func evictIfNeeded(directory: URL) {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+        ) else { return }
+
+        struct CacheEntry {
+            let url: URL
+            let size: UInt64
+            let modified: Date
+        }
+
+        var entries: [CacheEntry] = []
+        var totalSize: UInt64 = 0
+
+        for case let fileURL as URL in enumerator {
+            let values: URLResourceValues
+            do {
+                values = try fileURL.resourceValues(
+                    forKeys: [.fileSizeKey, .contentModificationDateKey]
+                )
+            } catch {
+                print("[AgentSmith] Failed to read cache entry metadata: \(error)")
+                continue
+            }
+            let size = UInt64(values.fileSize ?? 0)
+            let modified = values.contentModificationDate ?? .distantPast
+            entries.append(CacheEntry(url: fileURL, size: size, modified: modified))
+            totalSize += size
+        }
+
+        guard totalSize > maxDiskCacheBytes else { return }
+
+        // Sort oldest first
+        entries.sort { $0.modified < $1.modified }
+
+        for entry in entries {
+            guard totalSize > maxDiskCacheBytes else { break }
+            do {
+                try fm.removeItem(at: entry.url)
+                totalSize -= entry.size
+            } catch {
+                print("[AgentSmith] Failed to evict cached thumbnail: \(error)")
+            }
         }
     }
 }

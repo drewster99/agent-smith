@@ -669,11 +669,17 @@ final class AppViewModel {
     }
 
     /// Generates a filesystem-safe timestamp string for auto-named attachments.
+    /// Uses a fixed POSIX locale so output is deterministic regardless of user settings.
     static func attachmentTimestamp() -> String {
-        DateFormatter.localizedString(
-            from: Date(), dateStyle: .none, timeStyle: .medium
-        ).replacingOccurrences(of: ":", with: "-")
+        attachmentTimestampFormatter.string(from: Date())
     }
+
+    private static let attachmentTimestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HHmmss"
+        return f
+    }()
 
     // MARK: - Persistence
 
