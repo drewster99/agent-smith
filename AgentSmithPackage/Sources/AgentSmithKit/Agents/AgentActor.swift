@@ -240,7 +240,7 @@ public actor AgentActor {
         while isRunning, !Task.isCancelled {
             drainPendingMessages()
             checkScheduledWake()
-            pruneHistoryIfNeeded()
+            await pruneHistoryIfNeeded()
 
             guard hasUnprocessedInput else {
                 await idleWait()
@@ -1190,7 +1190,14 @@ public actor AgentActor {
     ///
     /// The available input budget is `contextWindowSize - maxTokens` (the output reservation).
     /// Pruning triggers at 80% of that budget to leave headroom for estimation inaccuracy.
-    private func pruneHistoryIfNeeded() {
+    ///
+    /// **Brown** uses task-state rebuild: replaces the entire conversation with a fresh task
+    /// instruction synthesized from the task's current state (description, progress updates,
+    /// memories, prior tasks) plus the last complete tool call/result exchange for continuity.
+    /// This avoids the fragile tool-pair stitching problem and preserves all meaningful context.
+    ///
+    /// **Non-Brown agents** use a sliding-window prune that keeps ~35% of recent messages.
+    private func pruneHistoryIfNeeded() async {
         // ~3 characters per token as a conservative estimate.
         // Include tool definitions and per-turn suffix overhead (not stored in history
         // but sent with every API call and counted against the context window).
@@ -1209,7 +1216,22 @@ public actor AgentActor {
 
         guard estimatedTokens > pruneThreshold else { return }
 
-        // Keep enough recent messages to fill ~35% of input budget
+        if configuration.role == .brown {
+            // Brown rebuilds from task state — clean, no tool-pair stitching issues.
+            let rebuilt = await rebuildContextFromTask()
+            if !rebuilt {
+                // No running task — fall back to aggressive prune as a last resort.
+                forceAggressivePrune()
+            }
+            return
+        }
+
+        // Non-Brown sliding-window prune (Smith doesn't use tool calls the same way).
+        pruneNonBrownHistory(inputBudget: inputBudget)
+    }
+
+    /// Sliding-window prune for non-Brown agents. Keeps ~35% of recent messages.
+    private func pruneNonBrownHistory(inputBudget: Int) {
         let targetTokens = inputBudget * 7 / 20
         var keptTokens = 0
         var keepFromIndex = conversationHistory.count
@@ -1223,7 +1245,7 @@ public actor AgentActor {
             keepFromIndex = i
         }
 
-        // If we couldn't fit anything, still keep the most recent message
+        // If we couldn't fit anything, still keep the most recent message.
         if keepFromIndex >= conversationHistory.count {
             keepFromIndex = conversationHistory.count - 1
         }
@@ -1234,7 +1256,7 @@ public actor AgentActor {
             keepFromIndex = max(2, conversationHistory.count / 2)
         }
 
-        // Don't split tool call/result pairs — back up past any orphaned tool results
+        // Don't split tool call/result pairs — back up past any orphaned tool results.
         while keepFromIndex > 1, conversationHistory[keepFromIndex].role == .tool {
             keepFromIndex -= 1
         }
@@ -1246,26 +1268,18 @@ public actor AgentActor {
             keepFromIndex = 2
         }
 
-        // Brown retains its system prompt plus the initial task instruction(s) so it never
-        // forgets what it was asked to do, even after many tool call rounds cause pruning.
-        let retainHead = configuration.role == .brown ? min(3, conversationHistory.count) : 1
-        let tailStart = max(keepFromIndex, retainHead)
-        let prunedCount = tailStart - retainHead
+        let prunedCount = keepFromIndex - 1
         guard prunedCount > 0 else { return }
 
-        var newHistory = Array(conversationHistory.prefix(retainHead))
+        var newHistory = [conversationHistory[0]]  // System prompt
         newHistory.append(LLMMessage(
             role: .user,
             text: "[System: \(prunedCount) earlier messages were pruned to stay within context limits. Continue from the recent context below.]"
         ))
-        newHistory.append(contentsOf: conversationHistory[tailStart...])
+        newHistory.append(contentsOf: conversationHistory[keepFromIndex...])
         conversationHistory = newHistory
-        // After pruning, reset the turn baseline so the next turn's delta doesn't
-        // use a stale index that would be out of bounds.
         lastTurnMessageCount = conversationHistory.count
 
-        // Post a notification about pruning. channel.post doesn't throw,
-        // so this detached Task won't eat errors.
         let roleName = configuration.role.displayName
         let channel = toolContext.channel
         Task.detached {
@@ -1336,9 +1350,11 @@ public actor AgentActor {
     /// 1. The original system prompt
     /// 2. A synthesized task instruction built from the task's current state (title, description,
     ///    all progress updates, relevant memories/prior tasks)
+    /// 3. The last complete assistant + tool-result exchange from the old history (for continuity)
     ///
     /// This is far more efficient than pruning because task updates are a compressed log
     /// of accomplishments (~1 line each) vs the verbose tool call/result pairs they replaced.
+    /// It also eliminates tool-pair stitching bugs that can cause API errors.
     ///
     /// - Returns: `true` if a running task was found and context was rebuilt; `false` otherwise.
     private func rebuildContextFromTask() async -> Bool {
@@ -1347,8 +1363,8 @@ public actor AgentActor {
             return false
         }
 
-        // Capture a brief hint about the last action before clearing history.
-        let lastActionHint = lastActionSummary()
+        // Extract the last complete tool exchange before clearing history.
+        let lastExchange = extractLastToolExchange()
 
         // Post a task update so the rebuild is visible in the task's progress log.
         await toolContext.taskStore.addUpdate(
@@ -1386,10 +1402,6 @@ public actor AgentActor {
             parts.append("Last known working state:\n\(brownContext)")
         }
 
-        if let hint = lastActionHint {
-            parts.append("Your last action before this context reset: \(hint)")
-        }
-
         parts.append("""
             Your conversation history was cleared because it exceeded the model's context window. \
             The task progress above reflects your work so far. Continue working on this task from where you left off. \
@@ -1402,34 +1414,76 @@ public actor AgentActor {
             conversationHistory[0],  // System prompt
             LLMMessage(role: .user, text: instruction)
         ]
+
+        // Append the last complete tool exchange so Brown has immediate continuity
+        // with what it just did. This is always a valid sequence: assistant (with toolCalls)
+        // followed by all its matching tool result messages.
+        //
+        // Guard against infinite rebuild loops: if the base history plus the last exchange
+        // would still exceed the prune threshold, drop the exchange. The task's progress
+        // updates already capture what was accomplished.
+        if !lastExchange.isEmpty {
+            let contextLimit = configuration.llmConfig.contextWindowSize
+            let inputBudget = max(contextLimit / 4, contextLimit - configuration.llmConfig.maxTokens)
+            let pruneThreshold = inputBudget * 4 / 5
+
+            let baseChars = conversationHistory.reduce(0) { $0 + $1.estimatedCharacterCount }
+            let exchangeChars = lastExchange.reduce(0) { $0 + $1.estimatedCharacterCount }
+            let estimatedTokens = (baseChars + exchangeChars + apiOverheadChars) / 3
+
+            if estimatedTokens <= pruneThreshold {
+                conversationHistory.append(contentsOf: lastExchange)
+            }
+        }
+
         lastTurnMessageCount = conversationHistory.count
         llmTurns.removeAll()
         hasUnprocessedInput = true
 
+        let channel = toolContext.channel
+        let prunedLabel = configuration.role.displayName
+        Task.detached {
+            await channel.post(ChannelMessage(
+                sender: .system,
+                content: "Context rebuilt for \(prunedLabel) from task state."
+            ))
+        }
+
         return true
     }
 
-    /// Returns a brief summary of the last action in the conversation history, if any.
-    /// Only captures tool call names (not arguments/results) to keep it compact.
-    private func lastActionSummary() -> String? {
-        // Walk backward to find the last assistant message with tool calls.
-        for message in conversationHistory.reversed() {
-            guard message.role == .assistant else { continue }
-            switch message.content {
-            case .toolCalls(let calls):
-                let names = calls.map(\.name).joined(separator: ", ")
-                return "called tool(s): \(names)"
-            case .mixed(let text, let calls):
-                let names = calls.map(\.name).joined(separator: ", ")
-                let preview = String(text.prefix(100))
-                return "said \"\(preview)\" and called tool(s): \(names)"
-            case .text(let text):
-                return "said: \"\(String(text.prefix(120)))\""
+    /// Extracts the last complete assistant + tool-result exchange from conversation history.
+    ///
+    /// Walks backward to find the last assistant message that contains tool calls, then
+    /// collects all consecutive `.tool` result messages that follow it. Returns the
+    /// complete sequence (assistant + tool results) or an empty array if none found.
+    private func extractLastToolExchange() -> [LLMMessage] {
+        // Find the last assistant message with tool calls.
+        var assistantIndex: Int?
+        for i in stride(from: conversationHistory.count - 1, through: 0, by: -1) {
+            let msg = conversationHistory[i]
+            guard msg.role == .assistant else { continue }
+            switch msg.content {
+            case .toolCalls, .mixed:
+                assistantIndex = i
             default:
                 continue
             }
+            break
         }
-        return nil
+
+        guard let aIdx = assistantIndex else { return [] }
+
+        // Collect the assistant message and all consecutive tool results after it.
+        var exchange = [conversationHistory[aIdx]]
+        var nextIdx = aIdx + 1
+        while nextIdx < conversationHistory.count, conversationHistory[nextIdx].role == .tool {
+            exchange.append(conversationHistory[nextIdx])
+            nextIdx += 1
+        }
+
+        // Only return if we have at least one tool result (a complete pair).
+        return exchange.count >= 2 ? exchange : []
     }
 
     /// Logs HTTP 400 errors that were NOT classified as context overflow, so we can
