@@ -164,6 +164,15 @@ final class AppViewModel {
             }
         }
 
+        // Prune stale assignments that reference configurations that no longer exist.
+        let validConfigIDs = Set(llmKit.configurations.map(\.id))
+        for (role, configID) in agentAssignments {
+            if !validConfigIDs.contains(configID) {
+                agentAssignments[role] = nil
+                print("[AgentSmith] Cleared stale agent assignment for \(role.rawValue) → \(configID)")
+            }
+        }
+
         do {
             let savedMessages = try await persistenceManager.loadChannelLog()
             allPersistedMessages = savedMessages

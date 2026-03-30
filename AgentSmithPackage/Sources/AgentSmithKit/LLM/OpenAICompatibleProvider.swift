@@ -30,6 +30,9 @@ public struct OpenAICompatibleProvider: LLMProvider {
         if config.providerType == .xAI {
             request.setValue(conversationID, forHTTPHeaderField: "x-grok-conv-id")
         }
+        if config.providerType == .zAI {
+            request.setValue("en-US,en", forHTTPHeaderField: "Accept-Language")
+        }
 
         let body = buildRequestBody(messages: messages, tools: tools)
         let requestData = try JSONSerialization.data(withJSONObject: body)
@@ -157,12 +160,19 @@ public struct OpenAICompatibleProvider: LLMProvider {
     }
 
     private func parseResponse(data: Data) throws -> LLMResponse {
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            let preview = String(data: data.prefix(500), encoding: .utf8) ?? "(non-utf8, \(data.count) bytes)"
+            logger.error("Response is not a JSON object: \(preview, privacy: .public)")
+            throw LLMProviderError.malformedResponse(detail: "not a JSON object: \(preview)")
+        }
+        guard let choices = json["choices"] as? [[String: Any]],
               let choice = choices.first,
               let message = choice["message"] as? [String: Any]
         else {
-            throw LLMProviderError.malformedResponse
+            let keys = json.keys.sorted().joined(separator: ", ")
+            let preview = String(data: data.prefix(500), encoding: .utf8) ?? "(\(data.count) bytes)"
+            logger.error("Missing choices[0].message in response. Keys: \(keys, privacy: .public) Body: \(preview, privacy: .public)")
+            throw LLMProviderError.malformedResponse(detail: "missing choices[0].message, keys: [\(keys)], body: \(preview)")
         }
 
         let text = message["content"] as? String
@@ -210,7 +220,7 @@ public struct OpenAICompatibleProvider: LLMProvider {
 public enum LLMProviderError: Error, LocalizedError {
     case invalidResponse
     case httpError(statusCode: Int, body: String, url: URL? = nil)
-    case malformedResponse
+    case malformedResponse(detail: String)
 
     public var errorDescription: String? {
         switch self {
@@ -219,8 +229,8 @@ public enum LLMProviderError: Error, LocalizedError {
         case .httpError(let code, let body, let url):
             let detail = body.isEmpty ? (url?.absoluteString ?? "empty body") : body
             return "HTTP \(code): \(detail)"
-        case .malformedResponse:
-            return "Could not parse LLM response"
+        case .malformedResponse(let detail):
+            return "Could not parse LLM response: \(detail)"
         }
     }
 }

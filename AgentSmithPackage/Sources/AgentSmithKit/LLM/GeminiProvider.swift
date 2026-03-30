@@ -97,8 +97,13 @@ public struct GeminiProvider: LLMProvider {
             }
         }
 
+        // Gemini requires strict user/model alternation. Merge consecutive same-role
+        // messages (e.g. a tool result followed by a user message) into one content entry.
+        let rawContents = conversationMessages.map(encodeContent)
+        let mergedContents = Self.mergeConsecutiveSameRole(rawContents)
+
         var body: [String: Any] = [
-            "contents": conversationMessages.map(encodeContent),
+            "contents": mergedContents,
             "generationConfig": [
                 "temperature": config.temperature,
                 "maxOutputTokens": config.maxTokens
@@ -200,14 +205,42 @@ public struct GeminiProvider: LLMProvider {
     // MARK: - Response parsing
 
     private func parseResponse(data: Data) throws -> LLMResponse {
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let candidates = json["candidates"] as? [[String: Any]],
-              let candidate = candidates.first,
-              let content = candidate["content"] as? [String: Any],
-              let parts = content["parts"] as? [[String: Any]]
-        else {
-            throw LLMProviderError.malformedResponse
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            let preview = String(data: data.prefix(500), encoding: .utf8) ?? "(non-utf8, \(data.count) bytes)"
+            logger.error("Response is not a JSON object: \(preview, privacy: .public)")
+            throw LLMProviderError.malformedResponse(detail: "not a JSON object: \(preview)")
         }
+        guard let candidates = json["candidates"] as? [[String: Any]],
+              let candidate = candidates.first
+        else {
+            let keys = json.keys.sorted().joined(separator: ", ")
+            let preview = String(data: data.prefix(500), encoding: .utf8) ?? "(\(data.count) bytes)"
+            logger.error("Missing candidates in response. Keys: \(keys, privacy: .public) Body: \(preview, privacy: .public)")
+            throw LLMProviderError.malformedResponse(detail: "missing candidates, keys: [\(keys)], body: \(preview)")
+        }
+
+        // Gemini returns error finish reasons (e.g. MALFORMED_FUNCTION_CALL) when it fails to
+        // produce a valid tool call. Surface these as actionable text so the agent can retry.
+        let finishReason = candidate["finishReason"] as? String
+        if let finishReason, finishReason != "STOP" && finishReason != "MAX_TOKENS" {
+            if candidate["content"] == nil {
+                let finishMessage = candidate["finishMessage"] as? String ?? finishReason
+                logger.warning("Gemini finished with \(finishReason, privacy: .public): \(finishMessage, privacy: .public)")
+                return LLMResponse(
+                    text: "[Gemini error: \(finishReason)] \(finishMessage)",
+                    toolCalls: []
+                )
+            }
+        }
+
+        // Gemini may return content with no parts (empty response, zero output tokens).
+        // Treat as empty text response rather than a parse error.
+        guard let content = candidate["content"] as? [String: Any] else {
+            let preview = String(data: data.prefix(500), encoding: .utf8) ?? "(\(data.count) bytes)"
+            logger.error("Missing content in candidate. finishReason=\(finishReason ?? "nil", privacy: .public) Body: \(preview, privacy: .public)")
+            throw LLMProviderError.malformedResponse(detail: "missing content, finishReason=\(finishReason ?? "nil"), body: \(preview)")
+        }
+        let parts = content["parts"] as? [[String: Any]] ?? []
 
         var text: String?
         var toolCalls: [LLMToolCall] = []
@@ -239,6 +272,30 @@ public struct GeminiProvider: LLMProvider {
             text: text?.isEmpty == true ? nil : text,
             toolCalls: toolCalls
         )
+    }
+
+    // MARK: - Message merging
+
+    /// Merges consecutive contents entries that share the same role into a single entry
+    /// by concatenating their `parts` arrays. Required because Gemini enforces strict
+    /// user/model alternation (e.g. a functionResponse + user text must be one content block).
+    private static func mergeConsecutiveSameRole(_ contents: [[String: Any]]) -> [[String: Any]] {
+        guard !contents.isEmpty else { return contents }
+        var result: [[String: Any]] = []
+        for content in contents {
+            guard let role = content["role"] as? String else {
+                result.append(content)
+                continue
+            }
+            if let lastRole = result.last?["role"] as? String, lastRole == role,
+               let existingParts = result[result.count - 1]["parts"] as? [[String: Any]],
+               let newParts = content["parts"] as? [[String: Any]] {
+                result[result.count - 1]["parts"] = existingParts + newParts
+            } else {
+                result.append(content)
+            }
+        }
+        return result
     }
 
     // MARK: - Helpers

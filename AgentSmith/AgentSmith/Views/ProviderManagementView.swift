@@ -216,6 +216,14 @@ private struct ProviderEditorSheet: View {
                         state.endpointString = "https://api.x.ai/v1"
                         state.apiType = .xAI
                     }
+                    Button("z.ai (General)") {
+                        state.endpointString = "https://api.z.ai/api/paas/v4"
+                        state.apiType = .zAI
+                    }
+                    Button("z.ai (Coding Plan)") {
+                        state.endpointString = "https://api.z.ai/api/coding/paas/v4"
+                        state.apiType = .zAI
+                    }
                     Button("Ollama (cloud)") {
                         state.endpointString = "https://ollama.com/api"
                         state.apiType = .ollama
@@ -260,6 +268,8 @@ private struct ProviderEditorSheet: View {
             state.endpointString = "http://localhost:1234/v1"
         case .xAI:
             state.endpointString = "https://api.x.ai/v1"
+        case .zAI:
+            state.endpointString = "https://api.z.ai/api/paas/v4"
         }
     }
 

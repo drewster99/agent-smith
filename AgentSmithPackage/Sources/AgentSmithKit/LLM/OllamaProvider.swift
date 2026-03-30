@@ -234,10 +234,16 @@ public struct OllamaProvider: LLMProvider {
     // MARK: - Response parsing
 
     private func parseResponse(data: Data) throws -> LLMResponse {
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let message = json["message"] as? [String: Any]
-        else {
-            throw LLMProviderError.malformedResponse
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            let preview = String(data: data.prefix(500), encoding: .utf8) ?? "(non-utf8, \(data.count) bytes)"
+            logger.error("Response is not a JSON object: \(preview, privacy: .public)")
+            throw LLMProviderError.malformedResponse(detail: "not a JSON object: \(preview)")
+        }
+        guard let message = json["message"] as? [String: Any] else {
+            let keys = json.keys.sorted().joined(separator: ", ")
+            let preview = String(data: data.prefix(500), encoding: .utf8) ?? "(\(data.count) bytes)"
+            logger.error("Missing message in response. Keys: \(keys, privacy: .public) Body: \(preview, privacy: .public)")
+            throw LLMProviderError.malformedResponse(detail: "missing message, keys: [\(keys)], body: \(preview)")
         }
 
         let text = message["content"] as? String

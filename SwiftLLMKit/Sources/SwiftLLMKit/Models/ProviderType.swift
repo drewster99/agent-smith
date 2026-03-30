@@ -10,6 +10,7 @@ public enum ProviderType: String, Codable, Sendable, CaseIterable, Equatable {
     case huggingFace
     case lmStudio
     case xAI
+    case zAI
 
     /// The prefix LiteLLM uses for this provider's models (e.g. "mistral/" for `mistral/mistral-large-2512`).
     /// Returns `nil` for local-only providers that have no LiteLLM pricing data.
@@ -23,6 +24,7 @@ public enum ProviderType: String, Codable, Sendable, CaseIterable, Equatable {
         case .huggingFace: return nil
         case .lmStudio: return nil
         case .xAI: return "xai"
+        case .zAI: return nil
         }
     }
 
@@ -37,6 +39,7 @@ public enum ProviderType: String, Codable, Sendable, CaseIterable, Equatable {
         case .huggingFace: return "Hugging Face"
         case .lmStudio: return "LM Studio"
         case .xAI: return "xAI (Grok)"
+        case .zAI: return "z.ai"
         }
     }
 }

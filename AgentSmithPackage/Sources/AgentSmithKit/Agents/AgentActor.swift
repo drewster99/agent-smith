@@ -65,6 +65,10 @@ public actor AgentActor {
     /// addressed to it arrives (indicating Smith sent revision feedback).
     private var awaitingTaskReview = false
 
+    /// Messages held back from the current drain to be delivered on a separate turn.
+    /// Used to ensure task_complete messages get their own focused LLM turn.
+    private var deferredMessages: [ChannelMessage] = []
+
     /// Per-turn LLM call log for per-turn inspection.
     private var llmTurns: [LLMTurnRecord] = []
     /// Message count at the time of the previous LLM call — used to compute inputDelta.
@@ -238,6 +242,13 @@ public actor AgentActor {
 
     private func runLoop() async {
         while isRunning, !Task.isCancelled {
+            // Re-inject deferred messages (e.g. task_complete held back from a previous batch)
+            // so they get their own focused LLM turn.
+            if !deferredMessages.isEmpty {
+                pendingChannelMessages.append(contentsOf: deferredMessages)
+                deferredMessages.removeAll()
+            }
+
             drainPendingMessages()
             checkScheduledWake()
             await pruneHistoryIfNeeded()
@@ -955,6 +966,30 @@ public actor AgentActor {
             }
             // else: drain messages into history below, but leave hasUnprocessedInput as-is
         } else {
+            // Separate task_complete messages from the batch so they get their own LLM turn.
+            // This prevents the review trigger from being buried in a merged text blob.
+            let hasTaskComplete = pendingChannelMessages.contains { msg in
+                if case .string("task_complete") = msg.metadata?["messageKind"] { return true }
+                return false
+            }
+            let hasOtherMessages = pendingChannelMessages.contains { msg in
+                if case .string("task_complete") = msg.metadata?["messageKind"] { return false }
+                return true
+            }
+
+            if hasTaskComplete && hasOtherMessages {
+                // Split: defer task_complete messages, drain everything else now.
+                let taskCompleteMessages = pendingChannelMessages.filter { msg in
+                    if case .string("task_complete") = msg.metadata?["messageKind"] { return true }
+                    return false
+                }
+                pendingChannelMessages.removeAll { msg in
+                    if case .string("task_complete") = msg.metadata?["messageKind"] { return true }
+                    return false
+                }
+                deferredMessages.append(contentsOf: taskCompleteMessages)
+            }
+
             // For Smith: task lifecycle messages (task_acknowledged, task_update) are
             // informational — drain them into history but don't trigger a re-query.
             // Only messages that aren't purely lifecycle should wake the agent.

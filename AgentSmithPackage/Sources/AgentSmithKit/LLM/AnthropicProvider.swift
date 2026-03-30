@@ -245,10 +245,16 @@ public struct AnthropicProvider: LLMProvider {
     }
 
     private func parseResponse(data: Data) throws -> LLMResponse {
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let contentBlocks = json["content"] as? [[String: Any]]
-        else {
-            throw LLMProviderError.malformedResponse
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            let preview = String(data: data.prefix(500), encoding: .utf8) ?? "(non-utf8, \(data.count) bytes)"
+            logger.error("Response is not a JSON object: \(preview, privacy: .public)")
+            throw LLMProviderError.malformedResponse(detail: "not a JSON object: \(preview)")
+        }
+        guard let contentBlocks = json["content"] as? [[String: Any]] else {
+            let keys = json.keys.sorted().joined(separator: ", ")
+            let preview = String(data: data.prefix(500), encoding: .utf8) ?? "(\(data.count) bytes)"
+            logger.error("Missing content blocks in response. Keys: \(keys, privacy: .public) Body: \(preview, privacy: .public)")
+            throw LLMProviderError.malformedResponse(detail: "missing content blocks, keys: [\(keys)], body: \(preview)")
         }
 
         // Log cache metrics for observability.

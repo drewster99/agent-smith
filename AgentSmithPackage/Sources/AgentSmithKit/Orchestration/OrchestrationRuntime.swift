@@ -153,7 +153,8 @@ public actor OrchestrationRuntime {
 
         // Create the TaskSummarizer only if a summarizer model is explicitly configured.
         // If not configured, task summarization is silently skipped.
-        if let summarizerConfig = llmConfigs[.summarizer] {
+        if var summarizerConfig = llmConfigs[.summarizer] {
+            summarizerConfig.verboseLogging = LLMRequestLogger.logSmith
             taskSummarizer = TaskSummarizer(
                 provider: makeProvider(config: summarizerConfig),
                 memoryStore: memoryStore,
@@ -746,7 +747,7 @@ public actor OrchestrationRuntime {
         switch config.providerType {
         case .anthropic:
             return AnthropicProvider(config: config)
-        case .openAICompatible, .lmStudio, .mistral, .huggingFace, .xAI:
+        case .openAICompatible, .lmStudio, .mistral, .huggingFace, .xAI, .zAI:
             return OpenAICompatibleProvider(config: config)
         case .ollama:
             return OllamaProvider(config: config)

@@ -414,7 +414,7 @@ public final class LLMKitManager {
                 ? provider.endpoint
                 : provider.endpoint.appendingPathComponent("v1")
             url = base.appendingPathComponent("messages")
-        case .openAICompatible, .lmStudio, .mistral, .huggingFace, .xAI:
+        case .openAICompatible, .lmStudio, .mistral, .huggingFace, .xAI, .zAI:
             url = provider.endpoint.appendingPathComponent("chat/completions")
         case .ollama:
             url = provider.endpoint.appendingPathComponent("chat")
@@ -442,7 +442,7 @@ public final class LLMKitManager {
                 request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
             }
             request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        case .openAICompatible, .lmStudio, .mistral, .huggingFace, .xAI:
+        case .openAICompatible, .lmStudio, .mistral, .huggingFace, .xAI, .zAI:
             if let apiKey, !apiKey.isEmpty {
                 request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             }
@@ -468,7 +468,7 @@ public final class LLMKitManager {
             if let budget = config.thinkingBudget, budget > 0 {
                 body["thinking"] = ["type": "enabled", "budget_tokens": budget] as [String: Any]
             }
-        case .openAICompatible, .lmStudio, .mistral, .huggingFace, .xAI:
+        case .openAICompatible, .lmStudio, .mistral, .huggingFace, .xAI, .zAI:
             body["max_tokens"] = config.maxOutputTokens
         case .ollama:
             body["options"] = ["num_predict": config.maxOutputTokens] as [String: Any]
