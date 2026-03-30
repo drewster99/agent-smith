@@ -15,12 +15,15 @@ public struct LLMConfiguration: Codable, Sendable, Equatable {
     /// Anthropic extended thinking token budget. Only relevant when `providerType` is `.anthropic`.
     /// When set and > 0, the provider includes a `thinking` block in the request body.
     public var thinkingBudget: Int?
+    /// Use 1-hour prompt cache TTL instead of the default 5-minute ephemeral cache.
+    /// Only relevant when `providerType` is `.anthropic`. Cached tokens cost 2x the base input price.
+    public var extendedCacheTTL: Bool
     /// When true, full request/response JSON is logged to `$TMPDIR/AgentSmith-LLM-Logs/`.
     /// Not persisted — set programmatically at runtime.
     public var verboseLogging: Bool = false
 
     private enum CodingKeys: String, CodingKey {
-        case endpoint, apiKey, model, temperature, maxTokens, contextWindowSize, providerType, thinkingBudget
+        case endpoint, apiKey, model, temperature, maxTokens, contextWindowSize, providerType, thinkingBudget, extendedCacheTTL
     }
 
     public init(
@@ -31,7 +34,8 @@ public struct LLMConfiguration: Codable, Sendable, Equatable {
         maxTokens: Int = 4096,
         contextWindowSize: Int = 128_000,
         providerType: ProviderType = .openAICompatible,
-        thinkingBudget: Int? = nil
+        thinkingBudget: Int? = nil,
+        extendedCacheTTL: Bool = false
     ) {
         self.endpoint = endpoint
         self.apiKey = apiKey
@@ -41,6 +45,7 @@ public struct LLMConfiguration: Codable, Sendable, Equatable {
         self.contextWindowSize = contextWindowSize
         self.providerType = providerType
         self.thinkingBudget = thinkingBudget
+        self.extendedCacheTTL = extendedCacheTTL
     }
 
     /// Backward-compatible decoder: old JSON without `providerType` defaults to `.openAICompatible`.
@@ -54,6 +59,7 @@ public struct LLMConfiguration: Codable, Sendable, Equatable {
         contextWindowSize = try container.decode(Int.self, forKey: .contextWindowSize)
         providerType = try container.decodeIfPresent(ProviderType.self, forKey: .providerType) ?? .openAICompatible
         thinkingBudget = try container.decodeIfPresent(Int.self, forKey: .thinkingBudget)
+        extendedCacheTTL = try container.decodeIfPresent(Bool.self, forKey: .extendedCacheTTL) ?? false
     }
 
     // MARK: - Defaults

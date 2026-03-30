@@ -15,6 +15,7 @@ struct ModelConfigurationEditorView: View {
     @State private var maxOutputTokens: Int = 4096
     @State private var maxContextTokens: Int = 128_000
     @State private var thinkingBudget: Int = 0
+    @State private var extendedCacheTTL: Bool = false
     @State private var streaming: Bool = true
 
     var body: some View {
@@ -30,6 +31,7 @@ struct ModelConfigurationEditorView: View {
                     parametersSection
                     if selectedProviderType == .anthropic {
                         thinkingSection
+                        cacheTTLSection
                     }
                     streamingSection
                 }
@@ -143,6 +145,15 @@ struct ModelConfigurationEditorView: View {
                 }
             }
             Text("Extended thinking token budget (Anthropic only). Set to 0 to disable.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var cacheTTLSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Extended Prompt Cache (1 hour)", isOn: $extendedCacheTTL)
+            Text("Use 1-hour cache TTL instead of the default 5-minute. Cached input tokens cost 2x the base price.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -282,6 +293,7 @@ struct ModelConfigurationEditorView: View {
         maxOutputTokens = config.maxOutputTokens
         maxContextTokens = config.maxContextTokens
         thinkingBudget = config.thinkingBudget ?? 0
+        extendedCacheTTL = config.extendedCacheTTL
         streaming = config.streaming
     }
 
@@ -296,6 +308,7 @@ struct ModelConfigurationEditorView: View {
             maxOutputTokens: maxOutputTokens,
             maxContextTokens: maxContextTokens,
             thinkingBudget: effectiveThinkingBudget,
+            extendedCacheTTL: selectedProviderType == .anthropic && extendedCacheTTL,
             streaming: streaming
         )
         onSave(config)

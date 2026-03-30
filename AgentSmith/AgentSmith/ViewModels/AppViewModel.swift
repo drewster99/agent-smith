@@ -236,7 +236,8 @@ final class AppViewModel {
                 maxTokens: modelConfig.maxOutputTokens,
                 contextWindowSize: modelConfig.maxContextTokens,
                 providerType: provider.apiType,
-                thinkingBudget: modelConfig.thinkingBudget
+                thinkingBudget: modelConfig.thinkingBudget,
+                extendedCacheTTL: modelConfig.extendedCacheTTL
             )
         }
         return configs

@@ -83,7 +83,10 @@ public struct AnthropicProvider: LLMProvider {
             "model": config.model,
             "max_tokens": config.maxTokens,
             "temperature": config.temperature,
-            "messages": encodedMessages
+            "messages": encodedMessages,
+            "cache_control": config.extendedCacheTTL
+                ? ["type": "ephemeral", "ttl": "1h"] as [String: Any]
+                : ["type": "ephemeral"] as [String: Any]
         ]
 
         if let systemPrompt {
@@ -246,6 +249,16 @@ public struct AnthropicProvider: LLMProvider {
               let contentBlocks = json["content"] as? [[String: Any]]
         else {
             throw LLMProviderError.malformedResponse
+        }
+
+        // Log cache metrics for observability.
+        if let usage = json["usage"] as? [String: Any] {
+            let cacheRead = usage["cache_read_input_tokens"] as? Int ?? 0
+            let cacheCreation = usage["cache_creation_input_tokens"] as? Int ?? 0
+            let input = usage["input_tokens"] as? Int ?? 0
+            if cacheRead > 0 || cacheCreation > 0 {
+                logger.info("Cache: read=\(cacheRead) created=\(cacheCreation) uncached=\(input)")
+            }
         }
 
         var text: String?

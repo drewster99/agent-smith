@@ -7,10 +7,13 @@ private let logger = Logger(subsystem: "com.agentsmith", category: "OpenAI")
 public struct OpenAICompatibleProvider: LLMProvider {
     private let config: LLMConfiguration
     private let session: URLSession
+    /// Stable conversation ID for xAI prompt caching. Generated once per provider instance.
+    private let conversationID: String
 
     public init(config: LLMConfiguration, session: URLSession = llmURLSession) {
         self.config = config
         self.session = session
+        self.conversationID = UUID().uuidString
     }
 
     public func send(
@@ -23,6 +26,9 @@ public struct OpenAICompatibleProvider: LLMProvider {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if !config.apiKey.isEmpty {
             request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        if config.providerType == .xAI {
+            request.setValue(conversationID, forHTTPHeaderField: "x-grok-conv-id")
         }
 
         let body = buildRequestBody(messages: messages, tools: tools)
