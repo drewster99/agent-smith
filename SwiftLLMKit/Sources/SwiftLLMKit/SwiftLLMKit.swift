@@ -44,6 +44,11 @@ public final class LLMKitManager {
     private let fetchService: ModelFetchService
     private let metadataService: ModelMetadataService
 
+    /// Tracks whether each dataset loaded successfully. Prevents saving empty data
+    /// over a file that failed to decode (e.g. after a schema change).
+    private var providersLoadedOK = false
+    private var configurationsLoadedOK = false
+
     // MARK: - Init
 
     /// Creates a new SwiftLLMKit instance.
@@ -75,6 +80,7 @@ public final class LLMKitManager {
         persistenceError = nil
         do {
             providers = try storage.loadProviders()
+            providersLoadedOK = true
         } catch {
             let msg = "Failed to load providers: \(error.localizedDescription)"
             logger.error("\(msg, privacy: .public)")
@@ -82,6 +88,7 @@ public final class LLMKitManager {
         }
         do {
             configurations = try storage.loadConfigurations()
+            configurationsLoadedOK = true
         } catch {
             let msg = "Failed to load configurations: \(error.localizedDescription)"
             logger.error("\(msg, privacy: .public)")
@@ -99,19 +106,23 @@ public final class LLMKitManager {
     /// Persists current state to disk.
     public func save() {
         var errors: [String] = []
-        do {
-            try storage.saveProviders(providers)
-        } catch {
-            let msg = "Failed to save providers: \(error.localizedDescription)"
-            logger.error("\(msg, privacy: .public)")
-            errors.append(msg)
+        if providersLoadedOK {
+            do {
+                try storage.saveProviders(providers)
+            } catch {
+                let msg = "Failed to save providers: \(error.localizedDescription)"
+                logger.error("\(msg, privacy: .public)")
+                errors.append(msg)
+            }
         }
-        do {
-            try storage.saveConfigurations(configurations)
-        } catch {
-            let msg = "Failed to save configurations: \(error.localizedDescription)"
-            logger.error("\(msg, privacy: .public)")
-            errors.append(msg)
+        if configurationsLoadedOK {
+            do {
+                try storage.saveConfigurations(configurations)
+            } catch {
+                let msg = "Failed to save configurations: \(error.localizedDescription)"
+                logger.error("\(msg, privacy: .public)")
+                errors.append(msg)
+            }
         }
         do {
             try storage.saveModelCatalog(models)
@@ -479,6 +490,10 @@ public final class LLMKitManager {
     // MARK: - Private persistence helpers
 
     private func saveProviders() {
+        guard providersLoadedOK else {
+            logger.warning("Skipping provider save — initial load failed, refusing to overwrite on-disk data")
+            return
+        }
         do {
             try storage.saveProviders(providers)
             persistenceError = nil
@@ -490,6 +505,10 @@ public final class LLMKitManager {
     }
 
     private func saveConfigurations() {
+        guard configurationsLoadedOK else {
+            logger.warning("Skipping configuration save — initial load failed, refusing to overwrite on-disk data")
+            return
+        }
         do {
             try storage.saveConfigurations(configurations)
             persistenceError = nil
