@@ -40,7 +40,7 @@ public struct CreateTaskTool: AgentTool {
         let existingTasks = await context.taskStore.allTasks()
         let actionableStatuses: Set<AgentTask.Status> = [.pending, .running, .paused, .awaitingReview]
         if let duplicate = existingTasks.first(where: {
-            $0.disposition == .active && actionableStatuses.contains($0.status) && $0.title == title
+            $0.disposition == .active && actionableStatuses.contains($0.status) && $0.title.caseInsensitiveCompare(title) == .orderedSame
         }) {
             return """
                 A task with the same title already exists: "\(duplicate.title)" \

@@ -986,14 +986,14 @@ public actor AgentActor {
             // history for context but don't trigger a new LLM call. Only messages that
             // require Smith's action (user messages, task_complete, errors) should wake it.
             let nonWakingKinds: Set<String> = ["task_lifecycle", "agent_online"]
-            let hasNonLifecycleMessage = pendingChannelMessages.contains { msg in
+            let hasActionableMessage = pendingChannelMessages.contains { msg in
                 if case .string(let kind) = msg.metadata?["messageKind"],
                    nonWakingKinds.contains(kind) {
                     return false
                 }
                 return true
             }
-            if hasNonLifecycleMessage {
+            if hasActionableMessage {
                 hasUnprocessedInput = true
             }
         }
