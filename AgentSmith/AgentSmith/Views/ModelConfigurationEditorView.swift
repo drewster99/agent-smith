@@ -29,7 +29,7 @@ struct ModelConfigurationEditorView: View {
                     providerSection
                     modelSection
                     parametersSection
-                    if selectedProviderType == .anthropic {
+                    if selectedProviderAPIType == .anthropic {
                         thinkingSection
                         cacheTTLSection
                     }
@@ -93,7 +93,7 @@ struct ModelConfigurationEditorView: View {
 
     /// Whether extended thinking is active, which locks temperature to 1.0 for Anthropic.
     private var isThinkingActive: Bool {
-        selectedProviderType == .anthropic && thinkingBudget > 0
+        selectedProviderAPIType == .anthropic && thinkingBudget > 0
     }
 
     private var parametersSection: some View {
@@ -109,7 +109,7 @@ struct ModelConfigurationEditorView: View {
                 }
             }
             .onChange(of: temperature) { _, newValue in
-                if selectedProviderType == .anthropic && newValue != 1.0 {
+                if selectedProviderAPIType == .anthropic && newValue != 1.0 {
                     thinkingBudget = 0
                 }
             }
@@ -199,7 +199,7 @@ struct ModelConfigurationEditorView: View {
         llmKit.modelInfo(providerID: selectedProviderID, modelID: selectedModelID)
     }
 
-    private var selectedProviderType: ProviderType? {
+    private var selectedProviderAPIType: ProviderAPIType? {
         llmKit.providers.first { $0.id == selectedProviderID }?.apiType
     }
 
@@ -324,7 +324,7 @@ struct ModelConfigurationEditorView: View {
     }
 
     private func save() {
-        let effectiveThinkingBudget: Int? = (selectedProviderType == .anthropic && thinkingBudget > 0) ? thinkingBudget : nil
+        let effectiveThinkingBudget: Int? = (selectedProviderAPIType == .anthropic && thinkingBudget > 0) ? thinkingBudget : nil
         let config = ModelConfiguration(
             id: existingConfig?.id ?? UUID(),
             name: name,
@@ -334,7 +334,7 @@ struct ModelConfigurationEditorView: View {
             maxOutputTokens: maxOutputTokens,
             maxContextTokens: maxContextTokens,
             thinkingBudget: effectiveThinkingBudget,
-            extendedCacheTTL: selectedProviderType == .anthropic && extendedCacheTTL,
+            extendedCacheTTL: selectedProviderAPIType == .anthropic && extendedCacheTTL,
             streaming: streaming
         )
         onSave(config)

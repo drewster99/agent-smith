@@ -95,7 +95,7 @@ struct ProviderManagementView: View {
             id: "provider-\(UUID().uuidString.prefix(8))",
             name: "",
             apiType: .anthropic,
-            endpointString: "https://api.anthropic.com",
+            endpointString: ProviderAPIType.anthropic.defaultEndpoint.absoluteString,
             apiKey: ""
         )
     }
@@ -116,7 +116,7 @@ struct ProviderEditorState: Identifiable {
     let mode: Mode
     var id: String
     var name: String
-    var apiType: ProviderType
+    var apiType: ProviderAPIType
     var endpointString: String
     var apiKey: String
 }
@@ -140,7 +140,7 @@ private struct ProviderEditorSheet: View {
 
             LabeledContent("API Type") {
                 Picker("", selection: $state.apiType) {
-                    ForEach(ProviderType.allCases, id: \.self) { type in
+                    ForEach(ProviderAPIType.allCases, id: \.self) { type in
                         Text(type.displayName).tag(type)
                     }
                 }
@@ -185,58 +185,30 @@ private struct ProviderEditorSheet: View {
     }
 
     private var endpointPresetMenu: some View {
-        Menu(
+        let allPresets = ProviderAPIType.allEndpointPresets
+        let cloudPresets = allPresets.filter { $0.preset.url.scheme == "https" }
+        let localPresets = allPresets.filter { $0.preset.url.scheme != "https" }
+
+        return Menu(
             content: {
-                Section("Cloud APIs") {
-                    Button("Anthropic") {
-                        state.endpointString = "https://api.anthropic.com"
-                        state.apiType = .anthropic
-                    }
-                    Button("DeepSeek") {
-                        state.endpointString = "https://api.deepseek.com"
-                        state.apiType = .openAICompatible
-                    }
-                    Button("Google Gemini") {
-                        state.endpointString = "https://generativelanguage.googleapis.com/v1beta"
-                        state.apiType = .gemini
-                    }
-                    Button("Hugging Face") {
-                        state.endpointString = "https://router.huggingface.co/v1"
-                        state.apiType = .huggingFace
-                    }
-                    Button("Mistral") {
-                        state.endpointString = "https://api.mistral.ai/v1"
-                        state.apiType = .mistral
-                    }
-                    Button("OpenAI") {
-                        state.endpointString = "https://api.openai.com/v1"
-                        state.apiType = .openAICompatible
-                    }
-                    Button("xAI (Grok)") {
-                        state.endpointString = "https://api.x.ai/v1"
-                        state.apiType = .xAI
-                    }
-                    Button("z.ai (General)") {
-                        state.endpointString = "https://api.z.ai/api/paas/v4"
-                        state.apiType = .zAI
-                    }
-                    Button("z.ai (Coding Plan)") {
-                        state.endpointString = "https://api.z.ai/api/coding/paas/v4"
-                        state.apiType = .zAI
-                    }
-                    Button("Ollama (cloud)") {
-                        state.endpointString = "https://ollama.com/api"
-                        state.apiType = .ollama
+                if !cloudPresets.isEmpty {
+                    Section("Cloud APIs") {
+                        ForEach(cloudPresets, id: \.preset.label) { entry in
+                            Button(entry.preset.label) {
+                                state.endpointString = entry.preset.url.absoluteString
+                                state.apiType = entry.apiType
+                            }
+                        }
                     }
                 }
-                Section("Local") {
-                    Button("Ollama (local)") {
-                        state.endpointString = "http://localhost:11434/api"
-                        state.apiType = .ollama
-                    }
-                    Button("LM Studio") {
-                        state.endpointString = "http://localhost:1234/v1"
-                        state.apiType = .lmStudio
+                if !localPresets.isEmpty {
+                    Section("Local") {
+                        ForEach(localPresets, id: \.preset.label) { entry in
+                            Button(entry.preset.label) {
+                                state.endpointString = entry.preset.url.absoluteString
+                                state.apiType = entry.apiType
+                            }
+                        }
                     }
                 }
             },
@@ -250,27 +222,8 @@ private struct ProviderEditorSheet: View {
         .help("Choose a common endpoint")
     }
 
-    private func applyDefaultEndpoint(for type: ProviderType) {
-        switch type {
-        case .anthropic:
-            state.endpointString = "https://api.anthropic.com"
-        case .openAICompatible:
-            state.endpointString = "https://api.openai.com/v1"
-        case .ollama:
-            state.endpointString = "http://localhost:11434/api"
-        case .mistral:
-            state.endpointString = "https://api.mistral.ai/v1"
-        case .gemini:
-            state.endpointString = "https://generativelanguage.googleapis.com/v1beta"
-        case .huggingFace:
-            state.endpointString = "https://router.huggingface.co/v1"
-        case .lmStudio:
-            state.endpointString = "http://localhost:1234/v1"
-        case .xAI:
-            state.endpointString = "https://api.x.ai/v1"
-        case .zAI:
-            state.endpointString = "https://api.z.ai/api/paas/v4"
-        }
+    private func applyDefaultEndpoint(for type: ProviderAPIType) {
+        state.endpointString = type.defaultEndpoint.absoluteString
     }
 
     @State private var saveError: String?

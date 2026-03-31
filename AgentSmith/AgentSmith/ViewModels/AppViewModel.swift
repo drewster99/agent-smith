@@ -101,9 +101,11 @@ final class AppViewModel {
         nickname = UserDefaults.standard.string(forKey: "userNickname") ?? ""
         AgentRole.userNickname = nickname
 
-        // Configure verbose logging for SwiftLLMKit fetch services
-        ModelFetchService.verboseLogging = LLMRequestLogger.logModelFetch
-        ModelMetadataService.verboseLogging = LLMRequestLogger.logLiteLLM
+        // Configure verbose logging for SwiftLLMKit services and providers
+        LLMRequestLogger.logDirectoryName = "AgentSmith-LLM-Logs"
+        llmKit.verboseLogging = true
+        ModelFetchService.verboseLogging = true
+        ModelMetadataService.verboseLogging = true
 
         // Load SwiftLLMKit state (providers, configs, cached models)
         llmKit.load()
@@ -228,38 +230,38 @@ final class AppViewModel {
         hasLoadedPersistedState = true
     }
 
-    /// Resolves agent assignments into `LLMConfiguration` values the runtime understands.
-    private func resolvedLLMConfigs() -> [AgentRole: LLMConfiguration] {
-        var configs: [AgentRole: LLMConfiguration] = [:]
-        for role in AgentRole.allCases {
-            guard let configID = agentAssignments[role],
-                  let modelConfig = llmKit.configurations.first(where: { $0.id == configID }),
-                  let provider = llmKit.providers.first(where: { $0.id == modelConfig.providerID })
-            else {
-                continue
-            }
-            let apiKey = llmKit.apiKey(for: provider.id) ?? ""
-            configs[role] = LLMConfiguration(
-                endpoint: provider.endpoint,
-                apiKey: apiKey,
-                model: modelConfig.modelID,
-                temperature: modelConfig.temperature,
-                maxTokens: modelConfig.maxOutputTokens,
-                contextWindowSize: modelConfig.maxContextTokens,
-                providerType: provider.apiType,
-                thinkingBudget: modelConfig.thinkingBudget,
-                extendedCacheTTL: modelConfig.extendedCacheTTL
-            )
-        }
-        return configs
-    }
-
     /// Starts the system with current LLM configs.
     func start() async {
         guard !isRunning else { return }
         guard !isAborted else { return }
 
-        let configs = resolvedLLMConfigs()
+        // Validate that all required roles have assignments before starting.
+        let missingRoles = AgentRole.requiredRoles.filter { agentAssignments[$0] == nil }
+        if !missingRoles.isEmpty {
+            let names = missingRoles.map(\.displayName).joined(separator: ", ")
+            startupError = "Cannot start — missing configuration for: \(names)"
+            return
+        }
+
+        // Resolve agent assignments into providers and configurations.
+        var providers: [AgentRole: any LLMProvider] = [:]
+        var configurations: [AgentRole: ModelConfiguration] = [:]
+        var apiTypes: [AgentRole: ProviderAPIType] = [:]
+        for role in AgentRole.allCases {
+            guard let configID = agentAssignments[role] else { continue }
+            do {
+                providers[role] = try llmKit.makeProvider(for: configID)
+            } catch {
+                startupError = "Failed to create provider for \(role.displayName): \(error.localizedDescription)"
+                return
+            }
+            if let modelConfig = llmKit.configurations.first(where: { $0.id == configID }) {
+                configurations[role] = modelConfig
+                if let modelProvider = llmKit.providers.first(where: { $0.id == modelConfig.providerID }) {
+                    apiTypes[role] = modelProvider.apiType
+                }
+            }
+        }
 
         var tuning: [AgentRole: AgentTuningConfig] = [:]
         for role in AgentRole.allCases {
@@ -280,7 +282,13 @@ final class AppViewModel {
             return
         }
 
-        let newRuntime = OrchestrationRuntime(llmConfigs: configs, agentTuning: tuning, embeddingService: embeddingService)
+        let newRuntime = OrchestrationRuntime(
+            providers: providers,
+            configurations: configurations,
+            providerAPITypes: apiTypes,
+            agentTuning: tuning,
+            embeddingService: embeddingService
+        )
         runtime = newRuntime
         isRunning = true
 

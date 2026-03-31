@@ -307,7 +307,7 @@ public actor AgentActor {
                     contextSnapshot: messagesForLLM,
                     latencyMs: llmLatencyMs,
                     modelID: configuration.llmConfig.model,
-                    providerType: configuration.llmConfig.providerType.rawValue,
+                    providerType: configuration.providerAPIType.rawValue,
                     temperature: configuration.llmConfig.temperature,
                     maxOutputTokens: configuration.llmConfig.maxTokens,
                     thinkingBudget: configuration.llmConfig.thinkingBudget

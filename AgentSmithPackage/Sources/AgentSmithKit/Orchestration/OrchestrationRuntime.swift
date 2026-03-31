@@ -48,7 +48,9 @@ public actor OrchestrationRuntime {
     /// Summarizer for generating task summaries after completion/failure.
     private var taskSummarizer: TaskSummarizer?
 
-    private var llmConfigs: [AgentRole: LLMConfiguration]
+    private var llmProviders: [AgentRole: any LLMProvider]
+    private var llmConfigs: [AgentRole: ModelConfiguration]
+    private var providerAPITypes: [AgentRole: ProviderAPIType]
     private var agentTuning: [AgentRole: AgentTuningConfig]
     private var monitoringTimer: MonitoringTimer?
     private var powerManager: PowerAssertionManager?
@@ -65,20 +67,19 @@ public actor OrchestrationRuntime {
     private var onAgentStarted: (@Sendable (AgentRole, [String]) -> Void)?
 
     public init(
-        llmConfigs: [AgentRole: LLMConfiguration],
+        providers: [AgentRole: any LLMProvider],
+        configurations: [AgentRole: ModelConfiguration],
+        providerAPITypes: [AgentRole: ProviderAPIType] = [:],
         agentTuning: [AgentRole: AgentTuningConfig] = [:],
         embeddingService: EmbeddingService
     ) {
         self.channel = MessageChannel()
         self.taskStore = TaskStore()
         self.memoryStore = MemoryStore(embeddingService: embeddingService)
-        self.llmConfigs = llmConfigs
+        self.llmProviders = providers
+        self.llmConfigs = configurations
+        self.providerAPITypes = providerAPITypes
         self.agentTuning = agentTuning
-    }
-
-    /// Updates the LLM configuration for a given role.
-    public func updateConfig(for role: AgentRole, config: LLMConfiguration) {
-        llmConfigs[role] = config
     }
 
     /// Registers a callback fired when Jones triggers an abort.
@@ -153,10 +154,10 @@ public actor OrchestrationRuntime {
 
         // Create the TaskSummarizer only if a summarizer model is explicitly configured.
         // If not configured, task summarization is silently skipped.
-        if var summarizerConfig = llmConfigs[.summarizer] {
-            summarizerConfig.verboseLogging = LLMRequestLogger.logSmith
+        if let summarizerProvider = llmProviders[.summarizer],
+           let summarizerConfig = llmConfigs[.summarizer] {
             taskSummarizer = TaskSummarizer(
-                provider: makeProvider(config: summarizerConfig),
+                provider: summarizerProvider,
                 memoryStore: memoryStore,
                 channel: channel,
                 contextWindowSize: summarizerConfig.contextWindowSize,
@@ -166,9 +167,11 @@ public actor OrchestrationRuntime {
             taskSummarizer = nil
         }
 
-        var smithConfig = llmConfigs[.smith] ?? .ollamaDefault
-        smithConfig.verboseLogging = LLMRequestLogger.logSmith
-        let provider = makeProvider(config: smithConfig)
+        guard let smithConfig = llmConfigs[.smith],
+              let provider = llmProviders[.smith] else {
+            await channel.post(ChannelMessage(sender: .system, content: "No Smith provider configured — cannot start."))
+            return
+        }
 
         let id = UUID()
         smithID = id
@@ -216,6 +219,7 @@ public actor OrchestrationRuntime {
             configuration: AgentConfiguration(
                 role: .smith,
                 llmConfig: smithConfig,
+                providerAPIType: providerAPITypes[.smith] ?? .openAICompatible,
                 systemPrompt: SmithBehavior.systemPrompt,
                 toolNames: SmithBehavior.toolNames,
                 suppressesRawTextToChannel: true,
@@ -515,16 +519,21 @@ public actor OrchestrationRuntime {
             _ = await terminateAgent(id: existingBrownID)
         }
 
-        var brownConfig = llmConfigs[.brown] ?? .ollamaDefault
-        brownConfig.verboseLogging = LLMRequestLogger.logBrown
-        var jonesConfig = llmConfigs[.jones] ?? .ollamaDefault
-        jonesConfig.verboseLogging = LLMRequestLogger.logJones
+        guard let brownConfig = llmConfigs[.brown],
+              let brownProvider = llmProviders[.brown] else {
+            await channel.post(ChannelMessage(sender: .system, content: "No Brown provider configured — cannot spawn."))
+            return nil
+        }
+        guard let jonesProvider = llmProviders[.jones] else {
+            await channel.post(ChannelMessage(sender: .system, content: "No Jones provider configured — Brown requires a security evaluator."))
+            return nil
+        }
 
         let brownID = UUID()
 
         // Create SecurityEvaluator with Jones's LLM config — replaces the Jones agent.
         let evaluator = SecurityEvaluator(
-            provider: makeProvider(config: jonesConfig),
+            provider: jonesProvider,
             systemPrompt: JonesBehavior.systemPrompt,
             channel: channel,
             abort: { [weak self] reason, callerRole in
@@ -554,6 +563,7 @@ public actor OrchestrationRuntime {
             configuration: AgentConfiguration(
                 role: .brown,
                 llmConfig: brownConfig,
+                providerAPIType: providerAPITypes[.brown] ?? .openAICompatible,
                 systemPrompt: BrownBehavior.systemPrompt,
                 toolNames: BrownBehavior.toolNames,
                 requiresToolApproval: true,
@@ -562,7 +572,7 @@ public actor OrchestrationRuntime {
                 messageAcceptFilter: brownMessageFilter,
                 maxToolCallsPerIteration: agentTuning[.brown]?.maxToolCalls ?? 100
             ),
-            provider: makeProvider(config: brownConfig),
+            provider: brownProvider,
             tools: BrownBehavior.tools(),
             toolContext: brownContext
         )
@@ -584,7 +594,7 @@ public actor OrchestrationRuntime {
             content: "Jones security evaluator online.",
             metadata: ["messageKind": .string("agent_online")]
         ))
-        onAgentStarted?(.jones, [])
+        onAgentStarted?(.jones, JonesBehavior.toolNames)
 
         await brownAgent.start()
         onAgentStarted?(.brown, brownAgent.toolNames)
@@ -743,19 +753,6 @@ public actor OrchestrationRuntime {
         }
     }
 
-    private func makeProvider(config: LLMConfiguration) -> any LLMProvider {
-        switch config.providerType {
-        case .anthropic:
-            return AnthropicProvider(config: config)
-        case .openAICompatible, .lmStudio, .mistral, .huggingFace, .xAI, .zAI:
-            return OpenAICompatibleProvider(config: config)
-        case .ollama:
-            return OllamaProvider(config: config)
-        case .gemini:
-            return GeminiProvider(config: config)
-        }
-    }
-
     private func makeToolContext(
         agentID: UUID,
         role: AgentRole,
@@ -906,7 +903,4 @@ public actor OrchestrationRuntime {
         await taskStore.setLastBrownContext(id: task.id, context: truncated)
     }
 
-    private func defaultConfig() -> LLMConfiguration {
-        .ollamaDefault
-    }
 }

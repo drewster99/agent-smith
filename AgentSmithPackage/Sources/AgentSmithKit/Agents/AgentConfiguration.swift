@@ -5,7 +5,9 @@ public struct AgentConfiguration: Sendable {
     /// The agent's role in the system (smith, brown, jones, or summarizer).
     public var role: AgentRole
     /// LLM provider and model parameters for this agent's API calls.
-    public var llmConfig: LLMConfiguration
+    public var llmConfig: ModelConfiguration
+    /// The API type of the provider (for turn record observability).
+    public var providerAPIType: ProviderAPIType
     /// The full system prompt injected at the start of every LLM conversation.
     public var systemPrompt: String
     /// Names of tools this agent is allowed to call.
@@ -29,7 +31,8 @@ public struct AgentConfiguration: Sendable {
 
     public init(
         role: AgentRole,
-        llmConfig: LLMConfiguration,
+        llmConfig: ModelConfiguration,
+        providerAPIType: ProviderAPIType = .openAICompatible,
         systemPrompt: String? = nil,
         toolNames: [String] = [],
         requiresToolApproval: Bool = false,
@@ -41,6 +44,7 @@ public struct AgentConfiguration: Sendable {
     ) {
         self.role = role
         self.llmConfig = llmConfig
+        self.providerAPIType = providerAPIType
         self.systemPrompt = systemPrompt ?? role.baseSystemPrompt
         self.toolNames = toolNames
         self.requiresToolApproval = requiresToolApproval

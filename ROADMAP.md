@@ -77,7 +77,7 @@ Store Brown's `task_update` messages as a `updates: [(Date, String)]` array on `
 ### Remove implementation instructions from user-visible task descriptions
 `CreateTaskTool` appends `"\n\nReport the detailed results to the user using task_complete."` to the task description at creation time (CreateTaskTool.swift:33). This implementation detail is persisted on the task and visible in the task list UI. The instruction should either be injected into Brown's initial message separately (not stored on the task), or moved into Brown's system prompt so it doesn't pollute user-facing task descriptions.
 
-### Complete SwiftLLMKit migration — eliminate legacy LLMConfiguration
+### Complete SwiftLLMKit migration — eliminate legacy LLMConfiguration ✅
 The SwiftLLMKit package refactor is structurally complete but the runtime still uses the legacy `LLMConfiguration` struct in AgentSmithKit. `AppViewModel.resolvedLLMConfigs()` bridges between the two systems by converting SwiftLLMKit's `ModelConfiguration` into the old `LLMConfiguration` at startup. The actual LLM providers (`AnthropicProvider`, `OllamaProvider`, `OpenAICompatibleProvider`) consume only the legacy type.
 
 **Goal:** Have the runtime providers consume SwiftLLMKit types directly (either `ModelConfiguration` + API key, or `PreparedRequest`), eliminating:
@@ -85,10 +85,7 @@ The SwiftLLMKit package refactor is structurally complete but the runtime still 
 - The legacy `LLMConfiguration` struct and its hardcoded defaults (`ollamaDefault`, `smithDefault`, `brownDefault`, `jonesDefault`)
 - The redundant request-building logic in each provider (since `PreparedRequest` already handles auth headers and base body construction)
 
-**Other SwiftLLMKit improvements to address during this work:**
-- `PreparedRequest` is currently unused/dead code — either wire it in or remove it
-- Minimal test coverage (only one test for composite ID format) — add tests for provider CRUD, config validation, persistence round-trips, and request preparation
-- No protocol abstraction for networking in `ModelFetchService`/`ModelMetadataService` — makes unit testing difficult
+**Implemented:** All LLM provider implementations (`AnthropicProvider`, `GeminiProvider`, `OllamaProvider`, `OpenAICompatibleProvider`), conversation types (`LLMMessage`, `LLMResponse`, `LLMToolCall`, `LLMToolDefinition`), the `LLMProvider` protocol, and `LLMRequestLogger` moved into SwiftLLMKit. `LLMConfiguration` deleted entirely — providers now take `ModelConfiguration` + `ModelProvider` + a `@Sendable () -> String` closure that reads the API key from Keychain at point of use (no API key in any Codable struct). `ProviderType` renamed to `ProviderAPIType`. `LLMKitManager.makeProvider(for:)` factory resolves configuration → provider with keychain-based API key closure. `OrchestrationRuntime` takes pre-built providers at init. Default endpoint URLs moved to `ProviderAPIType.endpointPresets`. Remaining SwiftLLMKit improvements tracked in that package's own ROADMAP.
 
 ### Add `bash` tool for better environment availability ✅
 The current `shell` tool may not provide full PATH and environment variable availability. Add a `bash` tool that executes commands via `/bin/bash -c <arguments>`, which sources the user's shell profile and provides access to the full PATH and environment values that the user would have in an interactive terminal session. This improves reliability for commands that depend on tools installed via Homebrew, nvm, pyenv, etc.
