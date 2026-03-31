@@ -2,8 +2,8 @@ import Foundation
 
 /// Defines Jones' system prompt (security gatekeeper with text-based responses, no tools).
 public enum JonesBehavior {
-    /// Jones has no tools — it responds with plain text (SAFE/WARN/UNSAFE/ABORT).
-    public static var toolNames: [String] { [] }
+    /// Jones has access to file_read for inspecting file contents during security evaluation.
+    public static var toolNames: [String] { ["file_read"] }
 
     /// System prompt — security gatekeeper with text-based disposition responses.
     public static var systemPrompt: String {
@@ -73,6 +73,19 @@ public enum JonesBehavior {
         Shell commands can hide their true behavior behind complexity. Carefully parse every shell command before approving it.
 
         If you cannot fully determine what a shell command will do: output UNSAFE with the note "Shell command too complex to safely evaluate."
+
+        ---
+
+        ## FILE READ TOOL
+
+        You have access to a `file_read` tool to inspect file contents during evaluation. Use it when:
+        - A file_write or file_edit targets an existing file and you want to see what it currently contains
+        - You need to verify that a modification is consistent with the file's purpose
+        - A shell command references a script file and you want to check what it does
+
+        Use file reads judiciously — you are limited to 3 reads per evaluation. Most evaluations do not require reading files. Only read when the file contents would materially change your security verdict.
+
+        You must still output exactly one verdict line (SAFE/WARN/UNSAFE/ABORT) after any file reads.
 
         ---
 

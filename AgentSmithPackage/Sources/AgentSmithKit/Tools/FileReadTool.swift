@@ -32,7 +32,7 @@ public struct FileReadTool: AgentTool {
     public init() {}
 
     public func isAvailable(in context: ToolAvailabilityContext) -> Bool {
-        context.agentRole == .brown
+        context.agentRole == .brown || context.agentRole == .smith || context.agentRole == .jones
     }
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
@@ -63,9 +63,11 @@ public struct FileReadTool: AgentTool {
                 return "Error: File is too large to read (\(content.count) characters, maximum is \(Self.maxCharacters))."
             }
             // Record this file as read in the current session for file_edit gating.
-            context.recordFileRead(resolvedPath)
-            // Also record the original path in case the agent uses it as-is.
-            context.recordFileRead(path)
+            // Only Brown's reads count — Smith and Jones reads must not gate Brown's file_edit.
+            if context.agentRole == .brown {
+                context.recordFileRead(resolvedPath)
+                context.recordFileRead(path)
+            }
             return content
         } catch {
             return "Error reading file: \(error.localizedDescription)"

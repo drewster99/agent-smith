@@ -64,6 +64,15 @@ public actor SecurityEvaluator {
     private static let maxConsecutiveFailures = 20
     private static let maxRetries = 5
 
+    /// Maximum file read rounds Jones can perform per evaluation.
+    private static let maxFileReadRounds = 3
+
+    /// Tool definition for file_read, presented to Jones's LLM.
+    private static let fileReadToolDef: LLMToolDefinition = {
+        let tool = FileReadTool()
+        return tool.definition(for: .jones)
+    }()
+
     /// Evaluation history for inspector display.
     private var history: [EvaluationRecord] = []
     private static let maxHistory = 50
@@ -129,19 +138,20 @@ public actor SecurityEvaluator {
             siblingCalls: siblingCalls
         )
 
-        let messages = [
+        var conversationMessages = [
             LLMMessage(role: .system, text: systemPrompt),
             LLMMessage(role: .user, text: evalPrompt)
         ]
 
         let startTime = Date()
         var retryCount = 0
+        var fileReadRounds = 0
 
         while retryCount < Self.maxRetries {
-            let responseText: String
+            let response: LLMResponse
             do {
-                let response = try await provider.send(messages: messages, tools: [])
-                responseText = response.text ?? ""
+                let tools = fileReadRounds < Self.maxFileReadRounds ? [Self.fileReadToolDef] : []
+                response = try await provider.send(messages: conversationMessages, tools: tools)
             } catch {
                 retryCount += 1
                 totalConsecutiveFailures += 1
@@ -161,6 +171,25 @@ public actor SecurityEvaluator {
                 }
                 continue
             }
+
+            // If Jones requested file reads, execute them and continue the conversation.
+            if !response.toolCalls.isEmpty && fileReadRounds < Self.maxFileReadRounds {
+                fileReadRounds += 1
+                // Append assistant message with the tool calls (and any accompanying text).
+                if let text = response.text, !text.isEmpty {
+                    conversationMessages.append(LLMMessage(role: .assistant, content: .mixed(text: text, toolCalls: response.toolCalls)))
+                } else {
+                    conversationMessages.append(LLMMessage(role: .assistant, content: .toolCalls(response.toolCalls)))
+                }
+                // Execute each file_read and append tool results.
+                for call in response.toolCalls {
+                    let result = executeJonesFileRead(call)
+                    conversationMessages.append(LLMMessage(role: .tool, content: .toolResult(toolCallID: call.id, content: result)))
+                }
+                continue
+            }
+
+            let responseText = response.text ?? ""
 
             guard let disposition = parseDisposition(responseText, toolName: toolName, parsedParams: parsedParams, agentRoleName: agentRoleName) else {
                 retryCount += 1
@@ -430,6 +459,52 @@ public actor SecurityEvaluator {
             }
         } else {
             return "Note: The target file does NOT currently exist — this is a new file creation."
+        }
+    }
+
+    /// Executes a file_read tool call for Jones without recording the read.
+    /// Jones's reads must NOT count toward Brown's "must read before edit" requirement.
+    private func executeJonesFileRead(_ call: LLMToolCall) -> String {
+        guard call.name == "file_read" else {
+            return "Error: Unknown tool '\(call.name)'"
+        }
+
+        let args: [String: AnyCodable]
+        do {
+            args = try call.parsedArguments()
+        } catch {
+            return "Error: Invalid arguments — \(error.localizedDescription)"
+        }
+
+        guard case .string(let path) = args["path"] else {
+            return "Error: Missing required argument 'path'"
+        }
+
+        if let rejection = FileReadTool.checkPathRestriction(path) {
+            return rejection
+        }
+
+        let url = URL(fileURLWithPath: path)
+        let resolvedPath = url.resolvingSymlinksInPath().path
+
+        do {
+            let attrs = try FileManager.default.attributesOfItem(atPath: resolvedPath)
+            if let fileSize = attrs[.size] as? UInt64, fileSize > FileReadTool.maxCharacters {
+                return "Error: File is too large to read (\(fileSize) bytes, maximum is \(FileReadTool.maxCharacters))."
+            }
+        } catch {
+            return "Error checking file size: \(error.localizedDescription)"
+        }
+
+        do {
+            let content = try String(contentsOf: url, encoding: .utf8)
+            guard content.count <= FileReadTool.maxCharacters else {
+                return "Error: File is too large to read (\(content.count) characters, maximum is \(FileReadTool.maxCharacters))."
+            }
+            // Intentionally NOT recording this read — Jones reads must not gate Brown's file_edit.
+            return content
+        } catch {
+            return "Error reading file: \(error.localizedDescription)"
         }
     }
 

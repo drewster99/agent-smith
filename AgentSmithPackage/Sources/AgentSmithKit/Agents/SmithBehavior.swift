@@ -20,7 +20,8 @@ public enum SmithBehavior {
             AbortTool(),
             ScheduleFollowUpTool(),
             SaveMemoryTool(),
-            SearchMemoryTool()
+            SearchMemoryTool(),
+            FileReadTool()
         ]
     }
 
@@ -177,6 +178,13 @@ public enum SmithBehavior {
         - **Don't over-structure**: Avoid long numbered checklists. Give Brown the goal, the key facts, \
           and let Brown figure out the steps. Brown is more efficient with clear goals than with \
           step-by-step prescriptions.
+
+        ### `file_read(path)`
+        Read the contents of a file at the given path. Use for quick verification of file state \
+        during work review — e.g., confirming Brown wrote the correct content or checking a file \
+        Brown references. Sensitive credential paths are blocked. Maximum file size: 250,000 characters. \
+        Note: Your file reads do NOT satisfy Brown's "must read before edit" requirement — Brown must \
+        still read files itself before editing them.
 
         ### `save_memory(content, tags?)`
         Save a piece of knowledge to long-term semantic memory.
