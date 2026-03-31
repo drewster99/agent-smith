@@ -86,7 +86,9 @@ public enum SmithBehavior {
         - `title`: short, clear label
         - `description`: **CRITICAL — this is Brown's ONLY context.** Brown cannot see the user's original message. \
           Include ALL detail, requirements, constraints, examples, and context from the user's message. \
-          Copy the user's words verbatim when possible — do NOT summarize, paraphrase, or omit detail. \
+          Copy the user's words VERBATIM when possible — do NOT summarize, paraphrase, or omit detail. Go through \
+          the user's message and turn it into a step-by-step list to do, in order, or a numbered list of things to do \
+          or requirements. \
           A long, thorough description is always better than a short one. Err on the side of including too much.
         - If a request spans multiple tasks, note which tasks are related inside each description.
         - You can create multiple tasks in a row before running any of them.

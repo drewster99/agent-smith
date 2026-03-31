@@ -47,8 +47,21 @@ public enum LLMRequestLogger {
         let safeModel = model.replacingOccurrences(of: "/", with: "_")
         let prefix = "\(stamp)_\(label)_\(safeModel)"
 
-        let toolCount = (body["tools"] as? [[String: Any]])?.count ?? 0
-        let messageCount = (body["messages"] as? [[String: Any]])?.count ?? 0
+        let toolCount: Int = {
+            // OpenAI/Anthropic use "tools", Gemini wraps in functionDeclarations
+            if let tools = body["tools"] as? [[String: Any]] {
+                // Gemini nests tools under functionDeclarations
+                if let decls = tools.first?["functionDeclarations"] as? [[String: Any]] {
+                    return decls.count
+                }
+                return tools.count
+            }
+            return 0
+        }()
+        // OpenAI/Anthropic use "messages", Gemini uses "contents"
+        let messageCount = (body["messages"] as? [[String: Any]])?.count
+            ?? (body["contents"] as? [[String: Any]])?.count
+            ?? 0
         print("[\(label)] REQUEST \(stamp) → \(url.absoluteString) model=\(model) messages=\(messageCount) tools=\(toolCount)")
 
         if let pretty = try? JSONSerialization.data(withJSONObject: body, options: [.prettyPrinted, .sortedKeys]),

@@ -115,6 +115,11 @@ struct MainView: View {
             Task { await viewModel.stopCurrentTask() }
             return .handled
         }
+        .onKeyPress(characters: .init(charactersIn: "l"), phases: .down) { keyPress in
+            guard keyPress.modifiers == .control else { return .ignored }
+            viewModel.clearLog()
+            return .handled
+        }
         .inspector(isPresented: $viewModel.showInspector) {
             InspectorView(
                 messages: viewModel.messages,

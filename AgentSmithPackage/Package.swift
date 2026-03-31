@@ -11,12 +11,12 @@ let package = Package(
         .library(name: "AgentSmithKit", targets: ["AgentSmithKit"])
     ],
     dependencies: [
-        .package(path: "../SwiftLLMKit")
+        .package(path: "../../swift-llm-kit")
     ],
     targets: [
         .target(
             name: "AgentSmithKit",
-            dependencies: ["SwiftLLMKit"],
+            dependencies: [.product(name: "SwiftLLMKit", package: "swift-llm-kit")],
             path: "Sources/AgentSmithKit"
         ),
         .testTarget(

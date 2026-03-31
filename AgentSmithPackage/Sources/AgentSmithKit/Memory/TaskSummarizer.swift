@@ -19,6 +19,7 @@ public actor TaskSummarizer {
         1. The stated problem or goal
         2. What was accomplished (or why it failed)
         3. How it was accomplished (key approach, tools used, decisions made)
+        4. A numbered list of steps of what happened
 
         Write in past tense. Be specific and factual. Include file names, tool names, or \
         technical details when relevant — these help with future search retrieval.

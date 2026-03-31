@@ -386,6 +386,14 @@ final class AppViewModel {
     func sendMessage() async {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !pendingAttachments.isEmpty else { return }
+
+        // Handle slash commands locally before sending to the runtime.
+        if pendingAttachments.isEmpty, text.lowercased() == "/clear" {
+            inputText = ""
+            clearLog()
+            return
+        }
+
         guard let runtime else { return }
 
         let attachments = pendingAttachments
