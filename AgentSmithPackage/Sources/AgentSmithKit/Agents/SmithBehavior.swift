@@ -26,7 +26,7 @@ public enum SmithBehavior {
 
     /// Tool names for configuration.
     public static var toolNames: [String] {
-        ["message_user", "message_brown", "create_task", "run_task", "update_task", "amend_task", "list_tasks", "get_task_details", "spawn_brown", "review_work", "manage_task_disposition", "terminate_agent", "abort", "schedule_followup", "save_memory", "search_memory"]
+        tools().map(\.name)
     }
 
     /// Enhanced system prompt for orchestration and iterative supervision.

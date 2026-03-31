@@ -93,11 +93,14 @@ public struct FileEditTool: AgentTool {
             return "Error: File does not exist: \(filePath)"
         }
 
-        // Check for hard links.
+        // Check for hard links and file size before reading.
         do {
             let attrs = try fm.attributesOfItem(atPath: resolvedPath)
             if let linkCount = attrs[.referenceCount] as? Int, linkCount > 1 {
                 return "BLOCKED: File '\(filePath)' has \(linkCount) hard links. Editing would affect all linked paths."
+            }
+            if let fileSize = attrs[.size] as? UInt64, fileSize > Self.maxCharacters {
+                return "Error: File is too large to edit (\(fileSize) bytes, maximum is \(Self.maxCharacters))."
             }
         } catch {
             return "Error checking file attributes: \(error.localizedDescription)"

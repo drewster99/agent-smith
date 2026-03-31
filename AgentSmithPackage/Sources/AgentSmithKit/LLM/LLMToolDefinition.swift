@@ -31,6 +31,10 @@ public enum AnyCodable: Codable, Sendable, Hashable {
     case dictionary([String: AnyCodable])
     case null
 
+    /// Decodes a type-erased JSON value by probing each possible type in order.
+    /// `try?` is intentional here: a `singleValueContainer` provides no type introspection,
+    /// so the only way to determine the contained type is to attempt each decode and fall
+    /// through on failure. This is the standard pattern for type-erased Codable wrappers.
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if container.decodeNil() {

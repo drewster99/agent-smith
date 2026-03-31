@@ -130,11 +130,15 @@ public struct OllamaProvider: LLMProvider {
 
     /// Converts a JSON string back to a JSON object for Ollama's native format.
     private func argumentsObject(from jsonString: String) -> Any {
-        guard let data = jsonString.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) else {
+        guard let data = jsonString.data(using: .utf8) else {
             return jsonString
         }
-        return obj
+        do {
+            return try JSONSerialization.jsonObject(with: data)
+        } catch {
+            logger.warning("Failed to parse tool call arguments as JSON: \(error.localizedDescription, privacy: .public) input=\(jsonString, privacy: .public)")
+            return jsonString
+        }
     }
 
     // MARK: - System message extraction
@@ -228,8 +232,6 @@ public struct OllamaProvider: LLMProvider {
 
         return result
     }
-
-    // MARK: - Debug logging
 
     // MARK: - Response parsing
 

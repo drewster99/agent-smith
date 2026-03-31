@@ -24,7 +24,7 @@ let (exportProviders, exportConfigs) = await MainActor.run {
 
 // MARK: - Read UserDefaults for speech and assignment settings
 
-let ud = UserDefaults(suiteName: appIdentifier) ?? .standard
+let ud = UserDefaults.standard
 
 func readBool(_ key: String, default defaultValue: Bool) -> Bool {
     ud.object(forKey: key) as? Bool ?? defaultValue

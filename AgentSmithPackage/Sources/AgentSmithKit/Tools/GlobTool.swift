@@ -6,7 +6,7 @@ import Foundation
 /// Returns matching file paths sorted by modification time (most recent first).
 public struct GlobTool: AgentTool {
     public let name = "glob"
-    public let toolDescription = "Find files matching a glob pattern. Supports *, **, ?, and {a,b} patterns. Returns matching file paths sorted by modification time (most recent first). Use instead of find or ls for file discovery."
+    public let toolDescription = "Find files matching a glob pattern. Supports *, **, ?, and {a,b} patterns. Returns matching file paths sorted by modification time (most recent first). Hidden files (dotfiles) are skipped by default. Use instead of find or ls for file discovery."
 
     public func description(for role: AgentRole) -> String {
         switch role {
@@ -176,7 +176,7 @@ public struct GlobTool: AgentTool {
                     let afterStars = glob.index(after: next)
                     if afterStars < glob.endIndex && glob[afterStars] == "/" {
                         // **/ — zero or more path segments followed by /
-                        result += "(.+/)?"
+                        result += "(.*/)?"
                         i = glob.index(after: afterStars)
                     } else {
                         // ** at end or before non-/ — match everything

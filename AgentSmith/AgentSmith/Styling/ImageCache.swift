@@ -47,7 +47,7 @@ final class ImageCache {
             for: .cachesDirectory,
             in: .userDomainMask
         ).first else {
-            fatalError("Caches directory unavailable")
+            preconditionFailure("Caches directory unavailable — this should never happen on macOS")
         }
         thumbnailDirectory = cachesDir
             .appendingPathComponent("AgentSmith", isDirectory: true)

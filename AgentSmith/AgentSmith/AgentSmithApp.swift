@@ -37,8 +37,8 @@ struct AgentSmithApp: App {
         .defaultSize(width: 800, height: 700)
 
         WindowGroup("Task Detail", for: UUID.self) { $taskID in
-            if let taskID, let task = viewModel.tasks.first(where: { $0.id == taskID }) {
-                TaskDetailWindow(task: task)
+            if let taskID {
+                TaskDetailWindow(taskID: taskID, viewModel: viewModel)
             } else {
                 ContentUnavailableView(
                     "Task Not Found",

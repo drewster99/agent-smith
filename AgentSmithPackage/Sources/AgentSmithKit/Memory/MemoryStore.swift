@@ -48,6 +48,9 @@ public struct RelevantPriorTask: Codable, Sendable {
         self.similarity = similarity
     }
 
+    /// Decodes a `RelevantPriorTask`, falling back to a random UUID for `taskID`
+    /// when the key is absent. This provides backward compatibility with data
+    /// persisted before the `taskID` field was added to the schema.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         taskID = try c.decodeIfPresent(UUID.self, forKey: .taskID) ?? UUID()
@@ -191,7 +194,15 @@ public actor MemoryStore {
         threshold: Float = 0.3
     ) throws -> [MemorySearchResult] {
         let queryEmbedding = try embeddingService.embed(query)
+        return searchMemories(embedding: queryEmbedding, limit: limit, threshold: threshold)
+    }
 
+    /// Searches memories using a pre-computed embedding vector.
+    private func searchMemories(
+        embedding queryEmbedding: [Float],
+        limit: Int,
+        threshold: Float
+    ) -> [MemorySearchResult] {
         var results: [MemorySearchResult] = []
         for entry in memories.values {
             let similarity = EmbeddingService.cosineSimilarity(queryEmbedding, entry.embedding)
@@ -228,7 +239,15 @@ public actor MemoryStore {
         threshold: Float = 0.3
     ) throws -> [TaskSummarySearchResult] {
         let queryEmbedding = try embeddingService.embed(query)
+        return searchTaskSummaries(embedding: queryEmbedding, limit: limit, threshold: threshold)
+    }
 
+    /// Searches task summaries using a pre-computed embedding vector.
+    private func searchTaskSummaries(
+        embedding queryEmbedding: [Float],
+        limit: Int,
+        threshold: Float
+    ) -> [TaskSummarySearchResult] {
         var results: [TaskSummarySearchResult] = []
         for entry in taskSummaries.values {
             let similarity = EmbeddingService.cosineSimilarity(queryEmbedding, entry.embedding)
@@ -254,8 +273,9 @@ public actor MemoryStore {
         memoryLimit: Int = 3,
         taskLimit: Int = 3
     ) throws -> SemanticSearchResults {
-        let allMemories = try searchMemories(query: query, limit: memoryLimit, threshold: 0.35)
-        let allTasks = try searchTaskSummaries(query: query, limit: taskLimit, threshold: 0.35)
+        let queryEmbedding = try embeddingService.embed(query)
+        let allMemories = searchMemories(embedding: queryEmbedding, limit: memoryLimit, threshold: 0.35)
+        let allTasks = searchTaskSummaries(embedding: queryEmbedding, limit: taskLimit, threshold: 0.35)
 
         enum Candidate {
             case memory(Int)

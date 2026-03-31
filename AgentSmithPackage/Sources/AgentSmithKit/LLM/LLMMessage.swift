@@ -135,7 +135,7 @@ public struct LLMMessage: Codable, Sendable {
         case .mixed(let text, let calls):
             return text.count + calls.reduce(0) { $0 + $1.name.count + $1.arguments.count + 20 } + imageChars
         case .toolResult(let toolCallID, let content):
-            return toolCallID.count + content.count + 20
+            return toolCallID.count + content.count + 20 + imageChars
         }
     }
 }

@@ -91,14 +91,26 @@ struct ModelConfigurationEditorView: View {
         }
     }
 
+    /// Whether extended thinking is active, which locks temperature to 1.0 for Anthropic.
+    private var isThinkingActive: Bool {
+        selectedProviderType == .anthropic && thinkingBudget > 0
+    }
+
     private var parametersSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             LabeledContent("Temperature") {
                 HStack {
                     Slider(value: $temperature, in: 0...2, step: 0.1)
+                        .disabled(isThinkingActive)
                     Text(String(format: "%.1f", temperature))
                         .monospacedDigit()
                         .frame(width: 30)
+                        .foregroundStyle(isThinkingActive ? .secondary : .primary)
+                }
+            }
+            .onChange(of: temperature) { _, newValue in
+                if selectedProviderType == .anthropic && newValue != 1.0 {
+                    thinkingBudget = 0
                 }
             }
 
@@ -130,7 +142,12 @@ struct ModelConfigurationEditorView: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 120)
                         .onChange(of: thinkingBudget) { _, newValue in
-                            thinkingBudget = max(0, newValue)
+                            if newValue > 0 {
+                                thinkingBudget = max(1024, newValue)
+                                temperature = 1.0
+                            } else {
+                                thinkingBudget = 0
+                            }
                         }
 
                     Button("1K") { thinkingBudget = 1_024 }
@@ -142,11 +159,20 @@ struct ModelConfigurationEditorView: View {
                     Button("16K") { thinkingBudget = 16_384 }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                    Button("Off") { thinkingBudget = 0 }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                 }
             }
-            Text("Extended thinking token budget (Anthropic only). Set to 0 to disable.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if isThinkingActive {
+                Text("Thinking enabled — temperature locked to 1.0 (Anthropic requirement). Minimum budget: 1,024 tokens.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else {
+                Text("Extended thinking token budget (Anthropic only). Set to 0 to disable. Changing temperature disables thinking.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

@@ -1,6 +1,13 @@
 import SwiftUI
 import AgentSmithKit
 
+/// Shared timestamp formatter used by all banner and message row structs in this file.
+private let sharedTimestampFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm:ss.SS"
+    return f
+}()
+
 /// Color-coded scrolling message stream with attachment display.
 struct ChannelLogView: View {
     var messages: [ChannelMessage]
@@ -16,6 +23,43 @@ struct ChannelLogView: View {
     private struct ScrollMetrics: Equatable {
         var isNearBottom: Bool
         var contentHeight: CGFloat
+    }
+
+    /// Set of requestIDs that have a corresponding `tool_request` message.
+    /// Pre-computed once per body evaluation to avoid O(N) scans per row.
+    private var toolRequestIDs: Set<String> {
+        var ids = Set<String>()
+        for msg in messages {
+            if msg.stringMetadata("messageKind") == "tool_request",
+               let reqID = msg.stringMetadata("requestID") {
+                ids.insert(reqID)
+            }
+        }
+        return ids
+    }
+
+    /// Maps requestID to security review messages for O(1) lookup by MessageRow.
+    private var securityReviewByRequestID: [String: ChannelMessage] {
+        var dict: [String: ChannelMessage] = [:]
+        for msg in messages {
+            if msg.metadata?["securityDisposition"] != nil,
+               let reqID = msg.stringMetadata("requestID") {
+                dict[reqID] = msg
+            }
+        }
+        return dict
+    }
+
+    /// Maps requestID to tool output messages for O(1) lookup by MessageRow.
+    private var toolOutputByRequestID: [String: ChannelMessage] {
+        var dict: [String: ChannelMessage] = [:]
+        for msg in messages {
+            if msg.stringMetadata("messageKind") == "tool_output",
+               let reqID = msg.stringMetadata("requestID") {
+                dict[reqID] = msg
+            }
+        }
+        return dict
     }
 
     var body: some View {
@@ -38,8 +82,12 @@ struct ChannelLogView: View {
                             .padding(.bottom, 4)
                         }
 
+                        let requestIDs = toolRequestIDs
+                        let reviewLookup = securityReviewByRequestID
+                        let outputLookup = toolOutputByRequestID
+
                         ForEach(messages) { message in
-                            if shouldSuppress(message) {
+                            if shouldSuppress(message, toolRequestIDs: requestIDs) {
                                 // Folded into a tool_request row — don't render standalone
                             } else if case .string(let kind) = message.metadata?["messageKind"], kind == "agent_online" {
                                 // Agent online announcements are internal coordination messages
@@ -86,7 +134,8 @@ struct ChannelLogView: View {
                             } else {
                                 MessageRow(
                                     message: message,
-                                    allMessages: messages,
+                                    securityReviewMessage: message.stringMetadata("requestID").flatMap { reviewLookup[$0] },
+                                    toolOutputMessage: message.stringMetadata("requestID").flatMap { outputLookup[$0] },
                                     selectedImageAttachment: $selectedImageAttachment
                                 )
                                     .id(message.id)
@@ -149,22 +198,22 @@ struct ChannelLogView: View {
     }
 
     /// Suppresses security reviews and tool outputs that are grouped into a parent tool_request row.
-    private func shouldSuppress(_ message: ChannelMessage) -> Bool {
+    private func shouldSuppress(_ message: ChannelMessage, toolRequestIDs: Set<String>) -> Bool {
         guard let reqID = message.stringMetadata("requestID") else { return false }
         let isFollowUp = message.metadata?["securityDisposition"] != nil
             || message.stringMetadata("messageKind") == "tool_output"
         guard isFollowUp else { return false }
         // Only suppress if the parent tool_request exists in the messages array
-        return messages.contains { msg in
-            msg.stringMetadata("messageKind") == "tool_request"
-                && msg.stringMetadata("requestID") == reqID
-        }
+        return toolRequestIDs.contains(reqID)
     }
 }
 
 private struct MessageRow: View {
     let message: ChannelMessage
-    let allMessages: [ChannelMessage]
+    /// Pre-looked-up security review for this message's requestID (nil if none).
+    let securityReviewMessage: ChannelMessage?
+    /// Pre-looked-up tool output for this message's requestID (nil if none).
+    let toolOutputMessage: ChannelMessage?
     @Binding var selectedImageAttachment: Attachment?
 
     @State private var isExpanded = false
@@ -223,26 +272,6 @@ private struct MessageRow: View {
     }
 
     // MARK: - Tool request grouping
-
-    private var requestID: String? {
-        message.stringMetadata("requestID")
-    }
-
-    private var securityReviewMessage: ChannelMessage? {
-        guard let reqID = requestID else { return nil }
-        return allMessages.first { msg in
-            msg.stringMetadata("requestID") == reqID
-                && msg.metadata?["securityDisposition"] != nil
-        }
-    }
-
-    private var toolOutputMessage: ChannelMessage? {
-        guard let reqID = requestID else { return nil }
-        return allMessages.first { msg in
-            msg.stringMetadata("requestID") == reqID
-                && msg.stringMetadata("messageKind") == "tool_output"
-        }
-    }
 
     private var dispositionIndicator: String? {
         guard let review = securityReviewMessage,
@@ -313,7 +342,7 @@ private struct MessageRow: View {
                         .foregroundStyle(recipientColor)
                 }
 
-                Text(Self.timestampFormatter.string(from: message.timestamp))
+                Text(sharedTimestampFormatter.string(from: message.timestamp))
                     .font(AppFonts.channelTimestamp)
                     .foregroundStyle(.secondary)
             }
@@ -571,12 +600,6 @@ private struct MessageRow: View {
         }
     }
 
-    private static let timestampFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss.SS"
-        return f
-    }()
-
     private var securityReviewColor: Color {
         guard case .string(let disposition) = message.metadata?["securityDisposition"] else {
             return .secondary
@@ -645,7 +668,7 @@ private struct TaskCreatedBanner: View {
 
                 Spacer()
 
-                Text(Self.timestampFormatter.string(from: timestamp))
+                Text(sharedTimestampFormatter.string(from: timestamp))
                     .font(AppFonts.channelTimestamp)
                     .foregroundStyle(.secondary)
             }
@@ -747,11 +770,6 @@ private struct TaskCreatedBanner: View {
         .padding(.vertical, 4)
     }
 
-    private static let timestampFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss.SS"
-        return f
-    }()
 }
 
 /// Gold/amber banner marking a task's completion in the channel log.
@@ -783,7 +801,7 @@ private struct TaskCompletedBanner: View {
 
                 Spacer()
 
-                Text(Self.timestampFormatter.string(from: timestamp))
+                Text(sharedTimestampFormatter.string(from: timestamp))
                     .font(AppFonts.channelTimestamp)
                     .foregroundStyle(.secondary)
             }
@@ -820,11 +838,6 @@ private struct TaskCompletedBanner: View {
         return mins > 0 ? "\(hours)h \(mins)m" : "\(hours)h"
     }
 
-    private static let timestampFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss.SS"
-        return f
-    }()
 }
 
 /// Green mini-banner for memory save/search events in the channel log.
@@ -874,7 +887,7 @@ private struct MemoryBanner: View {
                             .foregroundStyle(.tertiary)
                     }
 
-                    Text(Self.timestampFormatter.string(from: timestamp))
+                    Text(sharedTimestampFormatter.string(from: timestamp))
                         .font(AppFonts.channelTimestamp)
                         .foregroundStyle(.tertiary)
                 }
@@ -934,11 +947,6 @@ private struct MemoryBanner: View {
         kind == .saved && detail != nil && !(detail ?? "").isEmpty
     }
 
-    private static let timestampFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss.SS"
-        return f
-    }()
 }
 
 /// Displays an attachment inline: images as cached thumbnails, other files as badges.

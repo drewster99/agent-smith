@@ -3,10 +3,29 @@ import AgentSmithKit
 
 /// Standalone window showing full task detail: metadata, description, commentary, and results.
 struct TaskDetailWindow: View {
-    let task: AgentTask
+    let taskID: UUID
+    var viewModel: AppViewModel
     @Environment(\.dismiss) private var dismiss
 
+    /// Live task looked up from the view model on each render, so updates are reflected.
+    private var task: AgentTask? {
+        viewModel.tasks.first { $0.id == taskID }
+    }
+
     var body: some View {
+        if let task {
+            taskContent(task)
+        } else {
+            ContentUnavailableView(
+                "Task Not Found",
+                systemImage: "questionmark.circle",
+                description: Text("This task may have been deleted.")
+            )
+            .frame(minWidth: 600, minHeight: 400)
+        }
+    }
+
+    private func taskContent(_ task: AgentTask) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 // MARK: Header
@@ -23,7 +42,7 @@ struct TaskDetailWindow: View {
                 }
 
                 // MARK: Metadata
-                metadataSection
+                metadataSection(for: task)
 
                 Divider()
 
@@ -83,7 +102,7 @@ struct TaskDetailWindow: View {
                 }
 
                 // MARK: Relevant Context
-                if hasRelevantContext {
+                if Self.hasRelevantContext(task) {
                     Divider()
                     sectionHeader("Context Retrieved at Creation")
 
@@ -147,7 +166,7 @@ struct TaskDetailWindow: View {
 
     // MARK: - Metadata grid
 
-    private var metadataSection: some View {
+    private func metadataSection(for task: AgentTask) -> some View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
             GridRow {
                 metadataLabel("Status")
@@ -175,7 +194,7 @@ struct TaskDetailWindow: View {
                 }
             }
 
-            if let elapsed = elapsedTime {
+            if let elapsed = Self.elapsedTime(for: task) {
                 GridRow {
                     metadataLabel("Elapsed")
                     Text(elapsed)
@@ -197,7 +216,7 @@ struct TaskDetailWindow: View {
     }
 
     /// Whether the task has any relevant memories or prior task summaries attached.
-    private var hasRelevantContext: Bool {
+    private static func hasRelevantContext(_ task: AgentTask) -> Bool {
         let hasMemories = task.relevantMemories.map { !$0.isEmpty } ?? false
         let hasPriorTasks = task.relevantPriorTasks.map { !$0.isEmpty } ?? false
         return hasMemories || hasPriorTasks
@@ -206,7 +225,7 @@ struct TaskDetailWindow: View {
     // MARK: - Elapsed time
 
     /// Computes a human-readable elapsed duration from `startedAt` to `completedAt`.
-    private var elapsedTime: String? {
+    private static func elapsedTime(for task: AgentTask) -> String? {
         guard let start = task.startedAt else { return nil }
         let end = task.completedAt ?? Date()
         let interval = end.timeIntervalSince(start)

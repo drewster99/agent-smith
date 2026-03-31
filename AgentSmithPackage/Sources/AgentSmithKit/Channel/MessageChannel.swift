@@ -62,6 +62,10 @@ public actor MessageChannel {
     }
 
     /// Messages posted since a given index (useful for building LLM context).
+    ///
+    /// - Warning: Positional indices shift after trimming. Do not cache indices
+    ///   across ``post(_:)`` calls that may trigger a trim — the cached index may
+    ///   reference a different message or be out of bounds.
     public func messages(since index: Int) -> [ChannelMessage] {
         guard index < messages.count else { return [] }
         return Array(messages[index...])

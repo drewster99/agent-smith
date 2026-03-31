@@ -81,7 +81,11 @@ enum ProcessRunner {
                     try process.run()
 
                     // Put the process in its own group so the timeout can kill all children.
-                    setpgid(process.processIdentifier, process.processIdentifier)
+                    let pgidResult = setpgid(process.processIdentifier, process.processIdentifier)
+                    if pgidResult == -1 {
+                        let logger = Logger(subsystem: "AgentSmith", category: "ProcessRunner")
+                        logger.debug("setpgid failed for pid \(process.processIdentifier): \(String(cString: strerror(errno)))")
+                    }
 
                     // Schedule timeout — kills the entire process group.
                     let pid = process.processIdentifier

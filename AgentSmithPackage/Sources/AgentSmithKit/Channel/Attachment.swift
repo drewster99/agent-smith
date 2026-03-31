@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let attachmentLogger = Logger(subsystem: "com.agentsmith", category: "Attachment")
 
 /// A file attachment on a channel message. Supports any media type.
 /// File data is stored separately on disk; only metadata is persisted in the message JSON.
@@ -61,6 +64,7 @@ public struct Attachment: Identifiable, Codable, Sendable {
         do {
             return try Data(contentsOf: url)
         } catch {
+            attachmentLogger.error("Failed to load persisted data for attachment \(id.uuidString): \(error.localizedDescription)")
             return nil
         }
     }

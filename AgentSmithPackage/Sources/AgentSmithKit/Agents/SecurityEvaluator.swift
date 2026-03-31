@@ -10,6 +10,7 @@ public struct SecurityDisposition: Sendable {
     /// True when this approval was automatic (identical retry of a WARN'd request).
     public let isAutoApproval: Bool
 
+    /// Creates a security disposition with the given approval state and optional metadata.
     public init(approved: Bool, message: String? = nil, isWarning: Bool = false, isAutoApproval: Bool = false) {
         self.approved = approved
         self.message = message
@@ -21,13 +22,21 @@ public struct SecurityDisposition: Sendable {
 /// Record of a single security evaluation for inspector display.
 public struct EvaluationRecord: Sendable, Identifiable {
     public let id = UUID()
+    /// When the evaluation occurred.
     public let timestamp: Date
+    /// The name of the tool that was evaluated.
     public let toolName: String
+    /// The JSON-encoded parameters passed to the tool call.
     public let toolParams: String
+    /// The title of the task the tool call was made under, if any.
     public let taskTitle: String?
+    /// The full evaluation prompt sent to the Jones LLM.
     public let prompt: String
+    /// The raw text response from the Jones LLM.
     public let response: String
+    /// The parsed security disposition (approved/denied, warning status, etc.).
     public let disposition: SecurityDisposition
+    /// Wall-clock time in milliseconds for the evaluation round-trip.
     public let latencyMs: Int
 }
 

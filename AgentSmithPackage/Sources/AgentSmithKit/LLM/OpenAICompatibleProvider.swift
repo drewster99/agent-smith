@@ -194,12 +194,19 @@ public struct OpenAICompatibleProvider: LLMProvider {
                 if let argsObj = function["arguments"] {
                     if let argsString = argsObj as? String {
                         arguments = argsString
-                    } else if let argsData = try? JSONSerialization.data(withJSONObject: argsObj),
-                              let argsString = String(data: argsData, encoding: .utf8) {
-                        arguments = argsString
                     } else {
-                        logger.warning("Could not serialize tool_call arguments for \(name, privacy: .public), defaulting to {}")
-                        arguments = "{}"
+                        do {
+                            let argsData = try JSONSerialization.data(withJSONObject: argsObj)
+                            if let argsString = String(data: argsData, encoding: .utf8) {
+                                arguments = argsString
+                            } else {
+                                logger.warning("Tool call arguments for \(name, privacy: .public) produced non-UTF-8 data, defaulting to {}")
+                                arguments = "{}"
+                            }
+                        } catch {
+                            logger.warning("Failed to serialize tool_call arguments for \(name, privacy: .public): \(error.localizedDescription, privacy: .public), defaulting to {}")
+                            arguments = "{}"
+                        }
                     }
                 } else {
                     arguments = "{}"

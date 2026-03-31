@@ -1,6 +1,13 @@
 import Foundation
+import os
+
+private let logger = Logger(subsystem: "com.agentsmith", category: "Persistence")
 
 /// Saves and loads channel logs, task lists, and attachment files in Application Support.
+///
+/// The initializer resolves `~/Library/Application Support`, which is guaranteed to exist
+/// on macOS. The `preconditionFailure` guards against truly exceptional platform breakage
+/// (e.g., a sandboxing misconfiguration) where no recovery is possible.
 public actor PersistenceManager {
     private let baseDirectory: URL
     private let attachmentsDirectory: URL
@@ -10,7 +17,10 @@ public actor PersistenceManager {
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first else {
-            fatalError("Application Support directory unavailable")
+            preconditionFailure(
+                "Application Support directory unavailable — "
+                + "this directory is guaranteed on macOS; check sandbox entitlements"
+            )
         }
         baseDirectory = appSupport.appendingPathComponent("AgentSmith", isDirectory: true)
         attachmentsDirectory = baseDirectory.appendingPathComponent("attachments", isDirectory: true)
@@ -120,6 +130,7 @@ public actor PersistenceManager {
         do {
             return try Data(contentsOf: url)
         } catch {
+            logger.error("Failed to load attachment \(id.uuidString): \(error.localizedDescription)")
             return nil
         }
     }

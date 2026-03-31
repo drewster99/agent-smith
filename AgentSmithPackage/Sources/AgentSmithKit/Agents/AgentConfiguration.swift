@@ -2,9 +2,13 @@ import Foundation
 
 /// Full configuration for a single agent instance.
 public struct AgentConfiguration: Sendable {
+    /// The agent's role in the system (smith, brown, jones, or summarizer).
     public var role: AgentRole
+    /// LLM provider and model parameters for this agent's API calls.
     public var llmConfig: LLMConfiguration
+    /// The full system prompt injected at the start of every LLM conversation.
     public var systemPrompt: String
+    /// Names of tools this agent is allowed to call.
     public var toolNames: [String]
     /// When `true`, all tool calls except messaging and task-lifecycle tools are held for Jones' approval before execution.
     public var requiresToolApproval: Bool

@@ -880,7 +880,7 @@ public actor AgentActor {
         ))
     }
 
-    /// Updates the post-call tracking flags used to control run loop behavior after tool execution.
+    /// Tool result strings used for post-call control flow. Keep in sync with tool return values.
     private func updatePostCallFlags(call: LLMToolCall, result: String, sentMessage: inout Bool, calledTaskComplete: inout Bool, calledCreateTask: inout Bool) {
         if call.name == "message_user" && result == "Message sent to user." { sentMessage = true }
         if call.name == "review_work" && (result.contains("accepted and completed") || result.contains("Feedback sent to Brown")) { sentMessage = true }
@@ -913,11 +913,10 @@ public actor AgentActor {
         // withTaskCancellationHandler ensures that if the run loop task itself is
         // cancelled (e.g., via stop()), we immediately cancel the inner sleep rather
         // than waiting for the full duration.
-        await withTaskCancellationHandler {
-            await task.value
-        } onCancel: {
-            task.cancel()
-        }
+        await withTaskCancellationHandler(
+            operation: { await task.value },
+            onCancel: { task.cancel() }
+        )
         idleSleepTask = nil
     }
 

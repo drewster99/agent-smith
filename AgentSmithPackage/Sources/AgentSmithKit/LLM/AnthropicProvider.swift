@@ -79,10 +79,13 @@ public struct AnthropicProvider: LLMProvider {
         // and must be combined into a single user message with all tool_result content blocks.
         let encodedMessages = Self.mergeConsecutiveSameRole(conversationMessages.map(encodeMessage))
 
+        let thinkingEnabled = (config.thinkingBudget ?? 0) > 0
+
         var body: [String: Any] = [
             "model": config.model,
             "max_tokens": config.maxTokens,
-            "temperature": config.temperature,
+            // Anthropic requires temperature = 1 when extended thinking is enabled.
+            "temperature": thinkingEnabled ? 1.0 : config.temperature,
             "messages": encodedMessages,
             "cache_control": config.extendedCacheTTL
                 ? ["type": "ephemeral", "ttl": "1h"] as [String: Any]
@@ -93,10 +96,10 @@ public struct AnthropicProvider: LLMProvider {
             body["system"] = systemPrompt
         }
 
-        if let budget = config.thinkingBudget, budget > 0 {
+        if thinkingEnabled, let budget = config.thinkingBudget {
             body["thinking"] = [
                 "type": "enabled",
-                "budget_tokens": budget
+                "budget_tokens": max(budget, 1024)
             ] as [String: Any]
         }
 
@@ -234,12 +237,13 @@ public struct AnthropicProvider: LLMProvider {
     /// Parses a JSON argument string back into a Foundation object for the API request body.
     private static func parseToolArguments(_ jsonString: String) -> Any {
         guard let data = jsonString.data(using: .utf8) else {
+            logger.warning("Tool arguments not valid UTF-8: \(jsonString.prefix(200))")
             return [String: Any]()
         }
         do {
             return try JSONSerialization.jsonObject(with: data)
         } catch {
-            // Arguments were already valid JSON from the LLM response; re-parse failure is unexpected
+            logger.warning("Tool arguments re-parse failed: \(error.localizedDescription) input=\(jsonString.prefix(200))")
             return [String: Any]()
         }
     }
@@ -269,15 +273,15 @@ public struct AnthropicProvider: LLMProvider {
 
         var text: String?
         var toolCalls: [LLMToolCall] = []
+        var reasoning: String?
 
         for block in contentBlocks {
             guard let type = block["type"] as? String else { continue }
             switch type {
             case "thinking":
-                // Extended thinking block — log but don't include in response text.
-                // The thinking content is internal reasoning, not user-facing output.
                 if let thinking = block["thinking"] as? String {
                     logger.debug("Thinking block (\(thinking.count) chars)")
+                    reasoning = thinking
                 }
             case "text":
                 text = block["text"] as? String
@@ -296,7 +300,8 @@ public struct AnthropicProvider: LLMProvider {
 
         return LLMResponse(
             text: text?.isEmpty == true ? nil : text,
-            toolCalls: toolCalls
+            toolCalls: toolCalls,
+            reasoning: reasoning
         )
     }
 }

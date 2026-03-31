@@ -46,6 +46,17 @@ public struct FileReadTool: AgentTool {
 
         let url = URL(fileURLWithPath: path)
         let resolvedPath = url.resolvingSymlinksInPath().path
+
+        // Check file size before reading to avoid loading huge files into memory.
+        do {
+            let attrs = try FileManager.default.attributesOfItem(atPath: resolvedPath)
+            if let fileSize = attrs[.size] as? UInt64, fileSize > Self.maxCharacters {
+                return "Error: File is too large to read (\(fileSize) bytes, maximum is \(Self.maxCharacters))."
+            }
+        } catch {
+            return "Error checking file size: \(error.localizedDescription)"
+        }
+
         do {
             let content = try String(contentsOf: url, encoding: .utf8)
             guard content.count <= Self.maxCharacters else {
@@ -69,7 +80,7 @@ public struct FileReadTool: AgentTool {
 
         // Block sensitive credential directories.
         // Lowercase both sides: APFS is case-insensitive so /Users/FOO/.SSH bypasses a case-sensitive check.
-        let sensitiveDirs = [".ssh", ".gnupg", ".aws", ".kube"]
+        let sensitiveDirs = [".ssh", ".gnupg", ".aws", ".config/gcloud", ".kube", ".docker"]
         for dir in sensitiveDirs {
             let dirPath = (home as NSString).appendingPathComponent(dir)
             if resolved.lowercased().hasPrefix(dirPath.lowercased()) {

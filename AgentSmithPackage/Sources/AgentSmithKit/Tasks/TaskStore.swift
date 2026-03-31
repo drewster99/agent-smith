@@ -78,12 +78,16 @@ public actor TaskStore {
         }
     }
 
-    /// Returns the first active task assigned to the given agent that is still actionable.
+    /// Returns the oldest actionable task assigned to the given agent.
+    ///
+    /// Tasks are sorted by `createdAt` ascending so the result is deterministic
+    /// regardless of dictionary iteration order.
     public func taskForAgent(agentID: UUID) -> AgentTask? {
         let actionableStatuses: Set<AgentTask.Status> = [.pending, .running, .paused, .awaitingReview]
-        return tasks.values.first { task in
-            task.assigneeIDs.contains(agentID) && actionableStatuses.contains(task.status)
-        }
+        return tasks.values
+            .filter { $0.assigneeIDs.contains(agentID) && actionableStatuses.contains($0.status) }
+            .sorted { $0.createdAt < $1.createdAt }
+            .first
     }
 
     /// Appends a progress update to a task, enforcing the per-task cap.

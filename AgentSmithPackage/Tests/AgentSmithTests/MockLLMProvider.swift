@@ -27,6 +27,7 @@ final class MockLLMProvider: LLMProvider, @unchecked Sendable {
     ) async throws -> LLMResponse {
         lock.withLock {
             _receivedMessages.append(messages)
+            precondition(!_responses.isEmpty, "MockLLMProvider has no canned responses")
             let index = min(_callCount, _responses.count - 1)
             _callCount += 1
             return _responses[index]

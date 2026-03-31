@@ -26,9 +26,15 @@ public struct KillProcessTool: AgentTool {
         let pid: Int32
         switch arguments["pid"] {
         case .int(let value):
-            pid = Int32(value)
+            guard let exact = Int32(exactly: value) else {
+                return "Invalid PID: value out of Int32 range."
+            }
+            pid = exact
         case .double(let value):
-            pid = Int32(value)
+            guard let exact = Int32(exactly: value) else {
+                return "Invalid PID: value out of Int32 range."
+            }
+            pid = exact
         case .string(let value):
             guard let parsed = Int32(value) else {
                 return "Error: invalid PID '\(value)'"

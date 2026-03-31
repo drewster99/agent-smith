@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let loggerOS = Logger(subsystem: "com.agentsmith", category: "LLMRequestLogger")
 
 /// Controls verbose request/response file logging for each agent and service.
 ///
@@ -23,16 +26,24 @@ public enum LLMRequestLogger {
 
     static let logDirectory: URL = {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("AgentSmith-LLM-Logs")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        } catch {
+            loggerOS.warning("Failed to create log directory \(dir.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
         return dir
     }()
 
     // MARK: - Shared helpers
 
-    static func timestamp() -> String {
+    private static let timestampFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "HH-mm-ss.SSS"
-        return f.string(from: Date())
+        return f
+    }()
+
+    static func timestamp() -> String {
+        timestampFormatter.string(from: Date())
     }
 
     /// Logs a full request body to a JSON file and prints a console summary.
@@ -67,8 +78,12 @@ public enum LLMRequestLogger {
         if let pretty = try? JSONSerialization.data(withJSONObject: body, options: [.prettyPrinted, .sortedKeys]),
            let prettyString = String(data: pretty, encoding: .utf8) {
             let file = logDirectory.appendingPathComponent("\(prefix)_request.json")
-            try? prettyString.write(to: file, atomically: true, encoding: .utf8)
-            print("[\(label)]   Full request logged to \(file.path)")
+            do {
+                try prettyString.write(to: file, atomically: true, encoding: .utf8)
+                print("[\(label)]   Full request logged to \(file.path)")
+            } catch {
+                loggerOS.warning("Failed to write request log to \(file.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
@@ -107,11 +122,19 @@ public enum LLMRequestLogger {
         if let parsed = try? JSONSerialization.jsonObject(with: data),
            let pretty = try? JSONSerialization.data(withJSONObject: parsed, options: [.prettyPrinted, .sortedKeys]),
            let prettyString = String(data: pretty, encoding: .utf8) {
-            try? prettyString.write(to: file, atomically: true, encoding: .utf8)
-            print("[\(label)]   Full response logged to \(file.path)")
+            do {
+                try prettyString.write(to: file, atomically: true, encoding: .utf8)
+                print("[\(label)]   Full response logged to \(file.path)")
+            } catch {
+                loggerOS.warning("Failed to write response log to \(file.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
         } else {
-            try? data.write(to: file)
-            print("[\(label)]   Raw response logged to \(file.path)")
+            do {
+                try data.write(to: file)
+                print("[\(label)]   Raw response logged to \(file.path)")
+            } catch {
+                loggerOS.warning("Failed to write raw response log to \(file.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 }

@@ -22,6 +22,7 @@ public struct LLMToolCall: Codable, Sendable {
     }
 }
 
+/// Errors that arise when validating or parsing tool call arguments from LLM responses.
 public enum ToolCallError: Error, LocalizedError {
     case invalidArgumentsEncoding
     case missingRequiredArgument(String)

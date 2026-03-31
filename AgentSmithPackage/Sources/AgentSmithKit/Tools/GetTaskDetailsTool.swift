@@ -24,7 +24,7 @@ public struct GetTaskDetailsTool: AgentTool {
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
         guard case .string(let taskIDString) = arguments["task_id"] else {
-            return "Missing required parameter: task_id"
+            throw ToolCallError.missingRequiredArgument("task_id")
         }
         guard let taskID = UUID(uuidString: taskIDString) else {
             return "Invalid task_id: '\(taskIDString)' is not a valid UUID."
@@ -60,9 +60,13 @@ public struct GetTaskDetailsTool: AgentTool {
         return parts.joined(separator: "\n")
     }
 
-    private static func formatDate(_ date: Date) -> String {
+    private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    private static func formatDate(_ date: Date) -> String {
+        dateFormatter.string(from: date)
     }
 }

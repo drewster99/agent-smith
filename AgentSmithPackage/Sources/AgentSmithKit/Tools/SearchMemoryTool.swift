@@ -28,6 +28,12 @@ public struct SearchMemoryTool: AgentTool {
         "required": .array([.string("query")])
     ]
 
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter
+    }()
+
     public init() {}
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
@@ -75,12 +81,9 @@ public struct SearchMemoryTool: AgentTool {
         }
 
         if !results.taskSummaries.isEmpty {
-            let dateFormatter = DateFormatter()
-            dateFormatter.dateFormat = "yyyy-MM-dd HH:mm"
-
             var lines = ["## Relevant Prior Tasks"]
             for (index, result) in results.taskSummaries.enumerated() {
-                let dateStr = dateFormatter.string(from: result.summary.createdAt)
+                let dateStr = Self.dateFormatter.string(from: result.summary.createdAt)
                 lines.append("\(index + 1). (similarity: \(String(format: "%.2f", result.similarity)), status: \(result.summary.status.rawValue), date: \(dateStr), task_id: \(result.summary.id.uuidString)) **\(result.summary.title)**: \(result.summary.summary)")
             }
             sections.append(lines.joined(separator: "\n"))

@@ -26,23 +26,14 @@ public struct ListProcessesTool: AgentTool {
             filter = nil
         }
 
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["aux"]
-        process.standardOutput = pipe
-        process.standardError = pipe
+        let result = try await ProcessRunner.run(
+            executable: "/bin/ps",
+            arguments: ["aux"],
+            workingDirectory: nil,
+            timeout: 10
+        )
 
-        try process.run()
-
-        // Read pipe data BEFORE waitUntilExit to avoid deadlock:
-        // if output exceeds pipe buffer (~64KB), the process blocks
-        // on write while we'd block waiting for exit.
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard let output = String(data: data, encoding: .utf8) else {
-            return "Error: process output could not be decoded as UTF-8 (\(data.count) bytes)."
-        }
+        let output = result.output
 
         let allLines = output.components(separatedBy: "\n")
         let lines: [String]

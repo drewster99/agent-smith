@@ -147,6 +147,18 @@ public actor TaskSummarizer {
         return max(1000, totalInputChars - overhead)
     }
 
+    private static let completedDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss zzz"
+        return formatter
+    }()
+
+    private static let updateTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
     private func buildUserPrompt(for task: AgentTask) -> String {
         var sections: [String] = []
 
@@ -156,9 +168,7 @@ public actor TaskSummarizer {
         sections.append("Status: \(task.status.rawValue)")
 
         if let completedAt = task.completedAt {
-            let dateFormatter = DateFormatter()
-            dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss zzz"
-            sections.append("Completed: \(dateFormatter.string(from: completedAt))")
+            sections.append("Completed: \(Self.completedDateFormatter.string(from: completedAt))")
         }
 
         if let result = task.result, !result.isEmpty {
@@ -174,11 +184,8 @@ public actor TaskSummarizer {
         }
 
         if !task.updates.isEmpty {
-            let dateFormatter = DateFormatter()
-            dateFormatter.dateFormat = "HH:mm:ss"
-
             let updateLines = task.updates.map { update in
-                "[\(dateFormatter.string(from: update.date))] \(update.message)"
+                "[\(Self.updateTimeFormatter.string(from: update.date))] \(update.message)"
             }
             sections.append("Progress updates:\n\(updateLines.joined(separator: "\n"))")
         }

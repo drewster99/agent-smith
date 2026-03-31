@@ -6,17 +6,19 @@ import Foundation
 struct AgentActorTests {
     private func makeContext(
         channel: MessageChannel = MessageChannel(),
-        taskStore: TaskStore = TaskStore()
-    ) -> ToolContext {
+        taskStore: TaskStore = TaskStore(),
+        role: AgentRole = .brown
+    ) throws -> ToolContext {
         ToolContext(
             agentID: UUID(),
-            agentRole: .brown,
+            agentRole: role,
             channel: channel,
             taskStore: taskStore,
             spawnBrown: { nil },
             terminateAgent: { _, _ in false },
             abort: { _, _ in },
-            agentRoleForID: { _ in nil }
+            agentRoleForID: { _ in nil },
+            memoryStore: MemoryStore(embeddingService: try EmbeddingService())
         )
     }
 
@@ -99,16 +101,7 @@ struct AgentActorTests {
     @Test("CreateTaskTool adds task to store")
     func createTaskAddsToStore() async throws {
         let taskStore = TaskStore()
-        let context = ToolContext(
-            agentID: UUID(),
-            agentRole: .smith,
-            channel: MessageChannel(),
-            taskStore: taskStore,
-            spawnBrown: { nil },
-            terminateAgent: { _, _ in false },
-            abort: { _, _ in },
-            agentRoleForID: { _ in nil }
-        )
+        let context = try makeContext(taskStore: taskStore, role: .smith)
         let tool = CreateTaskTool()
 
         let result = try await tool.execute(
@@ -130,16 +123,7 @@ struct AgentActorTests {
     @Test("MessageUserTool posts to channel")
     func messageUserPostsToChannel() async throws {
         let channel = MessageChannel()
-        let context = ToolContext(
-            agentID: UUID(),
-            agentRole: .smith,
-            channel: channel,
-            taskStore: TaskStore(),
-            spawnBrown: { nil },
-            terminateAgent: { _, _ in false },
-            abort: { _, _ in },
-            agentRoleForID: { _ in nil }
-        )
+        let context = try makeContext(channel: channel, role: .smith)
         let tool = MessageUserTool()
 
         _ = try await tool.execute(
@@ -269,8 +253,8 @@ struct AgentActorTests {
     @Test("MockLLMProvider returns canned responses in order")
     func mockProviderReturnsCannedResponses() async throws {
         let provider = MockLLMProvider(responses: [
-            .text("Response 1"),
-            .text("Response 2")
+            LLMResponse(text: "Response 1"),
+            LLMResponse(text: "Response 2")
         ])
 
         let r1 = try await provider.send(messages: [], tools: [])

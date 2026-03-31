@@ -2,6 +2,7 @@ import SwiftUI
 import AgentSmithKit
 import SwiftLLMKit
 import UniformTypeIdentifiers
+import os
 
 /// Bridges the orchestration runtime to the SwiftUI UI.
 @Observable
@@ -82,6 +83,7 @@ final class AppViewModel {
 
     let speechController = SpeechController()
 
+    private let logger = Logger(subsystem: "com.agentsmith", category: "AppViewModel")
     private var runtime: OrchestrationRuntime?
     /// Kept alive independently of `runtime` so task operations work even when agents aren't running.
     private var taskStore: TaskStore?
@@ -376,9 +378,6 @@ final class AppViewModel {
 
         await newRuntime.start()
 
-        // ──────────────────────────────────────────────────────────────────
-        // ONE-TIME HISTORY SANITIZER
-        //
         startContextRefresh()
     }
 
@@ -416,11 +415,11 @@ final class AppViewModel {
 
         // Save attachment files to disk
         for attachment in attachments {
-            Task.detached { [persistenceManager] in
+            Task.detached { [persistenceManager, logger] in
                 do {
                     try await persistenceManager.saveAttachment(attachment)
                 } catch {
-                    print("[AgentSmith] Failed to save attachment \(attachment.filename): \(error)")
+                    logger.error("Failed to save attachment \(attachment.filename): \(error)")
                 }
             }
         }
@@ -603,10 +602,9 @@ final class AppViewModel {
 
     /// Prepends the persisted history before the current live messages.
     func restoreHistory() {
-        let currentMessages = messages
-        messages = allPersistedMessages.filter { persisted in
-            !currentMessages.contains { $0.id == persisted.id }
-        } + currentMessages
+        let currentIDs = Set(messages.map(\.id))
+        let restoredHistory = allPersistedMessages.filter { !currentIDs.contains($0.id) }
+        messages = restoredHistory + messages
         hasRestoredHistory = true
     }
 
@@ -768,11 +766,11 @@ final class AppViewModel {
 
     private func persistMessages() {
         let snapshot = allPersistedMessages
-        Task.detached { [persistenceManager] in
+        Task.detached { [persistenceManager, logger] in
             do {
                 try await persistenceManager.saveChannelLog(snapshot)
             } catch {
-                print("[AgentSmith] Failed to persist messages: \(error)")
+                logger.error("Failed to persist messages: \(error)")
             }
         }
     }
@@ -821,25 +819,25 @@ final class AppViewModel {
     }
 
     private func persistMemories(memoryStore: MemoryStore) {
-        Task.detached { [persistenceManager] in
+        Task.detached { [persistenceManager, logger] in
             do {
                 let memories = await memoryStore.allMemories()
                 let taskSummaries = await memoryStore.allTaskSummaries()
                 try await persistenceManager.saveMemories(memories)
                 try await persistenceManager.saveTaskSummaries(taskSummaries)
             } catch {
-                print("[AgentSmith] Failed to persist memories: \(error)")
+                logger.error("Failed to persist memories: \(error)")
             }
         }
     }
 
     private func persistTasks() {
         let tasksToSave = tasks
-        Task.detached { [persistenceManager] in
+        Task.detached { [persistenceManager, logger] in
             do {
                 try await persistenceManager.saveTasks(tasksToSave)
             } catch {
-                print("[AgentSmith] Failed to persist tasks: \(error)")
+                logger.error("Failed to persist tasks: \(error)")
             }
         }
     }

@@ -31,12 +31,7 @@ public enum AgentRole: String, Codable, Sendable, CaseIterable, CodingKeyReprese
     }
 
     private var baseSystemPromptSuffix: String {
-//        let dateFormatter = DateFormatter()
-//        dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss zzz"
-//        let dateStr = dateFormatter.string(from: Date())
-
         var results: [String] = []
-//        results.append("The current date and time are \(dateStr)")
         results.append("This device is running MacOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
         let nickname = Self.userNickname
         if !nickname.isEmpty {
@@ -49,23 +44,6 @@ public enum AgentRole: String, Codable, Sendable, CaseIterable, CodingKeyReprese
     }
     /// Default system prompt for this role, used as the base before behavior-specific additions.
     public var baseSystemPrompt: String {
-        switch self {
-        case .smith:
-            return """
-            \(baseSystemPromptSuffix)
-            """
-        case .brown:
-            return """
-            \(baseSystemPromptSuffix)
-            """
-        case .jones:
-            return """
-            \(baseSystemPromptSuffix)
-            """
-        case .summarizer:
-            return """
-            \(baseSystemPromptSuffix)
-            """
-        }
+        return baseSystemPromptSuffix
     }
 }

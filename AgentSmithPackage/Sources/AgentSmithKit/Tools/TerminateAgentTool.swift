@@ -1,7 +1,6 @@
 import Foundation
 
-/// Allows Smith or Jones to terminate an agent by ID.
-/// Smith may only terminate Brown agents. Jones may only terminate Smith or Brown agents.
+/// Allows Smith to terminate a Brown agent by ID.
 public struct TerminateAgentTool: AgentTool {
     public let name = "terminate_agent"
     public let toolDescription = "Terminate a running agent by its ID."
@@ -10,8 +9,6 @@ public struct TerminateAgentTool: AgentTool {
         switch role {
         case .smith:
             return "Terminate a running Brown agent by its ID."
-        case .jones:
-            return "Terminate a running agent by its ID. You may terminate Smith or Brown agents."
         default:
             return toolDescription
         }
@@ -54,17 +51,8 @@ public struct TerminateAgentTool: AgentTool {
         }
 
         // Smith may only terminate Brown agents.
-        if context.agentRole == .smith {
-            guard targetRole == .brown else {
-                return "Smith may only terminate Brown agents. Agent \(agentIDString) is a \(targetRole.displayName) agent."
-            }
-        }
-
-        // Jones may only terminate Smith or Brown agents — not itself or another Jones.
-        if context.agentRole == .jones {
-            guard targetRole == .smith || targetRole == .brown else {
-                return "Jones may only terminate Smith or Brown agents. Agent \(agentIDString) is a \(targetRole.displayName) agent."
-            }
+        guard targetRole == .brown else {
+            return "Smith may only terminate Brown agents. Agent \(agentIDString) is a \(targetRole.displayName) agent."
         }
 
         let success = await context.terminateAgent(agentID, context.agentID)

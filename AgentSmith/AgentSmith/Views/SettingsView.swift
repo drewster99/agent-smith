@@ -53,9 +53,6 @@ struct SettingsView: View {
             availableVoices = AVSpeechSynthesisVoice.speechVoices()
                 .sorted { $0.name < $1.name }
         }
-        .onChange(of: viewModel.nickname) {
-            viewModel.persistNickname()
-        }
         .onChange(of: viewModel.agentAssignments) {
             viewModel.persistAgentAssignments()
         }
@@ -72,6 +69,7 @@ struct SettingsView: View {
                 TextField("Your name or nickname", text: $viewModel.nickname)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 250)
+                    .onSubmit { viewModel.persistNickname() }
             }
 
             Text("This name is shown in the channel log and included in agent system prompts.")

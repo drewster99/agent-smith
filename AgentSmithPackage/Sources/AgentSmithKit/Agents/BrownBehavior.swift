@@ -38,7 +38,7 @@ public enum BrownBehavior {
 
     /// Tool names for configuration.
     public static var toolNames: [String] {
-        ["task_acknowledged", "task_update", "task_complete", "reply_to_user", "bash", "file_read", "file_write", "file_edit", "glob", "save_memory", "search_memory", "get_task_details"]
+        tools().map(\.name)
     }
 
     /// System prompt for Brown agents.
