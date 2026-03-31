@@ -50,11 +50,11 @@ public enum LLMRequestLogger {
         let toolCount: Int = {
             // OpenAI/Anthropic use "tools", Gemini wraps in functionDeclarations
             if let tools = body["tools"] as? [[String: Any]] {
-                // Gemini nests tools under functionDeclarations
-                if let decls = tools.first?["functionDeclarations"] as? [[String: Any]] {
-                    return decls.count
+                // Gemini nests tools inside one or more functionDeclarations arrays
+                let geminiCount = tools.reduce(0) { sum, entry in
+                    sum + ((entry["functionDeclarations"] as? [[String: Any]])?.count ?? 0)
                 }
-                return tools.count
+                return geminiCount > 0 ? geminiCount : tools.count
             }
             return 0
         }()

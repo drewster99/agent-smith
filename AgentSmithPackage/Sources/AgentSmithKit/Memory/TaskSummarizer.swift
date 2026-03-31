@@ -24,7 +24,7 @@ public actor TaskSummarizer {
         Write in past tense. Be specific and factual. Include file names, tool names, or \
         technical details when relevant — these help with future search retrieval.
 
-        Respond with ONLY the summary text. No headings, bullet points, or formatting.
+        Respond with ONLY the summary text. No headings or bullet points. Use numbered lists only for the step-by-step sequence.
         """
 
     public init(
