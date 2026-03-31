@@ -36,6 +36,19 @@ public struct CreateTaskTool: AgentTool {
             throw ToolCallError.missingRequiredArgument("description")
         }
 
+        // Refuse to create a duplicate of an existing active task with the same title.
+        let existingTasks = await context.taskStore.allTasks()
+        let actionableStatuses: Set<AgentTask.Status> = [.pending, .running, .paused, .awaitingReview]
+        if let duplicate = existingTasks.first(where: {
+            $0.disposition == .active && actionableStatuses.contains($0.status) && $0.title == title
+        }) {
+            return """
+                A task with the same title already exists: "\(duplicate.title)" \
+                (ID: \(duplicate.id), status: \(duplicate.status.rawValue)). \
+                Use the existing task instead of creating a duplicate.
+                """
+        }
+
         let task = await context.taskStore.addTask(title: title, description: description)
 
         // Search semantic memory for relevant context to attach to this task.

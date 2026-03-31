@@ -271,12 +271,14 @@ public actor AgentActor {
             }
 
             do {
-                let hasPendingOrPaused = await toolContext.taskStore.allTasks()
-                    .contains { $0.disposition == .active && ($0.status == .pending || $0.status == .paused) }
+                let activeTasks = await toolContext.taskStore.allTasks().filter { $0.disposition == .active }
+                let hasPendingOrPaused = activeTasks.contains { $0.status == .pending || $0.status == .paused }
+                let hasAwaitingReview = activeTasks.contains { $0.status == .awaitingReview }
                 let availabilityContext = ToolAvailabilityContext(
                     lastDirectUserMessageAt: lastDirectUserMessageAt,
                     agentRole: configuration.role,
-                    hasPendingOrPausedTasks: hasPendingOrPaused
+                    hasPendingOrPausedTasks: hasPendingOrPaused,
+                    hasAwaitingReviewTasks: hasAwaitingReview
                 )
                 let toolDefinitions = tools
                     .filter { $0.isAvailable(in: availabilityContext) }
@@ -466,7 +468,6 @@ public actor AgentActor {
         }
 
         var sentMessage = false
-        var spawnedBrown = false
         var calledTaskComplete = false
         var calledCreateTask = false
         let batchCount = callsToExecute.count
@@ -650,7 +651,7 @@ public actor AgentActor {
                 }
 
                 executedCallIDs.insert(call.id)
-                updatePostCallFlags(call: call, result: result, sentMessage: &sentMessage, spawnedBrown: &spawnedBrown, calledTaskComplete: &calledTaskComplete, calledCreateTask: &calledCreateTask)
+                updatePostCallFlags(call: call, result: result, sentMessage: &sentMessage, calledTaskComplete: &calledTaskComplete, calledCreateTask: &calledCreateTask)
                 conversationHistory.append(LLMMessage(
                     role: .tool,
                     content: .toolResult(toolCallID: call.id, content: Self.capToolResult(result))
@@ -689,14 +690,6 @@ public actor AgentActor {
         // trigger this — when the LLM emits text alongside tool calls, the text is narration
         // ("let me check...") and the agent must continue to process tool results.
         if sentMessage {
-            hasUnprocessedInput = false
-            return
-        }
-
-        // After spawning Brown (without also sending it a message in the same turn), stop
-        // the loop to prevent spawn storms. Brown's agent_online announcement passes through
-        // Smith's message filter and will wake Smith to send task instructions.
-        if spawnedBrown {
             hasUnprocessedInput = false
             return
         }
@@ -888,11 +881,10 @@ public actor AgentActor {
     }
 
     /// Updates the post-call tracking flags used to control run loop behavior after tool execution.
-    private func updatePostCallFlags(call: LLMToolCall, result: String, sentMessage: inout Bool, spawnedBrown: inout Bool, calledTaskComplete: inout Bool, calledCreateTask: inout Bool) {
+    private func updatePostCallFlags(call: LLMToolCall, result: String, sentMessage: inout Bool, calledTaskComplete: inout Bool, calledCreateTask: inout Bool) {
         if call.name == "message_user" && result == "Message sent to user." { sentMessage = true }
         if call.name == "review_work" && (result.contains("accepted and completed") || result.contains("Feedback sent to Brown")) { sentMessage = true }
         if call.name == "message_brown" && result == "Message sent to Brown." { sentMessage = true }
-        if call.name == "spawn_brown" && result.hasPrefix("Brown agent spawned:") { spawnedBrown = true }
         if call.name == "task_complete" && result.hasPrefix("Task submitted for review:") { calledTaskComplete = true }
         if call.name == "run_task" && result.contains("System is restarting") { calledCreateTask = true }
     }
@@ -990,11 +982,13 @@ public actor AgentActor {
                 deferredMessages.append(contentsOf: taskCompleteMessages)
             }
 
-            // For Smith: task lifecycle messages (task_acknowledged, task_update) are
-            // informational — drain them into history but don't trigger a re-query.
-            // Only messages that aren't purely lifecycle should wake the agent.
+            // Lifecycle and agent_online messages are informational — drain them into
+            // history for context but don't trigger a new LLM call. Only messages that
+            // require Smith's action (user messages, task_complete, errors) should wake it.
+            let nonWakingKinds: Set<String> = ["task_lifecycle", "agent_online"]
             let hasNonLifecycleMessage = pendingChannelMessages.contains { msg in
-                if case .string("task_lifecycle") = msg.metadata?["messageKind"] {
+                if case .string(let kind) = msg.metadata?["messageKind"],
+                   nonWakingKinds.contains(kind) {
                     return false
                 }
                 return true

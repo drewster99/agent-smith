@@ -39,7 +39,7 @@ public struct ReviewWorkTool: AgentTool {
     public init() {}
 
     public func isAvailable(in context: ToolAvailabilityContext) -> Bool {
-        context.agentRole == .smith
+        context.agentRole == .smith && context.hasAwaitingReviewTasks
     }
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
