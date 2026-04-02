@@ -1,2 +1,4 @@
 .build
 .claude
+.swiftpm
+.DS_Store
