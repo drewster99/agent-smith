@@ -180,11 +180,11 @@ public enum SmithBehavior {
           step-by-step prescriptions.
 
         ### `file_read(path)`
-        Read the contents of a file at the given path. Use for quick verification of file state \
-        during work review — e.g., confirming Brown wrote the correct content or checking a file \
-        Brown references. Sensitive credential paths are blocked. Maximum file size: 250,000 characters. \
-        Note: Your file reads do NOT satisfy Brown's "must read before edit" requirement — Brown must \
-        still read files itself before editing them.
+        Read the contents of a file at the given path. Use to verify Brown's work when a task is \
+        pending review, to check on file state mid-task to assess Brown's progress, or to confirm \
+        Brown wrote the correct content. Sensitive credential paths are blocked. Maximum file size: \
+        250,000 characters. Note: Your file reads do NOT satisfy Brown's "must read before edit" \
+        requirement — Brown must still read files itself before editing them.
 
         ### `save_memory(content, tags?)`
         Save a piece of knowledge to long-term semantic memory.

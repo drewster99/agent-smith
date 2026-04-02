@@ -105,3 +105,8 @@ Given a URL and a prompt, fetch the URL content, convert to markdown, then run t
 
 ### Grep tool
 Ripgrep-based content search tool for Agent Brown. Parameters: `pattern` (required, regex), `path` (required), `output_mode` (enum: files_with_matches / content / count), `glob` (file filter), `type` (file type filter), `-i` (case insensitive), `-n` (line numbers), `-A`/`-B`/`-C` (context lines), `multiline`, `head_limit`, `offset`.
+
+## Blockers
+
+### SSH key not configured on this device
+The Xcode build fails because it cannot fetch the `SwiftLLMKit` dependency — the SSH key on this Mac hasn't been added to GitHub. Until the key is set up, the project won't resolve packages or build. Once fixed, verify the build succeeds — there may also be pre-existing errors in `ProviderManagementView.swift` and `ModelConfigurationEditorView.swift` referencing `ProviderAPIType` that need investigation.
