@@ -90,6 +90,8 @@ final class AppViewModel {
     private var channelStreamTask: Task<Void, Never>?
     private var contextRefreshTask: Task<Void, Never>?
     private var persistenceManager = PersistenceManager()
+    /// Persistent token usage analytics store.
+    private(set) var usageStore = UsageStore(persistence: PersistenceManager())
     /// Full message history — a superset of `messages`. Never cleared; always written to disk.
     private var allPersistedMessages: [ChannelMessage] = []
 
@@ -223,6 +225,9 @@ final class AppViewModel {
             startupError = msg
         }
 
+        // Load persisted usage records.
+        await usageStore.load()
+
         // Refresh model catalog (YYYYMMDD-gated)
         await llmKit.refreshIfNeeded()
         llmKit.validateConfigurations()
@@ -287,7 +292,8 @@ final class AppViewModel {
             configurations: configurations,
             providerAPITypes: apiTypes,
             agentTuning: tuning,
-            embeddingService: embeddingService
+            embeddingService: embeddingService,
+            usageStore: usageStore
         )
         runtime = newRuntime
         isRunning = true
@@ -593,6 +599,7 @@ final class AppViewModel {
         // Persist final state
         persistMessages()
         persistTasks()
+        await usageStore.flush()
     }
 
     /// Clears the abort state and allows restart.

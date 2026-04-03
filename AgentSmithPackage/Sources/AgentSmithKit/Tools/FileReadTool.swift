@@ -3,7 +3,7 @@ import Foundation
 /// Reads the contents of a file. Blocks reads of sensitive credential paths.
 public struct FileReadTool: AgentTool {
     public let name = "file_read"
-    public let toolDescription = "Read the contents of a file at the given path. Sensitive credential paths are blocked. Maximum file size: 250,000 characters."
+    public let toolDescription = "Read the contents of a file at the given path. Do not read sensitive credential paths. Maximum file size: 250,000 characters. Before invoking `file_read`, consider if there are other files you will wish to read as well. If so, read them all in parallel by issuing multiple `file_read` calls in a single response"
 
     public func description(for role: AgentRole) -> String {
         switch role {

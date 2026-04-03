@@ -74,16 +74,31 @@ public actor SecurityEvaluator {
     private var history: [EvaluationRecord] = []
     private static let maxHistory = 50
 
+    /// Token usage store for persistent analytics.
+    private let usageStore: UsageStore?
+    /// Model metadata for usage records.
+    private let modelID: String
+    private let providerType: String
+    private let configurationID: UUID?
+
     public init(
         provider: any LLMProvider,
         systemPrompt: String,
         channel: MessageChannel,
-        abort: @escaping @Sendable (String, AgentRole) async -> Void
+        abort: @escaping @Sendable (String, AgentRole) async -> Void,
+        usageStore: UsageStore? = nil,
+        modelID: String = "",
+        providerType: String = "",
+        configurationID: UUID? = nil
     ) {
         self.provider = provider
         self.systemPrompt = systemPrompt
         self.channel = channel
         self.abort = abort
+        self.usageStore = usageStore
+        self.modelID = modelID
+        self.providerType = providerType
+        self.configurationID = configurationID
     }
 
     /// Returns the evaluation history for inspector display.
@@ -150,7 +165,26 @@ public actor SecurityEvaluator {
             totalIterations += 1
             let response: LLMResponse
             do {
+                let callStart = Date()
                 response = try await provider.send(messages: conversationMessages, tools: [Self.fileReadToolDef])
+                let callLatencyMs = Int(Date().timeIntervalSince(callStart) * 1000)
+
+                // Capture Jones's token usage for analytics.
+                if let usage = response.usage, let usageStore {
+                    let taskUUID = taskID.flatMap { UUID(uuidString: $0) }
+                    await usageStore.append(UsageRecord(
+                        agentRole: .jones,
+                        taskID: taskUUID,
+                        modelID: modelID,
+                        providerType: providerType,
+                        configurationID: configurationID,
+                        inputTokens: usage.inputTokens,
+                        outputTokens: usage.outputTokens,
+                        cacheReadTokens: usage.cacheReadTokens,
+                        cacheWriteTokens: usage.cacheWriteTokens,
+                        latencyMs: callLatencyMs
+                    ))
+                }
             } catch {
                 retryCount += 1
                 totalConsecutiveFailures += 1

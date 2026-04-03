@@ -16,6 +16,10 @@ public actor AgentActor {
 
     /// Direct security evaluator for tool approval (replaces Jones agent + ToolRequestGate).
     private var securityEvaluator: SecurityEvaluator?
+    /// Token usage store for persistent analytics. Set via `setUsageStore(_:)`.
+    private var usageStore: UsageStore?
+    /// Captured before context pruning, emitted on the next UsageRecord.
+    private var pendingPreResetTokens: Int?
 
     /// How long the idle loop waits between checks. Mutable so the user can adjust at runtime.
     private var pollInterval: TimeInterval
@@ -106,6 +110,11 @@ public actor AgentActor {
     /// Injects the security evaluator used for Brown's tool approval flow.
     public func setSecurityEvaluator(_ evaluator: SecurityEvaluator) {
         securityEvaluator = evaluator
+    }
+
+    /// Injects the usage store for persistent token analytics.
+    public func setUsageStore(_ store: UsageStore) {
+        usageStore = store
     }
 
     /// Returns a snapshot of the agent's full conversation history for inspection.
@@ -314,6 +323,26 @@ public actor AgentActor {
                     usage: response.usage
                 ))
                 // All turn records kept for session lifetime — no pruning.
+
+                // Persist usage record for analytics.
+                if let usage = response.usage, let usageStore {
+                    let currentTask = await toolContext.taskStore.taskForAgent(agentID: id)
+                    await usageStore.append(UsageRecord(
+                        agentRole: configuration.role,
+                        taskID: currentTask?.id,
+                        modelID: configuration.llmConfig.model,
+                        providerType: configuration.providerAPIType.rawValue,
+                        configurationID: configuration.llmConfig.id,
+                        inputTokens: usage.inputTokens,
+                        outputTokens: usage.outputTokens,
+                        cacheReadTokens: usage.cacheReadTokens,
+                        cacheWriteTokens: usage.cacheWriteTokens,
+                        latencyMs: llmLatencyMs,
+                        preResetInputTokens: pendingPreResetTokens
+                    ))
+                    pendingPreResetTokens = nil
+                }
+
                 try await handleResponse(response)
             } catch {
                 guard isRunning else { break }
@@ -1242,6 +1271,9 @@ public actor AgentActor {
         let pruneThreshold = inputBudget * 4 / 5
 
         guard estimatedTokens > pruneThreshold else { return }
+
+        // Capture last known input tokens before reset for analytics.
+        pendingPreResetTokens = llmTurns.last?.usage?.inputTokens
 
         if configuration.role == .brown {
             // Brown rebuilds from task state — clean, no tool-pair stitching issues.

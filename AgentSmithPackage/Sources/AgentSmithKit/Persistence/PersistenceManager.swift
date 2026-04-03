@@ -108,6 +108,24 @@ public actor PersistenceManager {
         return try JSONDecoder().decode([TaskSummaryEntry].self, from: data)
     }
 
+    // MARK: - Usage Records
+
+    /// Saves usage records to disk.
+    public func saveUsageRecords(_ records: [UsageRecord]) throws {
+        try ensureDirectories()
+        let data = try JSONEncoder().encode(records)
+        let url = baseDirectory.appendingPathComponent("usage_records.json")
+        try data.write(to: url, options: .atomic)
+    }
+
+    /// Loads usage records from disk.
+    public func loadUsageRecords() throws -> [UsageRecord] {
+        let url = baseDirectory.appendingPathComponent("usage_records.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode([UsageRecord].self, from: data)
+    }
+
     // MARK: - Attachments
 
     /// Saves attachment file data to disk. Call this when the user adds an attachment.

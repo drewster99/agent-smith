@@ -103,8 +103,13 @@ Given a query and optional `allowed_domains` and `blocked_domains` arrays, perfo
 ### Web Fetch tool
 Given a URL and a prompt, fetch the URL content, convert to markdown, then run the prompt against the content to extract useful details. Useful for reading documentation, articles, and other web content.
 
-### Grep tool
-Ripgrep-based content search tool for Agent Brown. Parameters: `pattern` (required, regex), `path` (required), `output_mode` (enum: files_with_matches / content / count), `glob` (file filter), `type` (file type filter), `-i` (case insensitive), `-n` (line numbers), `-A`/`-B`/`-C` (context lines), `multiline`, `head_limit`, `offset`.
+### Grep tool ✅
+Ripgrep-based content search tool for Agent Brown. Parameters: `pattern` (required, regex), `path` (required), `output_mode` (enum: files_with_matches / content), `glob` (file filter).
+
+**Implemented:** Native Swift implementation using `NSRegularExpression` for content search and `GlobTool.globToRegex` for file filtering. Supports `files_with_matches` (default) and `content` output modes. Skips hidden files, binary files, files >1MB. Limits: 500 matching files, 1000 content lines. Glob patterns without `/` match filename only (ripgrep convention).
+
+### Token usage cost estimation
+Add estimated cost columns to the Token Usage analytics window. Use LiteLLM pricing data (already available via `ModelMetadataService`) to calculate per-turn and per-task cost estimates based on model ID and token counts. Display in the Overview, By Task, and By Model/Provider tabs. Handle cache pricing correctly (Anthropic cached reads are cheaper than uncached input).
 
 ## Blockers
 

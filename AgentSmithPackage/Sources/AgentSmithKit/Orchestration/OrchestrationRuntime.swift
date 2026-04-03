@@ -52,6 +52,8 @@ public actor OrchestrationRuntime {
     private var llmConfigs: [AgentRole: ModelConfiguration]
     private var providerAPITypes: [AgentRole: ProviderAPIType]
     private var agentTuning: [AgentRole: AgentTuningConfig]
+    /// Persistent token usage tracking across all agents.
+    public let usageStore: UsageStore
     private var monitoringTimer: MonitoringTimer?
     private var powerManager: PowerAssertionManager?
     /// Maps each agent ID to its channel subscription IDs for proper cleanup.
@@ -71,7 +73,8 @@ public actor OrchestrationRuntime {
         configurations: [AgentRole: ModelConfiguration],
         providerAPITypes: [AgentRole: ProviderAPIType] = [:],
         agentTuning: [AgentRole: AgentTuningConfig] = [:],
-        embeddingService: EmbeddingService
+        embeddingService: EmbeddingService,
+        usageStore: UsageStore
     ) {
         self.channel = MessageChannel()
         self.taskStore = TaskStore()
@@ -80,6 +83,7 @@ public actor OrchestrationRuntime {
         self.llmConfigs = configurations
         self.providerAPITypes = providerAPITypes
         self.agentTuning = agentTuning
+        self.usageStore = usageStore
     }
 
     /// Registers a callback fired when Jones triggers an abort.
@@ -233,6 +237,7 @@ public actor OrchestrationRuntime {
             toolContext: context
         )
         await followUpScheduler.set(agent: smithAgent)
+        await smithAgent.setUsageStore(usageStore)
 
         smith = smithAgent
         agents[id] = smithAgent
@@ -532,6 +537,7 @@ public actor OrchestrationRuntime {
         let brownID = UUID()
 
         // Create SecurityEvaluator with Jones's LLM config — replaces the Jones agent.
+        let jonesConfig = llmConfigs[.jones]
         let evaluator = SecurityEvaluator(
             provider: jonesProvider,
             systemPrompt: JonesBehavior.systemPrompt,
@@ -539,7 +545,11 @@ public actor OrchestrationRuntime {
             abort: { [weak self] reason, callerRole in
                 guard let self else { return }
                 await self.abort(reason: reason, callerRole: callerRole)
-            }
+            },
+            usageStore: usageStore,
+            modelID: jonesConfig?.model ?? "",
+            providerType: providerAPITypes[.jones]?.rawValue ?? "",
+            configurationID: jonesConfig?.id
         )
         securityEvaluators[brownID] = evaluator
 
@@ -577,6 +587,7 @@ public actor OrchestrationRuntime {
             toolContext: brownContext
         )
         await brownAgent.setSecurityEvaluator(evaluator)
+        await brownAgent.setUsageStore(usageStore)
 
         agents[brownID] = brownAgent
         agentRoles[brownID] = .brown
