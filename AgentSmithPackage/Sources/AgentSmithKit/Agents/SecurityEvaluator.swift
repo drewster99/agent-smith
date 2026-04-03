@@ -64,9 +64,6 @@ public actor SecurityEvaluator {
     private static let maxConsecutiveFailures = 20
     private static let maxRetries = 5
 
-    /// Maximum file read rounds Jones can perform per evaluation.
-    private static let maxFileReadRounds = 3
-
     /// Tool definition for file_read, presented to Jones's LLM.
     private static let fileReadToolDef: LLMToolDefinition = {
         let tool = FileReadTool()
@@ -145,13 +142,10 @@ public actor SecurityEvaluator {
 
         let startTime = Date()
         var retryCount = 0
-        var fileReadRounds = 0
-
         while retryCount < Self.maxRetries {
             let response: LLMResponse
             do {
-                let tools = fileReadRounds < Self.maxFileReadRounds ? [Self.fileReadToolDef] : []
-                response = try await provider.send(messages: conversationMessages, tools: tools)
+                response = try await provider.send(messages: conversationMessages, tools: [Self.fileReadToolDef])
             } catch {
                 retryCount += 1
                 totalConsecutiveFailures += 1
@@ -173,8 +167,7 @@ public actor SecurityEvaluator {
             }
 
             // If Jones requested file reads, execute them and continue the conversation.
-            if !response.toolCalls.isEmpty && fileReadRounds < Self.maxFileReadRounds {
-                fileReadRounds += 1
+            if !response.toolCalls.isEmpty {
                 // Append assistant message with the tool calls (and any accompanying text).
                 if let text = response.text, !text.isEmpty {
                     conversationMessages.append(LLMMessage(role: .assistant, content: .mixed(text: text, toolCalls: response.toolCalls)))

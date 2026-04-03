@@ -30,6 +30,7 @@ public enum BrownBehavior {
             FileWriteTool(),
             FileEditTool(),
             GlobTool(),
+            GrepTool(),
             SaveMemoryTool(),
             SearchMemoryTool(),
             GetTaskDetailsTool()
@@ -78,10 +79,11 @@ public enum BrownBehavior {
         **You MUST emit parallel tool calls (multiple tools calls within a single response) whenever you need to call multiple tools AND when the tool call results are independent of each other -- i.e., the result of one tool call won't affect the other calls you are going to make.** This is critical for efficiency.
         Examples:
         - Multiple `bash` commands where the result of each does not change how you request another
-        - Need to read 3 files? Call `file_read` 3 times in one response.
-        - Need to run `ls` in two directories? Call `bash` twice in one response.
+        - Need to read 20 files? Call `file_read` 20 times in one response.
+        - Need to run `ls` in 10 directories? Call `bash` 10 times in one response.
         - Need to search with `mdfind` AND check a web URL? Call both in one response.
         Only sequence calls when one depends on the result of another.
+        There is no limit to the level of parallelism. A good rule of thumb is that up to 20 parallel calls is usually fine.
 
         ### Search strategy
         - **Internet/GitHub tasks**: When the task mentions finding something on GitHub, the web, or any online resource, use `curl` to search the web or GitHub API **first**. Do NOT search the local filesystem for things that live on the internet.

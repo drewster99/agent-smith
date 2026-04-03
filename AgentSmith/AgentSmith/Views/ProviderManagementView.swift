@@ -90,12 +90,13 @@ struct ProviderManagementView: View {
     }
 
     private func addProvider() {
+        let defaultType = ProviderAPIType.anthropic
         editingProvider = ProviderEditorState(
             mode: .add,
             id: "provider-\(UUID().uuidString.prefix(8))",
-            name: "",
-            apiType: .anthropic,
-            endpointString: ProviderAPIType.anthropic.defaultEndpoint.absoluteString,
+            name: defaultType.displayName,
+            apiType: defaultType,
+            endpointString: defaultType.defaultEndpoint.absoluteString,
             apiKey: ""
         )
     }
@@ -224,6 +225,13 @@ private struct ProviderEditorSheet: View {
 
     private func applyDefaultEndpoint(for type: ProviderAPIType) {
         state.endpointString = type.defaultEndpoint.absoluteString
+        // Auto-fill name when using the default endpoint, unless the user typed a custom name.
+        if state.mode == .add {
+            let autoFilledNames = Set(ProviderAPIType.allCases.map(\.displayName))
+            if state.name.isEmpty || autoFilledNames.contains(state.name) {
+                state.name = type.displayName
+            }
+        }
     }
 
     @State private var saveError: String?
