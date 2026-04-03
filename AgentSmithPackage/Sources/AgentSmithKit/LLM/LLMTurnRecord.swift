@@ -27,6 +27,8 @@ public struct LLMTurnRecord: Identifiable, Sendable {
     public let maxOutputTokens: Int
     /// Thinking budget configured for this turn (Anthropic only), nil if disabled.
     public let thinkingBudget: Int?
+    /// Token usage reported by the provider for this turn, if available.
+    public let usage: TokenUsage?
 
     public init(
         id: UUID = UUID(),
@@ -40,7 +42,8 @@ public struct LLMTurnRecord: Identifiable, Sendable {
         providerType: String = "",
         temperature: Double = 0,
         maxOutputTokens: Int = 0,
-        thinkingBudget: Int? = nil
+        thinkingBudget: Int? = nil,
+        usage: TokenUsage? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -54,5 +57,6 @@ public struct LLMTurnRecord: Identifiable, Sendable {
         self.temperature = temperature
         self.maxOutputTokens = maxOutputTokens
         self.thinkingBudget = thinkingBudget
+        self.usage = usage
     }
 }

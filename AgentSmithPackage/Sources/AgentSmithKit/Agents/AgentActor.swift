@@ -310,7 +310,8 @@ public actor AgentActor {
                     providerType: configuration.providerAPIType.rawValue,
                     temperature: configuration.llmConfig.temperature,
                     maxOutputTokens: configuration.llmConfig.maxTokens,
-                    thinkingBudget: configuration.llmConfig.thinkingBudget
+                    thinkingBudget: configuration.llmConfig.thinkingBudget,
+                    usage: response.usage
                 ))
                 // All turn records kept for session lifetime — no pruning.
                 try await handleResponse(response)

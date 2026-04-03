@@ -16,7 +16,7 @@ struct ModelConfigurationEditorView: View {
     @State private var maxContextTokens: Int = 128_000
     @State private var thinkingBudget: Int = 0
     @State private var extendedCacheTTL: Bool = false
-    @State private var streaming: Bool = true
+    @State private var streaming: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -187,6 +187,7 @@ struct ModelConfigurationEditorView: View {
 
     private var streamingSection: some View {
         Toggle("Streaming", isOn: $streaming)
+            .disabled(true)
     }
 
     // MARK: - Model Picker
@@ -320,7 +321,7 @@ struct ModelConfigurationEditorView: View {
         maxContextTokens = config.maxContextTokens
         thinkingBudget = config.thinkingBudget ?? 0
         extendedCacheTTL = config.extendedCacheTTL
-        streaming = config.streaming
+        streaming = false
     }
 
     private func save() {

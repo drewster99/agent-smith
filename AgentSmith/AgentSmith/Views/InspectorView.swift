@@ -11,6 +11,7 @@ struct InspectorView: View {
     let agentTurns: [AgentRole: [LLMTurnRecord]]
     let agentPollIntervals: [AgentRole: TimeInterval]
     let agentMaxToolCalls: [AgentRole: Int]
+    let agentModelConfigs: [AgentRole: ModelConfiguration]
     let jonesEvaluationRecords: [EvaluationRecord]
     let speechController: SpeechController
     let onSendDirectMessage: (AgentRole, String) -> Void
@@ -57,6 +58,7 @@ struct InspectorView: View {
                         recentToolUses: recentTools,
                         contextMessages: context,
                         llmTurns: turns,
+                        modelConfig: agentModelConfigs[role],
                         evaluationRecords: role == .jones ? jonesEvaluationRecords : [],
                         currentSystemPrompt: currentSystemPrompt,
                         pollInterval: pollInterval,
@@ -89,6 +91,7 @@ private struct AgentCard: View {
     let recentToolUses: [ChannelMessage]
     let contextMessages: [LLMMessage]
     let llmTurns: [LLMTurnRecord]
+    let modelConfig: ModelConfiguration?
     let evaluationRecords: [EvaluationRecord]
     let currentSystemPrompt: String
     let pollInterval: TimeInterval
@@ -118,6 +121,46 @@ private struct AgentCard: View {
         case .jones: return "Security Agent"
         case .summarizer: return "Summarizer"
         }
+    }
+
+    /// Actual input token count from the most recent LLM turn, if available.
+    private var lastInputTokens: Int? {
+        llmTurns.last?.usage?.inputTokens
+    }
+
+    /// Context usage percentage based on actual token counts from the provider.
+    private var contextPercent: Int? {
+        guard let config = modelConfig, config.maxContextTokens > 0,
+              let inputTokens = lastInputTokens else { return nil }
+        return min(100, (inputTokens * 100) / config.maxContextTokens)
+    }
+
+    private func modelInfoLine(config: ModelConfiguration) -> some View {
+        let contextLabel = Self.formatTokenCount(config.maxContextTokens)
+        return HStack(spacing: 6) {
+            Text(config.modelID)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if let pct = contextPercent, let tokens = lastInputTokens {
+                Text("·")
+                Text("\(Self.formatTokenCount(tokens)) / \(contextLabel) (\(pct)%)")
+            } else {
+                Text("·")
+                Text("\(contextLabel) ctx")
+            }
+        }
+        .font(AppFonts.inspectorLabel)
+        .foregroundStyle(.tertiary)
+    }
+
+    /// Formats a token count as a compact label (e.g. 128000 → "128K", 1000000 → "1M").
+    private static func formatTokenCount(_ count: Int) -> String {
+        if count >= 1_000_000 && count % 1_000_000 == 0 {
+            return "\(count / 1_000_000)M"
+        } else if count >= 1_000 {
+            return "\(count / 1_000)K"
+        }
+        return "\(count)"
     }
 
     var body: some View {
@@ -201,6 +244,13 @@ private struct AgentCard: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
+
+            // Model info subtitle
+            if let config = modelConfig {
+                modelInfoLine(config: config)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 6)
+            }
 
             if expanded && !opensInWindow {
                 VStack(alignment: .leading, spacing: 10) {

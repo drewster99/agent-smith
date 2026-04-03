@@ -59,9 +59,10 @@ public struct GrepTool: AgentTool {
         guard case .string(let pattern) = arguments["pattern"] else {
             throw ToolCallError.missingRequiredArgument("pattern")
         }
-        guard case .string(let path) = arguments["path"] else {
+        guard case .string(let rawPath) = arguments["path"] else {
             throw ToolCallError.missingRequiredArgument("path")
         }
+        let path = (rawPath as NSString).expandingTildeInPath
 
         guard path.hasPrefix("/") else {
             return "Error: path must be absolute (start with /). Got: \(path)"
@@ -133,7 +134,6 @@ public struct GrepTool: AgentTool {
 
         var matchingFiles: [String] = []
         var contentLines: [String] = []
-        var totalMatchCount = 0
         var truncated = false
 
         for fileURL in allURLs {
@@ -205,7 +205,6 @@ public struct GrepTool: AgentTool {
                             truncated = true
                         }
                         fileHasMatch = true
-                        totalMatchCount += 1
                     }
                 }
                 if fileHasMatch {

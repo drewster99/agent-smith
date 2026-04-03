@@ -6,7 +6,7 @@ import Foundation
 /// Reuses `FileWriteTool.checkPathRestriction` for safety validation.
 public struct FileEditTool: AgentTool {
     public let name = "file_edit"
-    public let toolDescription = "Perform an exact string replacement in a file. You must read the file first with file_read before editing it. The old_string must be unique in the file unless replace_all is true."
+    public let toolDescription = "Perform an exact string replacement in a file. You MUST read the file first with `file_read` before editing it. The `old_string` must be unique in the file unless `replace_all` is `true`."
 
     public func description(for role: AgentRole) -> String {
         switch role {
@@ -24,19 +24,19 @@ public struct FileEditTool: AgentTool {
         "properties": .dictionary([
             "file_path": .dictionary([
                 "type": .string("string"),
-                "description": .string("Absolute path to the file to modify. Must start with /.")
+                "description": .string("Absolute path to the file to modify (ok to use ~ prefix for user's home directory). Must start with / or ~/")
             ]),
             "old_string": .dictionary([
                 "type": .string("string"),
-                "description": .string("The exact text to find and replace. Must match the file content exactly, including indentation.")
+                "description": .string("The EXACT text to find and replace - include plenty of context to avoid mismatches. Must match the file content exactly, including indentation.")
             ]),
             "new_string": .dictionary([
                 "type": .string("string"),
-                "description": .string("The replacement text. Must be different from old_string.")
+                "description": .string("The replacement text. Must be different from `old_string`.")
             ]),
             "replace_all": .dictionary([
                 "type": .string("boolean"),
-                "description": .string("If true, replace all occurrences of old_string. If false (default), old_string must appear exactly once.")
+                "description": .string("If `true`, replace ALL occurrences of `old_string`. If `false` (default), `old_string` must appear exactly once.")
             ])
         ]),
         "required": .array([.string("file_path"), .string("old_string"), .string("new_string")])
@@ -52,9 +52,10 @@ public struct FileEditTool: AgentTool {
     }
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
-        guard case .string(let filePath) = arguments["file_path"] else {
+        guard case .string(let rawFilePath) = arguments["file_path"] else {
             throw ToolCallError.missingRequiredArgument("file_path")
         }
+        let filePath = (rawFilePath as NSString).expandingTildeInPath
         guard case .string(let oldString) = arguments["old_string"] else {
             throw ToolCallError.missingRequiredArgument("old_string")
         }
@@ -108,7 +109,7 @@ public struct FileEditTool: AgentTool {
 
         // Validate old_string != new_string.
         guard oldString != newString else {
-            return "Error: old_string and new_string are identical. Nothing to change."
+            return "Error: `old_string` and `new_string` are identical. Nothing to change."
         }
 
         // Read file content.
@@ -127,11 +128,11 @@ public struct FileEditTool: AgentTool {
         let occurrences = content.occurrenceCount(of: oldString)
 
         guard occurrences > 0 else {
-            return "Error: old_string not found in the file. Make sure it matches the file content exactly, including whitespace and indentation."
+            return "Error: `old_string` not found in the file. Make sure it matches the file content exactly, including whitespace and indentation."
         }
 
         if !replaceAll && occurrences > 1 {
-            return "Error: old_string appears \(occurrences) times in the file. Provide more surrounding context to make it unique, or set replace_all to true."
+            return "Error: `old_string` appears \(occurrences) times in the file. Provide more surrounding context to make it unique, or set `replace_all` to `true`."
         }
 
         // Perform replacement.
@@ -141,7 +142,7 @@ public struct FileEditTool: AgentTool {
         } else {
             // Replace only the first (and only) occurrence.
             guard let range = content.range(of: oldString) else {
-                return "Error: old_string not found in the file."
+                return "Error: `old_string` not found in the file."
             }
             newContent = content.replacingCharacters(in: range, with: newString)
         }

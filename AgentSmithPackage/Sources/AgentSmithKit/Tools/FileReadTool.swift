@@ -36,9 +36,10 @@ public struct FileReadTool: AgentTool {
     }
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
-        guard case .string(let path) = arguments["path"] else {
+        guard case .string(let rawPath) = arguments["path"] else {
             throw ToolCallError.missingRequiredArgument("path")
         }
+        let path = (rawPath as NSString).expandingTildeInPath
 
         if let rejection = Self.checkPathRestriction(path) {
             return rejection

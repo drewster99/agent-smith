@@ -46,9 +46,10 @@ public struct GlobTool: AgentTool {
         guard case .string(let pattern) = arguments["pattern"] else {
             throw ToolCallError.missingRequiredArgument("pattern")
         }
-        guard case .string(let path) = arguments["path"] else {
+        guard case .string(let rawPath) = arguments["path"] else {
             throw ToolCallError.missingRequiredArgument("path")
         }
+        let path = (rawPath as NSString).expandingTildeInPath
 
         // Validate absolute path.
         guard path.hasPrefix("/") else {

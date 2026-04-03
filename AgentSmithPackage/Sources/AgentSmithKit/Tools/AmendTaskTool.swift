@@ -7,7 +7,7 @@ import Foundation
 /// tool-approval request) see the updated intent.
 public struct AmendTaskTool: AgentTool {
     public let name = "amend_task"
-    public let toolDescription = "Append a clarification or updated instruction to a task's description. Use this when the user provides new context, corrections, or additional requirements for an in-progress task. The amendment is visible to Jones (security) and should also be relayed to Brown via message_brown."
+    public let toolDescription = "Append a clarification or updated instruction to a task's description. Use this when the user provides new context, corrections, or additional requirements for an in-progress task. The amendment is visible to Jones (security) and should also be relayed to Brown via `message_brown`."
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
@@ -50,6 +50,6 @@ public struct AmendTaskTool: AgentTool {
         }
 
         await context.taskStore.amendDescription(id: taskID, amendment: trimmed)
-        return "Task \(taskIDString) amended. Jones will see the updated description on future tool approvals. Use message_brown to relay this change to Brown."
+        return "Task \(taskIDString) amended. Immediately use the `message_brown` tool to relay this change to Brown."
     }
 }

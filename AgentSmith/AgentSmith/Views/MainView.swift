@@ -129,6 +129,7 @@ struct MainView: View {
                 agentTurns: viewModel.agentTurns,
                 agentPollIntervals: viewModel.agentPollIntervals,
                 agentMaxToolCalls: viewModel.agentMaxToolCalls,
+                agentModelConfigs: viewModel.resolvedAgentConfigs,
                 jonesEvaluationRecords: viewModel.jonesEvaluationRecords,
                 speechController: viewModel.speechController,
                 onSendDirectMessage: { role, text in

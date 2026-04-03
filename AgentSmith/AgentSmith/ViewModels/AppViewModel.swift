@@ -707,6 +707,17 @@ final class AppViewModel {
 
     // MARK: - Persistence
 
+    /// Resolves each agent role to its assigned ModelConfiguration, for inspector display.
+    var resolvedAgentConfigs: [AgentRole: ModelConfiguration] {
+        var result: [AgentRole: ModelConfiguration] = [:]
+        for (role, configID) in agentAssignments {
+            if let config = llmKit.configurations.first(where: { $0.id == configID }) {
+                result[role] = config
+            }
+        }
+        return result
+    }
+
     /// Whether all agent roles have valid assigned configurations.
     var allAgentConfigsValid: Bool {
         AgentRole.requiredRoles.allSatisfy { role in

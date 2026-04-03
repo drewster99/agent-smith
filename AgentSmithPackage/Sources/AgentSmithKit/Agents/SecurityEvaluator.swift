@@ -142,7 +142,12 @@ public actor SecurityEvaluator {
 
         let startTime = Date()
         var retryCount = 0
-        while retryCount < Self.maxRetries {
+        // Total iterations includes file read rounds + retries. Prevents unbounded loops
+        // if Jones keeps requesting file reads without producing a verdict.
+        var totalIterations = 0
+        let maxTotalIterations = 25
+        while retryCount < Self.maxRetries && totalIterations < maxTotalIterations {
+            totalIterations += 1
             let response: LLMResponse
             do {
                 response = try await provider.send(messages: conversationMessages, tools: [Self.fileReadToolDef])
@@ -233,10 +238,10 @@ public actor SecurityEvaluator {
             return disposition
         }
 
-        // Exhausted retries — deny as UNSAFE.
+        // Exhausted retries or iteration limit — deny as UNSAFE.
         let fallback = SecurityDisposition(
             approved: false,
-            message: "Security evaluation failed after \(Self.maxRetries) attempts"
+            message: "Security evaluation failed after \(totalIterations) iterations (\(retryCount) retries)"
         )
         recordEvaluation(toolName: toolName, toolParams: toolParams, taskTitle: taskTitle, prompt: evalPrompt, response: "(parse failure)", disposition: fallback, startTime: startTime)
         return fallback
