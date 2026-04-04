@@ -6,9 +6,9 @@ public struct ReviewWorkTool: AgentTool {
     public let name = "review_work"
     public let toolDescription = """
         Review Brown's submitted work on a task (must be in awaitingReview status). \
-        Set accepted to true to mark the task completed and terminate Brown + Jones. \
-        Set accepted to false to return the task to running and send feedback to Brown. \
-        feedback is required when accepted is false.
+        Set `accepted` to `true` to mark the task completed and terminate Brown + Jones. \
+        Set `accepted` to `false` to return the task to running and send feedback to Brown. \
+        `feedback` is required when `accepted` is `false`.
         """
 
     public let parameters: [String: AnyCodable] = [
@@ -61,7 +61,7 @@ public struct ReviewWorkTool: AgentTool {
         guard task.status == .awaitingReview else {
             return """
                 Task '\(task.title)' is not awaiting review (current status: \(task.status.rawValue)). \
-                review_work can only be called after Brown submits via task_complete.
+                `review_work` can only be called after Brown submits via `task_complete`.
                 """
         }
 
@@ -103,14 +103,14 @@ public struct ReviewWorkTool: AgentTool {
             // Trigger background summarization and embedding of the completed task.
             await context.summarizeCompletedTask(taskID)
 
-            return "Task '\(task.title)' accepted and completed. Agents terminated. Result delivered to user (do not deliver it again yourself, Agent Smith)."
+            return "Task '\(task.title)' accepted and marked COMPLETE. Agents terminated. Result ALREADY delivered to user (do not deliver it again yourself, Agent Smith)."
         } else {
             // ---- Reject path ----
             let feedback: String
             if case .string(let f) = arguments["feedback"], !f.trimmingCharacters(in: .whitespaces).isEmpty {
                 feedback = f
             } else {
-                return "feedback is required when accepted is false. Provide specific details about what needs to change."
+                return "`feedback` is required when `accepted` is `false`. Provide specific details about what needs to change."
             }
 
             await context.taskStore.updateStatus(id: taskID, status: .running)
@@ -123,7 +123,7 @@ public struct ReviewWorkTool: AgentTool {
                         sender: .agent(context.agentRole),
                         recipientID: agentID,
                         recipient: .agent(.brown),
-                        content: "Changes requested on task '\(task.title)': \(feedback)"
+                        content: "Results rejected - changes required on task '\(task.title)': \(feedback)"
                     ))
                     sent = true
                     break
@@ -131,7 +131,7 @@ public struct ReviewWorkTool: AgentTool {
             }
 
             if !sent {
-                return "Task returned to running, but no active Brown agent found to notify. You may need to spawn a new Brown."
+                return "Task returned to running, but no active Brown agent found to notify. Use `spawn_brown` to re-spawn an Agent Brown"
             }
 
             return "Changes requested. Feedback sent to Brown."

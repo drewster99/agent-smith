@@ -117,6 +117,15 @@ Currently all tools (except `file_read`) require absolute paths. Relative paths 
 ### Streamline model configuration UI
 The current Settings flow requires managing configurations as separate objects, then assigning them to agent roles across two different tabs. Redesign the UI to feel agent-centric — each agent/role has its own settings panel showing provider, model, temperature, max tokens, etc. directly. The underlying `ModelConfiguration` concept stays in the data model for reuse and persistence, but the UI abstracts it away so it feels like "adjusting Smith's settings" rather than "creating a configuration and assigning it."
 
+### list_tasks search and semantic search
+Add search capabilities to the `list_tasks` tool so Brown can find relevant tasks without retrieving the entire list. Support a `query` parameter for keyword matching against task titles and descriptions, and optionally a semantic search mode that uses the embedding service to find tasks by meaning rather than exact text. This would reduce token usage (no need to dump all tasks) and improve Brown's ability to find related prior work.
+
+### Improve prior-task relevance in new task context
+The current system injects prior task summaries into new tasks via semantic search against the task description. In practice this produces a fair number of irrelevant additions — the embedding similarity threshold is too loose, or the search query (the new task description) is too broad. Investigate: tighten the similarity threshold, limit to tasks from the same session or recent time window, weight completed tasks higher than abandoned ones, or let Smith curate which prior tasks to attach rather than auto-injecting. Goal: every prior task included in a new task's context should be genuinely useful, not noise.
+
+### Auto-run next pending task
+Add a setting (persisted in UserDefaults) that controls whether the system automatically picks up the next pending task when the current one completes. When enabled, Smith or the orchestration runtime should detect task completion and immediately assign the next queued task to Brown without requiring user interaction. When disabled, the system idles after task completion and waits for the user. The setting should be exposed in the UI alongside the existing auto-start toggle.
+
 ### Token usage cost estimation
 Add estimated cost columns to the Token Usage analytics window. Use LiteLLM pricing data (already available via `ModelMetadataService`) to calculate per-turn and per-task cost estimates based on model ID and token counts. Display in the Overview, By Task, and By Model/Provider tabs. Handle cache pricing correctly (Anthropic cached reads are cheaper than uncached input).
 

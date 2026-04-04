@@ -153,10 +153,14 @@ private struct AgentCard: View {
         .foregroundStyle(.tertiary)
     }
 
-    /// Formats a token count as a compact label (e.g. 128000 → "128K", 1000000 → "1M").
+    /// Formats a token count as a compact label (e.g. 128000 → "128K", 1048576 → "1.0M").
     private static func formatTokenCount(_ count: Int) -> String {
-        if count >= 1_000_000 && count % 1_000_000 == 0 {
-            return "\(count / 1_000_000)M"
+        if count >= 1_000_000 {
+            let value = Double(count) / 1_000_000.0
+            let formatted = String(format: "%.1f", value)
+            // Drop trailing ".0" for clean round numbers.
+            let label = formatted.hasSuffix(".0") ? String(formatted.dropLast(2)) : formatted
+            return "\(label)M"
         } else if count >= 1_000 {
             return "\(count / 1_000)K"
         }

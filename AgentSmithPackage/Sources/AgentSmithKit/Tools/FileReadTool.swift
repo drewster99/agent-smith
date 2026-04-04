@@ -112,8 +112,9 @@ public struct FileReadTool: AgentTool {
         let ext = (path as NSString).pathExtension.lowercased()
 
         if ext == "pdf" { return .pdf }
+        if ext == "svg" { return .text } // SVG is XML text, not a raster image.
 
-        let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "webp", "heic", "heif", "svg", "ico"]
+        let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "webp", "heic", "heif", "ico"]
         if imageExtensions.contains(ext) { return .image }
 
         // Use UTType for more nuanced detection.
@@ -133,7 +134,7 @@ public struct FileReadTool: AgentTool {
             "py", "rb", "js", "jsx", "ts", "tsx", "mjs", "cjs", "vue", "svelte",
             "html", "htm", "css", "scss", "sass", "less",
             "json", "yaml", "yml", "toml", "ini", "cfg", "conf",
-            "xml", "plist", "entitlements", "pbxproj", "xcscheme", "xcworkspacedata",
+            "xml", "svg", "plist", "entitlements", "pbxproj", "xcscheme", "xcworkspacedata",
             "md", "markdown", "txt", "rst", "tex", "csv", "tsv", "log",
             "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd",
             "sql", "graphql", "gql", "proto",

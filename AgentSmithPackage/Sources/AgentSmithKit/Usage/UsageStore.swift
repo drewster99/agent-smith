@@ -66,10 +66,10 @@ public actor UsageStore {
     private func scheduleFlush() {
         isDirty = true
         guard flushTask == nil else { return }
-        flushTask = Task { [weak self] in
+        flushTask = Task {
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled else { return }
-            await self?.performSave()
+            await self.performSave()
         }
     }
 

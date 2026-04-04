@@ -3,7 +3,7 @@ import Foundation
 /// Allows Smith to run an existing pending or paused task without duplicating it.
 public struct RunTaskTool: AgentTool {
     public let name = "run_task"
-    public let toolDescription = "Run an existing pending or paused task. Restarts with a clean context and auto-spawns Brown+Jones. The `instructions` field is required — include any updates, permissions, scope changes, or clarifications from the user. These are appended to the task description and survive the restart."
+    public let toolDescription = "Run an existing pending or paused task. Restarts with a clean context and auto-spawns Brown+Jones. The `instructions` field is REQUIRED — include any updates, permissions, scope changes, or clarifications from the user. These are appended to the task description and survive the restart."
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
@@ -34,7 +34,7 @@ public struct RunTaskTool: AgentTool {
             return "Invalid task_id: '\(taskIDString)' is not a valid UUID. Use list_tasks to find valid task IDs."
         }
         guard let task = await context.taskStore.task(id: taskID) else {
-            return "No task found with ID \(taskID). Use list_tasks to see available tasks."
+            return "No task found with ID \(taskID). Use `list_tasks` to see available tasks."
         }
         guard task.status == .pending || task.status == .paused else {
             return """

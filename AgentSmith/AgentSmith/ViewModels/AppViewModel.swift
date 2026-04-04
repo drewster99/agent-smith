@@ -89,11 +89,17 @@ final class AppViewModel {
     private var taskStore: TaskStore?
     private var channelStreamTask: Task<Void, Never>?
     private var contextRefreshTask: Task<Void, Never>?
-    private var persistenceManager = PersistenceManager()
+    private var persistenceManager: PersistenceManager
     /// Persistent token usage analytics store.
-    private(set) var usageStore = UsageStore(persistence: PersistenceManager())
+    private(set) var usageStore: UsageStore
     /// Full message history — a superset of `messages`. Never cleared; always written to disk.
     private var allPersistedMessages: [ChannelMessage] = []
+
+    init() {
+        let pm = PersistenceManager()
+        self.persistenceManager = pm
+        self.usageStore = UsageStore(persistence: pm)
+    }
 
     // MARK: - Lifecycle
 

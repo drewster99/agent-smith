@@ -3,7 +3,7 @@ import Foundation
 /// Allows Smith to update a task's status.
 public struct UpdateTaskTool: AgentTool {
     public let name = "update_task"
-    public let toolDescription = "Manually update a task's status. For normal workflow, use review_work instead. This is an escape hatch for manual corrections (e.g., marking a stuck task as failed)."
+    public let toolDescription = "Manually update a task's status. For normal workflow, use `review_work` instead. This is an escape hatch for manual corrections (e.g., marking a stuck task as failed)."
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
@@ -38,7 +38,7 @@ public struct UpdateTaskTool: AgentTool {
             throw ToolCallError.missingRequiredArgument("task_id")
         }
         guard let taskID = UUID(uuidString: taskIDString) else {
-            return "Invalid task ID format: \(taskIDString)"
+            return "Invalid `task_id` format: \(taskIDString)"
         }
         guard case .string(let statusString) = arguments["status"] else {
             throw ToolCallError.missingRequiredArgument("status")

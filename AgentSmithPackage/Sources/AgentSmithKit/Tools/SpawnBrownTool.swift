@@ -33,7 +33,7 @@ public struct SpawnBrownTool: AgentTool {
             throw ToolCallError.missingRequiredArgument("task_id")
         }
         guard let taskID = UUID(uuidString: taskIDString) else {
-            return "Invalid task_id: '\(taskIDString)' is not a valid UUID. Use list_tasks to find valid task IDs."
+            return "Invalid `task_id`: '\(taskIDString)' is not a valid UUID. Use list_tasks to find valid task IDs."
         }
         guard let task = await context.taskStore.task(id: taskID) else {
             return "No task found with ID \(taskID). Use list_tasks to see available tasks."
@@ -41,13 +41,13 @@ public struct SpawnBrownTool: AgentTool {
 
         let runnableStatuses: Set<AgentTask.Status> = [.pending, .running, .paused]
         guard runnableStatuses.contains(task.status) else {
-            return "Task '\(task.title)' has status '\(task.status.rawValue)' — spawn_brown requires a pending, running, or paused task. Use create_task for new work."
+            return "Task '\(task.title)' has status '\(task.status.rawValue)' — `spawn_brown` requires a pending, running, or paused task. Use `create_task` for new work."
         }
 
         // Check that no active Brown is already assigned
         for assigneeID in task.assigneeIDs {
             if let role = await context.agentRoleForID(assigneeID), role == .brown {
-                return "A Brown agent is already assigned to this task. Use schedule_followup to check back later, or terminate the existing Brown first."
+                return "A Brown agent is already assigned to this task. Use `schedule_followup` to check back later, or terminate the existing Brown first."
             }
         }
 
@@ -57,7 +57,7 @@ public struct SpawnBrownTool: AgentTool {
 
         await context.taskStore.assignAgent(taskID: taskID, agentID: brownID)
 
-        var response = "Brown agent spawned: \(brownID). Send it task instructions via message_brown."
+        var response = "Brown agent spawned: \(brownID). Send it task instructions via `message_brown`."
         if !task.updates.isEmpty {
             let history = task.updates.map { entry in
                 "[\(Self.updateDateFormatter.string(from: entry.date))] \(entry.message)"

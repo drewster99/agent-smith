@@ -7,7 +7,7 @@ import Foundation
 /// tool-approval request) see the updated intent.
 public struct AmendTaskTool: AgentTool {
     public let name = "amend_task"
-    public let toolDescription = "Append a clarification or updated instruction to a task's description. Use this when the user provides new context, corrections, or additional requirements for an in-progress task. The amendment is visible to Jones (security) and should also be relayed to Brown via `message_brown`."
+    public let toolDescription = "Add a clarification or updated instruction to a task's description. Use this when the user provides new context, corrections, or additional requirements for an in-progress task. The amendment is visible to Jones (security) and should also be relayed to Brown via `message_brown`."
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
