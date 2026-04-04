@@ -65,6 +65,8 @@ public actor AgentActor {
     private var consecutiveTextOnlyResponses = 0
     private static let maxConsecutiveTextOnlyResponses = 6
     private var maxToolCallsPerIteration: Int
+    /// Maximum concurrent Jones security evaluations to prevent overwhelming the LLM backend.
+    private static let maxConcurrentEvaluations = 5
 
     /// Worst-case character overhead for tool definitions and per-turn suffixes
     /// that are sent with each API call but not stored in conversationHistory.
@@ -523,202 +525,235 @@ public actor AgentActor {
         var sentMessage = false
         var calledTaskComplete = false
         var calledCreateTask = false
-        let batchCount = callsToExecute.count
-
-        // Pre-build concise sibling summaries for parallel batches so Jones sees
-        // the full picture of what Brown is requesting in one LLM turn.
-        let allSummaries: [String] = batchCount > 1
-            ? callsToExecute.map { Self.conciseToolCallSummary(name: $0.name, arguments: $0.arguments) }
-            : []
 
         let taskLifecycleTools: Set<String> = [
             "task_acknowledged", "task_update", "task_complete", "reply_to_user",
             "message_user", "message_brown"
         ]
 
-        // Determine if this batch can use parallel evaluation + execution.
-        // Parallel requires: >1 call, all need approval (no lifecycle tools), agent is running.
-        let allNeedApproval = batchCount > 1
-            && configuration.requiresToolApproval
-            && callsToExecute.allSatisfy { call in
-                !taskLifecycleTools.contains(call.name) && tools.contains(where: { $0.name == call.name })
+        // Segment calls into contiguous runs of lifecycle vs approval-needing.
+        // Each segment completes before the next starts, preserving ordering.
+        // e.g. [task_acknowledged, file_read x10, task_complete] becomes:
+        //   segment 0: lifecycle  [task_acknowledged]     → sequential
+        //   segment 1: approval   [file_read x10]         → parallel
+        //   segment 2: lifecycle  [task_complete]          → sequential
+        struct CallSegment {
+            let isLifecycle: Bool
+            var calls: [LLMToolCall]
+        }
+
+        var segments: [CallSegment] = []
+        for call in callsToExecute {
+            let isLifecycle = taskLifecycleTools.contains(call.name)
+            if let last = segments.last, last.isLifecycle == isLifecycle {
+                segments[segments.count - 1].calls.append(call)
+            } else {
+                segments.append(CallSegment(isLifecycle: isLifecycle, calls: [call]))
             }
+        }
 
-        if allNeedApproval, let evaluator = securityEvaluator {
-            // --- Parallel evaluation + execution path ---
-            // All calls are evaluated and executed concurrently via SecurityEvaluator.
-            struct ParallelEntry: Sendable {
-                let index: Int
-                let call: LLMToolCall
-                let tool: any AgentTool
-                let siblings: String
-                let taskTitle: String?
-                let taskID: String?
-                let taskDescription: String?
-            }
+        var executedCallIDs = Set<String>()
 
-            let allTasks = await toolContext.taskStore.allTasks()
-            let currentTask = allTasks.first { $0.assigneeIDs.contains(toolContext.agentID) && $0.status == .running }
+        for segment in segments {
+            guard isRunning else { break }
 
-            var entries: [ParallelEntry] = []
-            for (batchIndex, call) in callsToExecute.enumerated() {
-                guard isRunning else { break }
-                guard let tool = tools.first(where: { $0.name == call.name }) else { continue }
-                let siblings = allSummaries.enumerated()
-                    .compactMap { $0.offset != batchIndex ? $0.element : nil }
-                    .joined(separator: "\n")
-                entries.append(ParallelEntry(
-                    index: batchIndex, call: call, tool: tool, siblings: siblings,
-                    taskTitle: currentTask?.title, taskID: currentTask?.id.uuidString,
-                    taskDescription: currentTask?.description
-                ))
+            if segment.isLifecycle {
+                // --- Lifecycle segment: execute sequentially, no approval ---
+                for call in segment.calls {
+                    guard isRunning else { break }
+                    let result: String
+                    if let tool = tools.first(where: { $0.name == call.name }) {
+                        result = await directExecute(call, tool: tool)
+                    } else {
+                        result = "Unknown tool: \(call.name)"
+                    }
+                    executedCallIDs.insert(call.id)
+                    updatePostCallFlags(call: call, result: result, sentMessage: &sentMessage, calledTaskComplete: &calledTaskComplete, calledCreateTask: &calledCreateTask)
+                    conversationHistory.append(LLMMessage(
+                        role: .tool,
+                        content: .toolResult(toolCallID: call.id, content: Self.capToolResult(result))
+                    ))
+                }
+            } else if segment.calls.count > 1 && configuration.requiresToolApproval,
+                      let evaluator = securityEvaluator {
+                // --- Approval segment with multiple calls: parallel evaluation + execution ---
+                let approvalSummaries = segment.calls.map {
+                    Self.conciseToolCallSummary(name: $0.name, arguments: $0.arguments)
+                }
 
-                // Post tool_request to channel for UI visibility.
-                await postToolRequestToChannel(call, tool: tool, task: currentTask, parallelIndex: batchIndex, parallelCount: batchCount, siblingCallSummaries: allSummaries.enumerated().compactMap { $0.offset != batchIndex ? $0.element : nil })
-            }
+                struct ParallelEntry: Sendable {
+                    let batchIndex: Int
+                    let call: LLMToolCall
+                    let tool: any AgentTool
+                    let siblings: String
+                    let taskTitle: String?
+                    let taskID: String?
+                    let taskDescription: String?
+                }
 
-            struct ParallelToolResult: Sendable {
-                let index: Int
-                let callID: String
-                let callName: String
-                let result: String
-            }
+                let allTasks = await toolContext.taskStore.allTasks()
+                let currentTask = allTasks.first { $0.assigneeIDs.contains(toolContext.agentID) && $0.status == .running }
+                let parallelCount = segment.calls.count
 
-            let channel = toolContext.channel
-            let role = configuration.role
-            let roleName = configuration.role.displayName
-            let ctx = toolContext
+                var entries: [ParallelEntry] = []
+                for (batchIndex, call) in segment.calls.enumerated() {
+                    guard isRunning else { break }
+                    guard let tool = tools.first(where: { $0.name == call.name }) else { continue }
+                    let siblings = approvalSummaries.enumerated()
+                        .compactMap { $0.offset != batchIndex ? $0.element : nil }
+                        .joined(separator: "\n")
+                    entries.append(ParallelEntry(
+                        batchIndex: batchIndex, call: call, tool: tool, siblings: siblings,
+                        taskTitle: currentTask?.title, taskID: currentTask?.id.uuidString,
+                        taskDescription: currentTask?.description
+                    ))
+                    await postToolRequestToChannel(call, tool: tool, task: currentTask, parallelIndex: batchIndex, parallelCount: parallelCount, siblingCallSummaries: approvalSummaries.enumerated().compactMap { $0.offset != batchIndex ? $0.element : nil })
+                }
 
-            // Track Jones active state across concurrent evaluations.
-            // Counter increments when each evaluation starts, decrements when it finishes.
-            // Jones indicator turns off only when the last concurrent evaluation completes.
-            let jonesActiveCount = OSAllocatedUnfairLock(initialState: 0)
-            let jonesCallback = ctx.onJonesProcessingStateChange
+                struct ParallelToolResult: Sendable {
+                    let batchIndex: Int
+                    let callID: String
+                    let result: String
+                }
 
-            let results: [ParallelToolResult] = await withTaskGroup(
-                of: ParallelToolResult.self,
-                returning: [ParallelToolResult].self
-            ) { group in
-                for entry in entries {
+                let channel = toolContext.channel
+                let role = configuration.role
+                let roleName = configuration.role.displayName
+                let ctx = toolContext
+
+                let jonesActiveCount = OSAllocatedUnfairLock(initialState: 0)
+                let jonesCallback = ctx.onJonesProcessingStateChange
+
+                // Evaluate + execute a single entry. Extracted so the sliding
+                // window doesn't duplicate the task body.
+                let evaluateEntry: @Sendable (ParallelEntry) async -> ParallelToolResult = { entry in
                     let toolDef = entry.tool.definition(for: role)
                     let toolParamDefs = AgentActor.formatToolParameterDefinitions(toolDef.parameters)
-                    group.addTask {
-                        // Evaluate security directly (concurrent LLM calls).
-                        let shouldSignalStart = jonesActiveCount.withLock { count -> Bool in
-                            count += 1
-                            return count == 1
-                        }
-                        if shouldSignalStart { jonesCallback(true) }
 
-                        let disposition = await evaluator.evaluate(
-                            toolName: entry.call.name,
-                            toolParams: entry.call.arguments,
-                            toolDescription: toolDef.description,
-                            toolParameterDefs: toolParamDefs,
-                            taskTitle: entry.taskTitle,
-                            taskID: entry.taskID,
-                            taskDescription: entry.taskDescription,
-                            siblingCalls: entry.siblings.isEmpty ? nil : entry.siblings,
-                            agentRoleName: roleName
-                        )
-
-                        let shouldSignalEnd = jonesActiveCount.withLock { count -> Bool in
-                            count -= 1
-                            return count == 0
-                        }
-                        if shouldSignalEnd { jonesCallback(false) }
-
-                        // Post security review status to channel.
-                        await AgentActor.postSecurityReviewToChannel(
-                            disposition: disposition, call: entry.call, role: role, roleName: roleName, channel: channel
-                        )
-
-                        // Execute if approved.
-                        let result: String
-                        if disposition.approved {
-                            do {
-                                let args = try entry.call.parsedArguments()
-                                result = try await entry.tool.execute(arguments: args, context: ctx)
-                            } catch {
-                                result = "Tool error: \(error.localizedDescription)"
-                            }
-                            await AgentActor.postToolOutputToChannel(
-                                result: result, call: entry.call, role: role, channel: channel
-                            )
-                        } else {
-                            if let taskID = currentTask?.id {
-                                let update = AgentActor.securityDenialUpdateMessage(
-                                    call: entry.call, disposition: disposition, isParallelBatch: true
-                                )
-                                await ctx.taskStore.addUpdate(id: taskID, message: update)
-                            }
-                            result = "Tool execution denied: \(disposition.message ?? "No reason given")"
-                        }
-
-                        return ParallelToolResult(
-                            index: entry.index, callID: entry.call.id,
-                            callName: entry.call.name, result: result
-                        )
+                    let shouldSignalStart = jonesActiveCount.withLock { count -> Bool in
+                        count += 1
+                        return count == 1
                     }
-                }
-                var collected: [ParallelToolResult] = []
-                for await r in group { collected.append(r) }
-                return collected
-            }
+                    if shouldSignalStart { jonesCallback(true) }
 
-            // Append results to conversation history in original order.
-            for r in results.sorted(by: { $0.index < $1.index }) {
-                conversationHistory.append(LLMMessage(
-                    role: .tool,
-                    content: .toolResult(toolCallID: r.callID, content: Self.capToolResult(r.result))
-                ))
-            }
+                    let disposition = await evaluator.evaluate(
+                        toolName: entry.call.name,
+                        toolParams: entry.call.arguments,
+                        toolDescription: toolDef.description,
+                        toolParameterDefs: toolParamDefs,
+                        taskTitle: entry.taskTitle,
+                        taskID: entry.taskID,
+                        taskDescription: entry.taskDescription,
+                        siblingCalls: entry.siblings.isEmpty ? nil : entry.siblings,
+                        agentRoleName: roleName
+                    )
 
-            // Safety: if entries were fewer than callsToExecute (e.g., stop() during entry-building),
-            // append placeholder results for orphaned tool_calls to maintain API invariant.
-            let coveredCallIDs = Set(results.map(\.callID))
-            for call in callsToExecute where !coveredCallIDs.contains(call.id) {
-                conversationHistory.append(LLMMessage(
-                    role: .tool,
-                    content: .toolResult(toolCallID: call.id, content: "Tool execution cancelled (agent stopped)")
-                ))
-            }
-        } else {
-            // --- Sequential path (single call, mixed lifecycle/approval, or no evaluator) ---
-            var executedCallIDs = Set<String>()
-            for (batchIndex, call) in callsToExecute.enumerated() {
-                guard isRunning else { break }
+                    let shouldSignalEnd = jonesActiveCount.withLock { count -> Bool in
+                        count -= 1
+                        return count == 0
+                    }
+                    if shouldSignalEnd { jonesCallback(false) }
 
-                let result: String
-                if let tool = tools.first(where: { $0.name == call.name }) {
-                    if configuration.requiresToolApproval && !taskLifecycleTools.contains(call.name) {
-                        let siblings = batchCount > 1
-                            ? allSummaries.enumerated().compactMap { $0.offset != batchIndex ? $0.element : nil }
-                            : []
-                        result = await executeWithApproval(call, tool: tool, parallelIndex: batchIndex, parallelCount: batchCount, siblingCallSummaries: siblings)
+                    await AgentActor.postSecurityReviewToChannel(
+                        disposition: disposition, call: entry.call, role: role, roleName: roleName, channel: channel
+                    )
+
+                    let result: String
+                    if disposition.approved {
+                        do {
+                            let args = try entry.call.parsedArguments()
+                            result = try await entry.tool.execute(arguments: args, context: ctx)
+                        } catch {
+                            result = "Tool error: \(error.localizedDescription)"
+                        }
+                        await AgentActor.postToolOutputToChannel(
+                            result: result, call: entry.call, role: role, channel: channel
+                        )
                     } else {
-                        result = await directExecute(call, tool: tool)
+                        if let taskID = currentTask?.id {
+                            let update = AgentActor.securityDenialUpdateMessage(
+                                call: entry.call, disposition: disposition, isParallelBatch: true
+                            )
+                            await ctx.taskStore.addUpdate(id: taskID, message: update)
+                        }
+                        result = "Tool execution denied: \(disposition.message ?? "No reason given")"
                     }
-                } else {
-                    result = "Unknown tool: \(call.name)"
+
+                    return ParallelToolResult(
+                        batchIndex: entry.batchIndex, callID: entry.call.id, result: result
+                    )
                 }
 
-                executedCallIDs.insert(call.id)
-                updatePostCallFlags(call: call, result: result, sentMessage: &sentMessage, calledTaskComplete: &calledTaskComplete, calledCreateTask: &calledCreateTask)
-                conversationHistory.append(LLMMessage(
-                    role: .tool,
-                    content: .toolResult(toolCallID: call.id, content: Self.capToolResult(result))
-                ))
-            }
+                // Sliding window: at most maxConcurrentEvaluations Jones calls in flight.
+                let results: [ParallelToolResult] = await withTaskGroup(
+                    of: ParallelToolResult.self,
+                    returning: [ParallelToolResult].self
+                ) { group in
+                    var collected: [ParallelToolResult] = []
+                    var iterator = entries.makeIterator()
 
-            // Safety: if the loop exited early (stop() during await), append placeholder results
-            // for remaining tool_calls to maintain the API invariant.
-            for call in callsToExecute where !executedCallIDs.contains(call.id) {
-                conversationHistory.append(LLMMessage(
-                    role: .tool,
-                    content: .toolResult(toolCallID: call.id, content: "Tool execution cancelled (agent stopped)")
-                ))
+                    // Seed with up to maxConcurrentEvaluations tasks.
+                    for _ in 0..<min(Self.maxConcurrentEvaluations, entries.count) {
+                        guard let entry = iterator.next() else { break }
+                        group.addTask { await evaluateEntry(entry) }
+                    }
+
+                    // As each completes, add the next entry (if any).
+                    for await result in group {
+                        collected.append(result)
+                        if let entry = iterator.next() {
+                            group.addTask { await evaluateEntry(entry) }
+                        }
+                    }
+
+                    return collected
+                }
+
+                for r in results.sorted(by: { $0.batchIndex < $1.batchIndex }) {
+                    executedCallIDs.insert(r.callID)
+                    conversationHistory.append(LLMMessage(
+                        role: .tool,
+                        content: .toolResult(toolCallID: r.callID, content: Self.capToolResult(r.result))
+                    ))
+                }
+            } else {
+                // --- Sequential approval path (single call or no evaluator) ---
+                let approvalSummaries: [String] = segment.calls.count > 1
+                    ? segment.calls.map { Self.conciseToolCallSummary(name: $0.name, arguments: $0.arguments) }
+                    : []
+
+                for (batchIndex, call) in segment.calls.enumerated() {
+                    guard isRunning else { break }
+                    let result: String
+                    if let tool = tools.first(where: { $0.name == call.name }) {
+                        if configuration.requiresToolApproval {
+                            let siblings = segment.calls.count > 1
+                                ? approvalSummaries.enumerated().compactMap { $0.offset != batchIndex ? $0.element : nil }
+                                : []
+                            result = await executeWithApproval(call, tool: tool, parallelIndex: batchIndex, parallelCount: segment.calls.count, siblingCallSummaries: siblings)
+                        } else {
+                            result = await directExecute(call, tool: tool)
+                        }
+                    } else {
+                        result = "Unknown tool: \(call.name)"
+                    }
+                    executedCallIDs.insert(call.id)
+                    updatePostCallFlags(call: call, result: result, sentMessage: &sentMessage, calledTaskComplete: &calledTaskComplete, calledCreateTask: &calledCreateTask)
+                    conversationHistory.append(LLMMessage(
+                        role: .tool,
+                        content: .toolResult(toolCallID: call.id, content: Self.capToolResult(result))
+                    ))
+                }
             }
+        }
+
+        // Safety: if any segment loop exited early (stop() during await), append placeholder
+        // results for remaining tool_calls to maintain the API invariant.
+        for call in callsToExecute where !executedCallIDs.contains(call.id) {
+            conversationHistory.append(LLMMessage(
+                role: .tool,
+                content: .toolResult(toolCallID: call.id, content: "Tool execution cancelled (agent stopped)")
+            ))
         }
 
         // run_task fires a detached restart — stop the run loop so we don't

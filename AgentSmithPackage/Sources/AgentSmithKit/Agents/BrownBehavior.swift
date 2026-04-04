@@ -68,6 +68,12 @@ public enum BrownBehavior {
         Your work must be excellent and must adhere closely to the user's goals and intent.
         In some cases, users don't do a great job a making their intent clear and complete. Do your best to understand what the user **means**. However, if you have ANY questions at all, simply ask Agent Smith, then wait for clarification.
         
+        ## Prefer tools over bash commands
+        Whenever possible, use available tools instead of calling to to bash to run a shell command
+        - `file_read` tool instead of "cat", "sed", "tail", etc with `bash` tool
+        - `file_edit` tool instead of "sed", "awk", or other tools via `bash`
+        - `file_write` tool instead of "cat" or other tools via `bash`
+        
         ## Tool choice and composition
         When choosing a tool or composing appropriate arguments for a chosen tool, try hard to make choices that will be the best, most reliable, and quickest executing tools.
         Pay attention to the type of system you are running on (see above).

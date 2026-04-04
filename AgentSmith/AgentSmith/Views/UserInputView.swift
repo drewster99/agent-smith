@@ -65,9 +65,7 @@ struct UserInputView: View {
                         .scrollContentBackground(.hidden)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .frame(minHeight: lineHeight * 2 + verticalPadding,
-                               maxHeight: lineHeight * 5 + verticalPadding)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(height: lineHeight * 5 + verticalPadding)
                 }
                 .background(AppColors.secondaryBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 8))

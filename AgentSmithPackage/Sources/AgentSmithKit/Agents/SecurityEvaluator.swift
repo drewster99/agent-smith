@@ -59,8 +59,11 @@ public actor SecurityEvaluator {
     private var lastWarnedToolName: String?
     private var lastWarnedToolParams: [String: AnyCodable]?
 
-    /// Consecutive parse failures across evaluations. Triggers abort at threshold.
-    private var totalConsecutiveFailures = 0
+    /// Consecutive evaluation-level failures (each evaluation exhausted its retries).
+    /// Triggers abort at threshold. Only incremented when a full evaluation fails,
+    /// not on individual retry attempts — prevents false aborts under concurrency
+    /// where transient failures across parallel evaluations would race the counter.
+    private var consecutiveEvaluationFailures = 0
     private static let maxConsecutiveFailures = 20
     private static let maxRetries = 5
 
@@ -186,22 +189,12 @@ public actor SecurityEvaluator {
                     ))
                 }
             } catch {
-                retryCount += 1
-                totalConsecutiveFailures += 1
-
-                if totalConsecutiveFailures >= Self.maxConsecutiveFailures {
-                    await channel.post(ChannelMessage(
-                        sender: .system,
-                        content: "Jones produced \(totalConsecutiveFailures) consecutive invalid responses — aborting. Check Jones model configuration."
-                    ))
-                    await abort(
-                        "Jones security gatekeeper failed to produce valid output after \(totalConsecutiveFailures) consecutive attempts",
-                        .jones
-                    )
-                    let disposition = SecurityDisposition(approved: false, message: "Security evaluation aborted due to repeated failures")
-                    recordEvaluation(toolName: toolName, toolParams: toolParams, taskTitle: taskTitle, prompt: evalPrompt, response: "LLM error: \(error.localizedDescription)", disposition: disposition, startTime: startTime)
+                if Task.isCancelled {
+                    let disposition = SecurityDisposition(approved: false, message: "Evaluation cancelled")
+                    recordEvaluation(toolName: toolName, toolParams: toolParams, taskTitle: taskTitle, prompt: evalPrompt, response: "(cancelled)", disposition: disposition, startTime: startTime)
                     return disposition
                 }
+                retryCount += 1
                 continue
             }
 
@@ -225,21 +218,6 @@ public actor SecurityEvaluator {
 
             guard let disposition = parseDisposition(responseText, toolName: toolName, parsedParams: parsedParams, agentRoleName: agentRoleName) else {
                 retryCount += 1
-                totalConsecutiveFailures += 1
-
-                if totalConsecutiveFailures >= Self.maxConsecutiveFailures {
-                    await channel.post(ChannelMessage(
-                        sender: .system,
-                        content: "Jones produced \(totalConsecutiveFailures) consecutive invalid responses — aborting. Check Jones model configuration."
-                    ))
-                    await abort(
-                        "Jones security gatekeeper failed to produce valid output after \(totalConsecutiveFailures) consecutive attempts",
-                        .jones
-                    )
-                    let disposition = SecurityDisposition(approved: false, message: "Security evaluation aborted due to repeated failures")
-                    recordEvaluation(toolName: toolName, toolParams: toolParams, taskTitle: taskTitle, prompt: evalPrompt, response: responseText, disposition: disposition, startTime: startTime)
-                    return disposition
-                }
 
                 // Post error to channel only after several failures.
                 if retryCount >= 3 {
@@ -252,7 +230,7 @@ public actor SecurityEvaluator {
                 continue
             }
 
-            totalConsecutiveFailures = 0
+            consecutiveEvaluationFailures = 0
             recordEvaluation(toolName: toolName, toolParams: toolParams, taskTitle: taskTitle, prompt: evalPrompt, response: responseText, disposition: disposition, startTime: startTime)
 
             // Handle ABORT — trigger system-wide shutdown.
@@ -272,7 +250,20 @@ public actor SecurityEvaluator {
             return disposition
         }
 
-        // Exhausted retries or iteration limit — deny as UNSAFE.
+        // Exhausted retries or iteration limit — this evaluation fully failed.
+        consecutiveEvaluationFailures += 1
+
+        if consecutiveEvaluationFailures >= Self.maxConsecutiveFailures {
+            await channel.post(ChannelMessage(
+                sender: .system,
+                content: "Jones produced \(consecutiveEvaluationFailures) consecutive failed evaluations — aborting. Check Jones model configuration."
+            ))
+            await abort(
+                "Jones security gatekeeper failed to produce valid output after \(consecutiveEvaluationFailures) consecutive evaluations",
+                .jones
+            )
+        }
+
         let fallback = SecurityDisposition(
             approved: false,
             message: "Security evaluation failed after \(totalIterations) iterations (\(retryCount) retries)"
