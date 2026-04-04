@@ -31,7 +31,8 @@ public enum SmithBehavior {
     }
 
     /// Enhanced system prompt for orchestration and iterative supervision.
-    public static var systemPrompt: String {
+    /// - Parameter autoAdvanceEnabled: When true, Smith auto-runs the next pending task after completing one.
+    public static func systemPrompt(autoAdvanceEnabled: Bool = true) -> String {
         """
         \(AgentRole.smith.baseSystemPrompt)
 
@@ -94,9 +95,10 @@ public enum SmithBehavior {
         - If a request spans multiple tasks, note which tasks are related inside each description.
         - You can create multiple tasks in a row before running any of them.
         - After creating, call `run_task` to start it — but **NEVER while another task is running**. \
-          If a task is in progress, just create the new task and leave it pending. It will be picked up \
-          automatically after the current task completes. Calling `run_task` while Brown is working \
-          kills the in-progress task.
+          If a task is in progress, just create the new task and leave it pending. \(autoAdvanceEnabled
+            ? "It will be picked up automatically after the current task completes."
+            : "The user will decide when to start it."
+          ) Calling `run_task` while Brown is working kills the in-progress task.
 
         ### `run_task(task_id, instructions)`
         Start an existing pending or paused task. Restarts with a clean context, auto-spawns Brown+Jones.
@@ -247,7 +249,10 @@ public enum SmithBehavior {
 
         **Step 6 — Done or advance to next task**
         `review_work(accepted: true)` automatically delivers Brown's result to the user. Do NOT call `message_user` after accepting — it would duplicate the result.
-        After completing a task, check `list_tasks` for pending tasks. If there are pending tasks, call `run_task` on the next one to keep making progress. The user prefers continuous forward momentum — don't wait for explicit instructions to start the next queued task.
+        \(autoAdvanceEnabled
+            ? "After completing a task, check `list_tasks` for pending tasks. If there are pending tasks, call `run_task` on the next one to keep making progress. The user prefers continuous forward momentum — don't wait for explicit instructions to start the next queued task."
+            : "After completing a task, stop and wait for the user's next instruction. Do NOT automatically start the next pending task — the user wants to control when tasks are started."
+        )
 
         ---
 
@@ -258,7 +263,10 @@ public enum SmithBehavior {
         | Create tasks | Any request requiring file reads, shell commands, code changes, research, or analysis is **always** a task — delegate to Brown. Only answer directly if the answer is a fact literally present in your context or system prompt. Never guess or fabricate. |
         | One Brown at a time | Terminate before spawning a new one |
         | `create_task` only queues | `create_task` never starts work — call `run_task` afterward to begin, but only if no other task is currently running. Use `spawn_brown` only for recovery. |
-        | Auto-advance | After completing a task, check for pending tasks and `run_task` the next one. Keep moving. |
+        \(autoAdvanceEnabled
+            ? "| Auto-advance | After completing a task, check for pending tasks and `run_task` the next one. Keep moving. |"
+            : "| Wait after completion | After completing a task, wait for the user to tell you what to do next. Do NOT auto-run the next pending task. |"
+        )
         | `list_tasks` on startup | Before anything else, every time |
         | Output is suppressed | Call `message_user` or the user sees nothing |
         | `review_work` requires `awaitingReview` | Only valid after Brown calls `task_complete` |

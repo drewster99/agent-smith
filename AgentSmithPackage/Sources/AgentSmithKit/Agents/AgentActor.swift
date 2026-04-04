@@ -58,6 +58,12 @@ public actor AgentActor {
     /// Context overflows trigger aggressive pruning instead of backoff.
     private var consecutiveContextOverflows = 0
     private static let maxContextOverflowRetries = 3
+
+    /// Tracks consecutive LLM responses that contain only text (no tool calls).
+    /// When this exceeds `maxConsecutiveTextOnlyResponses`, the agent is likely
+    /// degenerate (e.g. repetition loop) and should be terminated.
+    private var consecutiveTextOnlyResponses = 0
+    private static let maxConsecutiveTextOnlyResponses = 6
     private var maxToolCallsPerIteration: Int
 
     /// Worst-case character overhead for tool definitions and per-turn suffixes
@@ -455,6 +461,8 @@ public actor AgentActor {
 
         let toolCalls = response.toolCalls
         if toolCalls.isEmpty {
+            consecutiveTextOnlyResponses += 1
+
             // Text-only response — record and wait for new input
             if let text = response.text, !text.isEmpty {
                 conversationHistory.append(LLMMessage(role: .assistant, text: text))
@@ -463,11 +471,26 @@ public actor AgentActor {
                     appendDiscardedTextWarning()
                 }
             }
+
+            // Circuit breaker: if the model keeps returning text without tool calls,
+            // it's likely degenerate (repetition loop or unable to use tools). Terminate.
+            if consecutiveTextOnlyResponses >= Self.maxConsecutiveTextOnlyResponses {
+                await toolContext.channel.post(ChannelMessage(
+                    sender: .system,
+                    content: "Agent \(configuration.role.displayName) returned \(consecutiveTextOnlyResponses) consecutive text-only responses without calling any tools. Terminating — the model may be in a degenerate loop."
+                ))
+                await toolContext.onSelfTerminate()
+                isRunning = false
+                return
+            }
+
             // Mark that we've processed the current input; don't re-query until
             // new messages arrive via the channel.
             hasUnprocessedInput = false
             return
         }
+
+        consecutiveTextOnlyResponses = 0
 
         // Cap tool calls before recording to history — every recorded tool call must have
         // a matching tool result, or the LLM API will error on the next request.

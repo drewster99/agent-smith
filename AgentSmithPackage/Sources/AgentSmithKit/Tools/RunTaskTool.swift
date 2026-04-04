@@ -3,7 +3,7 @@ import Foundation
 /// Allows Smith to run an existing pending or paused task without duplicating it.
 public struct RunTaskTool: AgentTool {
     public let name = "run_task"
-    public let toolDescription = "Run an existing pending or paused task. Restarts with a clean context and auto-spawns Brown+Jones. The `instructions` field is REQUIRED — include any updates, permissions, scope changes, or clarifications from the user. These are appended to the task description and survive the restart."
+    public let toolDescription = "Run an existing pending or paused task. Restarts with a clean context and auto-spawns Brown+Jones. The `instructions` field is REQUIRED — include any updates, permissions, scope changes, or clarifications from the user. These are appended to the task description and survive the restart.\nIMPORTANT: One one task can run at a time. Calling `run_task` will STOP any currently executing task."
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),

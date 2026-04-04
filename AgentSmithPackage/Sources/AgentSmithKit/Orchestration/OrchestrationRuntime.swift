@@ -52,6 +52,8 @@ public actor OrchestrationRuntime {
     private var llmConfigs: [AgentRole: ModelConfiguration]
     private var providerAPITypes: [AgentRole: ProviderAPIType]
     private var agentTuning: [AgentRole: AgentTuningConfig]
+    /// Whether Smith should automatically run the next pending task after completing one.
+    private let autoAdvanceEnabled: Bool
     /// Persistent token usage tracking across all agents.
     public let usageStore: UsageStore
     private var monitoringTimer: MonitoringTimer?
@@ -74,7 +76,8 @@ public actor OrchestrationRuntime {
         providerAPITypes: [AgentRole: ProviderAPIType] = [:],
         agentTuning: [AgentRole: AgentTuningConfig] = [:],
         embeddingService: EmbeddingService,
-        usageStore: UsageStore
+        usageStore: UsageStore,
+        autoAdvanceEnabled: Bool = true
     ) {
         self.channel = MessageChannel()
         self.taskStore = TaskStore()
@@ -83,6 +86,7 @@ public actor OrchestrationRuntime {
         self.llmConfigs = configurations
         self.providerAPITypes = providerAPITypes
         self.agentTuning = agentTuning
+        self.autoAdvanceEnabled = autoAdvanceEnabled
         self.usageStore = usageStore
     }
 
@@ -224,7 +228,7 @@ public actor OrchestrationRuntime {
                 role: .smith,
                 llmConfig: smithConfig,
                 providerAPIType: providerAPITypes[.smith] ?? .openAICompatible,
-                systemPrompt: SmithBehavior.systemPrompt,
+                systemPrompt: SmithBehavior.systemPrompt(autoAdvanceEnabled: autoAdvanceEnabled),
                 toolNames: SmithBehavior.toolNames,
                 suppressesRawTextToChannel: true,
                 pollInterval: agentTuning[.smith]?.pollInterval ?? 20,
@@ -825,6 +829,7 @@ public actor OrchestrationRuntime {
                 guard let self else { return nil }
                 return await self.taskSummarizer?.mergeMemoryTexts(existing: existing, new: new)
             },
+            autoAdvanceEnabled: autoAdvanceEnabled,
             recordFileRead: { path in
                 filesReadInSession?.record(path)
             },

@@ -123,13 +123,15 @@ Add search capabilities to the `list_tasks` tool so Brown can find relevant task
 ### Improve prior-task relevance in new task context
 The current system injects prior task summaries into new tasks via semantic search against the task description. In practice this produces a fair number of irrelevant additions — the embedding similarity threshold is too loose, or the search query (the new task description) is too broad. Investigate: tighten the similarity threshold, limit to tasks from the same session or recent time window, weight completed tasks higher than abandoned ones, or let Smith curate which prior tasks to attach rather than auto-injecting. Goal: every prior task included in a new task's context should be genuinely useful, not noise.
 
-### Auto-run next pending task
+### Auto-run next pending task ✅
 Add a setting (persisted in UserDefaults) that controls whether the system automatically picks up the next pending task when the current one completes. When enabled, Smith or the orchestration runtime should detect task completion and immediately assign the next queued task to Brown without requiring user interaction. When disabled, the system idles after task completion and waits for the user. The setting should be exposed in the UI alongside the existing auto-start toggle.
+
+**Implemented:** `AppViewModel.autoRunNextTask` (defaults to `true`, persisted in UserDefaults). Passed to `OrchestrationRuntime` at init, which forwards it to `SmithBehavior.systemPrompt(autoAdvanceEnabled:)` — the auto-advance instructions in Steps 6, the Key Constraints table, and the `create_task` docs are all conditional on the setting. `ReviewWorkTool` also includes advance guidance in its tool result when enabled. UI toggle added in Settings → Account tab under a "Behavior" section. Takes effect on next start (system prompt is generated at agent creation time).
 
 ### Token usage cost estimation
 Add estimated cost columns to the Token Usage analytics window. Use LiteLLM pricing data (already available via `ModelMetadataService`) to calculate per-turn and per-task cost estimates based on model ID and token counts. Display in the Overview, By Task, and By Model/Provider tabs. Handle cache pricing correctly (Anthropic cached reads are cheaper than uncached input).
 
 ## Blockers
 
-### SSH key not configured on this device
-The Xcode build fails because it cannot fetch the `SwiftLLMKit` dependency — the SSH key on this Mac hasn't been added to GitHub. Until the key is set up, the project won't resolve packages or build. Once fixed, verify the build succeeds — there may also be pre-existing errors in `ProviderManagementView.swift` and `ModelConfigurationEditorView.swift` referencing `ProviderAPIType` that need investigation.
+### ~~SSH key not configured on this device~~ ✅ Resolved
+Was misdiagnosed as an SSH key issue. The actual problem was corrupted SwiftPM caches. Fix: delete `~/.swiftpm`, `~/Library/org.swift.swiftpm`, and `~/Library/Caches/org.swift.swiftpm`, then quit and restart Xcode. May also need to verify the build succeeds — there may be pre-existing errors in `ProviderManagementView.swift` and `ModelConfigurationEditorView.swift` referencing `ProviderAPIType` that need investigation.

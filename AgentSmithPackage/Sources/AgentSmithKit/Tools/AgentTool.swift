@@ -114,6 +114,8 @@ public struct ToolContext: Sendable {
     /// Merges two related memory texts into a single consolidated memory via LLM.
     /// Parameters: (existingContent, newContent). Returns merged text, or nil if unavailable.
     public let mergeMemoryContent: @Sendable (String, String) async -> String?
+    /// Whether Smith should automatically run the next pending task after completing one.
+    public let autoAdvanceEnabled: Bool
     /// Records that a file at the given path was successfully read during this agent session.
     public let recordFileRead: @Sendable (String) -> Void
     /// Returns true if the file at the given path was read during this agent session.
@@ -138,6 +140,7 @@ public struct ToolContext: Sendable {
         memoryStore: MemoryStore,
         summarizeCompletedTask: @escaping @Sendable (UUID) async -> Void = { _ in },
         mergeMemoryContent: @escaping @Sendable (String, String) async -> String? = { _, _ in nil },
+        autoAdvanceEnabled: Bool = true,
         recordFileRead: @escaping @Sendable (String) -> Void = { _ in },
         hasFileBeenRead: @escaping @Sendable (String) -> Bool = { _ in false }
     ) {
@@ -159,6 +162,7 @@ public struct ToolContext: Sendable {
         self.memoryStore = memoryStore
         self.summarizeCompletedTask = summarizeCompletedTask
         self.mergeMemoryContent = mergeMemoryContent
+        self.autoAdvanceEnabled = autoAdvanceEnabled
         self.recordFileRead = recordFileRead
         self.hasFileBeenRead = hasFileBeenRead
     }

@@ -16,7 +16,7 @@ public struct CreateTaskTool: AgentTool {
             ]),
             "description": .dictionary([
                 "type": .string("string"),
-                "description": .string("Detailed description of what needs to be done.")
+                "description": .string("Detailed description of what needs to be done. This description should include (1) A detailed description of the goal or problem being solved, (2) A markdown-formatted step by step list of all the things that need to be done, including any relevant inputs, data files, or user directives, (3) The desired result/output of the task, (4) A brief list of verifications, tests, or other steps to be taken to confirm successful completion and a second section for success verification / things to test or double-check for completeness.")
             ])
         ]),
         "required": .array([.string("title"), .string("description")])

@@ -30,6 +30,13 @@ final class AppViewModel {
     }() {
         didSet { UserDefaults.standard.set(autoStartEnabled, forKey: "autoStartEnabled") }
     }
+    /// Whether Smith automatically runs the next pending task after completing one.
+    var autoRunNextTask: Bool = {
+        if UserDefaults.standard.object(forKey: "autoRunNextTask") == nil { return true }
+        return UserDefaults.standard.bool(forKey: "autoRunNextTask")
+    }() {
+        didSet { UserDefaults.standard.set(autoRunNextTask, forKey: "autoRunNextTask") }
+    }
     var isRunning = false
     var isAborted = false
     var abortReason = ""
@@ -299,7 +306,8 @@ final class AppViewModel {
             providerAPITypes: apiTypes,
             agentTuning: tuning,
             embeddingService: embeddingService,
-            usageStore: usageStore
+            usageStore: usageStore,
+            autoAdvanceEnabled: autoRunNextTask
         )
         runtime = newRuntime
         isRunning = true

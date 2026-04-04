@@ -75,6 +75,17 @@ struct SettingsView: View {
             Text("This name is shown in the channel log and included in agent system prompts.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            Divider()
+
+            Text("Behavior")
+                .font(AppFonts.sectionHeader)
+
+            Toggle("Auto-run next pending task after completion", isOn: $viewModel.autoRunNextTask)
+
+            Text("When enabled, Smith automatically starts the next queued task after completing one. When disabled, Smith waits for your instruction. Takes effect on next start.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
