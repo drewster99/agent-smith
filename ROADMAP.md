@@ -111,6 +111,12 @@ Ripgrep-based content search tool for Agent Brown. Parameters: `pattern` (requir
 ### Multimodal file_read — image support
 `file_read` currently returns metadata only for image files (filename, dimensions, size). To support actual image reading, the tool result format needs to carry multimodal content (base64 image data as a content part) instead of plain text strings. This requires changes to how `AgentActor` passes tool results to the LLM — currently all tool results are `String`, but multimodal results need structured content blocks. Once supported, the 250K character cap should be raised or replaced with a byte-based limit appropriate for images (2-5MB).
 
+### Task-scoped working directory for relative paths
+Currently all tools (except `file_read`) require absolute paths. Relative paths would save significant tokens — paths like `/Users/andrew/Documents/ncc_source/cursor/agent-smith/AgentSmithPackage/Sources/AgentSmithKit/Tools/GrepTool.swift` are 100+ characters each, repeated across many tool calls per task. The approach: `CreateTaskTool` accepts an optional `working_directory` parameter. When set, all tools resolve relative paths against it. The working directory is immutable for the task's lifetime (no races). Tool output (glob/grep results) returns relative paths when a working directory is set, further reducing token usage. Full design documented in project memory.
+
+### Streamline model configuration UI
+The current Settings flow requires managing configurations as separate objects, then assigning them to agent roles across two different tabs. Redesign the UI to feel agent-centric — each agent/role has its own settings panel showing provider, model, temperature, max tokens, etc. directly. The underlying `ModelConfiguration` concept stays in the data model for reuse and persistence, but the UI abstracts it away so it feels like "adjusting Smith's settings" rather than "creating a configuration and assigning it."
+
 ### Token usage cost estimation
 Add estimated cost columns to the Token Usage analytics window. Use LiteLLM pricing data (already available via `ModelMetadataService`) to calculate per-turn and per-task cost estimates based on model ID and token counts. Display in the Overview, By Task, and By Model/Provider tabs. Handle cache pricing correctly (Anthropic cached reads are cheaper than uncached input).
 

@@ -80,7 +80,7 @@ public struct GrepTool: AgentTool {
         let contentMode: Bool
         if case .string(let mode) = arguments["output_mode"] {
             guard mode == "files_with_matches" || mode == "content" else {
-                return "Error: output_mode must be 'files_with_matches' or 'content'. Got: '\(mode)'"
+                return "Error: `output_mode` must be 'files_with_matches' or 'content'. Got: '\(mode)'"
             }
             contentMode = mode == "content"
         } else {
