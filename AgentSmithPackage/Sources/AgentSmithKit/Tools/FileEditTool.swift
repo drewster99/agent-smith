@@ -6,7 +6,7 @@ import Foundation
 /// Reuses `FileWriteTool.checkPathRestriction` for safety validation.
 public struct FileEditTool: AgentTool {
     public let name = "file_edit"
-    public let toolDescription = "Perform an exact string replacement in a file. You MUST read the file first with `file_read` before editing it. The `old_string` must be unique in the file unless `replace_all` is `true`."
+    public let toolDescription = "Perform an exact string replacement in a file. The `old_string` must match exactly and be unique in the file unless `replace_all` is `true`."
 
     public func description(for role: AgentRole) -> String {
         switch role {
@@ -75,12 +75,8 @@ public struct FileEditTool: AgentTool {
             return "Error: file_path must be absolute (start with /). Got: \(filePath)"
         }
 
-        // Verify the file was read this session.
         let url = URL(fileURLWithPath: filePath)
         let resolvedPath = url.resolvingSymlinksInPath().path
-        guard context.hasFileBeenRead(filePath) || context.hasFileBeenRead(resolvedPath) else {
-            return "Error: You must read a file with file_read before editing it."
-        }
 
         // Safety check — reuse FileWriteTool's path restriction logic.
         if let rejection = FileWriteTool.checkPathRestriction(resolvedPath: resolvedPath) {

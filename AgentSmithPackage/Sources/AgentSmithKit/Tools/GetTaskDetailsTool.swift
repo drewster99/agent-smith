@@ -27,10 +27,10 @@ public struct GetTaskDetailsTool: AgentTool {
             throw ToolCallError.missingRequiredArgument("task_id")
         }
         guard let taskID = UUID(uuidString: taskIDString) else {
-            return "Invalid task_id: '\(taskIDString)' is not a valid UUID."
+            return "Invalid `task_id`: '\(taskIDString)' is not a valid UUID."
         }
         guard let task = await context.taskStore.task(id: taskID) else {
-            return "No task found with ID \(taskID). Use list_tasks to see available tasks."
+            return "No task found with ID \(taskID). Use `list_tasks` to see available tasks."
         }
 
         var parts: [String] = []

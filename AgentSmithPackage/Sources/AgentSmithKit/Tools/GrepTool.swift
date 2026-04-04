@@ -6,7 +6,7 @@ import Foundation
 /// matching file paths only, or matching lines with file:line_number:content format.
 public struct GrepTool: AgentTool {
     public let name = "grep"
-    public let toolDescription = "Search file contents for lines matching a regex pattern. Returns matching file paths by default, or matching lines in file:line:content format. Supports glob-based file filtering. Use instead of grep or rg bash commands for content search."
+    public let toolDescription = "Search file contents for lines matching a regex `pattern`. Returns matching file paths by default, or matching lines in file:line:content format. Supports glob-based file filtering. Use instead of grep or rg bash commands for content search."
 
     public func description(for role: AgentRole) -> String {
         switch role {
@@ -27,7 +27,7 @@ public struct GrepTool: AgentTool {
             ]),
             "path": .dictionary([
                 "type": .string("string"),
-                "description": .string("Absolute directory path to search in. Must start with /.")
+                "description": .string("Absolute directory path to search in. Must start with / or ~/.")
             ]),
             "glob": .dictionary([
                 "type": .string("string"),

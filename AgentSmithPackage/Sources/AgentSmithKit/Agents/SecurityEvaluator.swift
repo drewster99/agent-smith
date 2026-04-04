@@ -495,7 +495,7 @@ public actor SecurityEvaluator {
     }
 
     /// Executes a file_read tool call for Jones without recording the read.
-    /// Jones's reads must NOT count toward Brown's "must read before edit" requirement.
+    /// Jones's reads must NOT count toward Brown's file_write gating.
     private func executeJonesFileRead(_ call: LLMToolCall) -> String {
         guard call.name == "file_read" else {
             return "Error: Unknown tool '\(call.name)'"
@@ -508,36 +508,13 @@ public actor SecurityEvaluator {
             return "Error: Invalid arguments — \(error.localizedDescription)"
         }
 
-        guard case .string(let path) = args["path"] else {
+        guard case .string(let rawPath) = args["path"] else {
             return "Error: Missing required argument 'path'"
         }
+        let path = (rawPath as NSString).expandingTildeInPath
 
-        if let rejection = FileReadTool.checkPathRestriction(path) {
-            return rejection
-        }
-
-        let url = URL(fileURLWithPath: path)
-        let resolvedPath = url.resolvingSymlinksInPath().path
-
-        do {
-            let attrs = try FileManager.default.attributesOfItem(atPath: resolvedPath)
-            if let fileSize = attrs[.size] as? UInt64, fileSize > FileReadTool.maxCharacters {
-                return "Error: File is too large to read (\(fileSize) bytes, maximum is \(FileReadTool.maxCharacters))."
-            }
-        } catch {
-            return "Error checking file size: \(error.localizedDescription)"
-        }
-
-        do {
-            let content = try String(contentsOf: url, encoding: .utf8)
-            guard content.count <= FileReadTool.maxCharacters else {
-                return "Error: File is too large to read (\(content.count) characters, maximum is \(FileReadTool.maxCharacters))."
-            }
-            // Intentionally NOT recording this read — Jones reads must not gate Brown's file_edit.
-            return content
-        } catch {
-            return "Error reading file: \(error.localizedDescription)"
-        }
+        // Use the shared read logic (path restriction, content type detection, line-numbered output).
+        return FileReadTool.readFileContent(at: path)
     }
 
     private static func parseToolParams(_ json: String) -> [String: AnyCodable]? {

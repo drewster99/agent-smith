@@ -3,7 +3,7 @@ import Foundation
 /// Writes content to a file. Blocks writes to sensitive system and credential paths.
 public struct FileWriteTool: AgentTool {
     public let name = "file_write"
-    public let toolDescription = "Write content to a file at the given absolute path. Creates parent directories if needed. Requires fully qualified paths (starting with /). Blocks writes to sensitive system paths and hard-linked files."
+    public let toolDescription = "Write content to a file at the given absolute path. Creates new files freely. To overwrite an existing file, you must have read it first with file_read. Requires absolute paths (starting with / or ~/). Blocks writes to sensitive system paths and hard-linked files."
 
     public func description(for role: AgentRole) -> String {
         switch role {
@@ -57,12 +57,20 @@ public struct FileWriteTool: AgentTool {
             return rejection
         }
         let fm = FileManager.default
+        let resolvedPath = resolvedURL.path
+
+        // Existing files require a prior file_read to prevent blind overwrites.
+        if fm.fileExists(atPath: resolvedPath) {
+            guard context.hasFileBeenRead(path) || context.hasFileBeenRead(resolvedPath) else {
+                return "Error: File already exists at '\(path)'. You must read it with `file_read` before overwriting."
+            }
+        }
 
         // Check for hard links — if the target file exists and has multiple hard links,
         // writing to it could silently modify data reachable from other paths.
-        if fm.fileExists(atPath: resolvedURL.path) {
+        if fm.fileExists(atPath: resolvedPath) {
             do {
-                let attrs = try fm.attributesOfItem(atPath: resolvedURL.path)
+                let attrs = try fm.attributesOfItem(atPath: resolvedPath)
                 if let linkCount = attrs[.referenceCount] as? Int, linkCount > 1 {
                     return "BLOCKED: File '\(path)' has \(linkCount) hard links. Writing would affect all linked paths."
                 }

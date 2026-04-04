@@ -27,7 +27,7 @@ public struct GlobTool: AgentTool {
             ]),
             "path": .dictionary([
                 "type": .string("string"),
-                "description": .string("The absolute directory path to search in. Must start with /.")
+                "description": .string("The absolute directory path to search in. Must start with / or ~/.")
             ])
         ]),
         "required": .array([.string("pattern"), .string("path")])
