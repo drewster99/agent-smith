@@ -1274,11 +1274,11 @@ private struct ToolNameChip: View {
             .foregroundStyle(.blue)
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
-            .background(.blue.opacity(0.08))
+            .background(.blue.opacity(0.12))
             .clipShape(RoundedRectangle(cornerRadius: 4))
             .overlay(
                 RoundedRectangle(cornerRadius: 4)
-                    .strokeBorder(.blue.opacity(0.3), lineWidth: 0.5)
+                    .strokeBorder(.blue.opacity(0.4), lineWidth: 1.0)
             )
     }
 }

@@ -23,6 +23,14 @@ struct MainView: View {
                     .padding(.top, 12)
                     .padding(.bottom, 8)
 
+                Toggle("Auto-run next task", isOn: Binding(
+                    get: { viewModel.autoRunNextTask },
+                    set: { viewModel.autoRunNextTask = $0 }
+                ))
+                .font(.caption)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 6)
+
                 ScrollView {
                     TaskListView(viewModel: viewModel)
                 }

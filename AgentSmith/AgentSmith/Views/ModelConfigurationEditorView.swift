@@ -16,6 +16,7 @@ struct ModelConfigurationEditorView: View {
     @State private var maxContextTokens: Int = 128_000
     @State private var thinkingBudget: Int = 0
     @State private var extendedCacheTTL: Bool = false
+    @State private var useDefaultTemperature: Bool = false
     @State private var streaming: Bool = false
 
     var body: some View {
@@ -29,8 +30,10 @@ struct ModelConfigurationEditorView: View {
                     providerSection
                     modelSection
                     parametersSection
-                    if selectedProviderAPIType == .anthropic {
+                    if selectedProviderAPIType == .anthropic || selectedProviderAPIType == .alibabaCloud {
                         thinkingSection
+                    }
+                    if selectedProviderAPIType == .anthropic {
                         cacheTTLSection
                     }
                     streamingSection
@@ -91,7 +94,8 @@ struct ModelConfigurationEditorView: View {
         }
     }
 
-    /// Whether extended thinking is active, which locks temperature to 1.0 for Anthropic.
+    /// Whether Anthropic extended thinking is active, which locks temperature to 1.0.
+    /// Alibaba Cloud thinking does NOT lock temperature.
     private var isThinkingActive: Bool {
         selectedProviderAPIType == .anthropic && thinkingBudget > 0
     }
@@ -101,11 +105,11 @@ struct ModelConfigurationEditorView: View {
             LabeledContent("Temperature") {
                 HStack {
                     Slider(value: $temperature, in: 0...2, step: 0.1)
-                        .disabled(isThinkingActive)
+                        .disabled(isThinkingActive || useDefaultTemperature)
                     Text(String(format: "%.1f", temperature))
                         .monospacedDigit()
                         .frame(width: 30)
-                        .foregroundStyle(isThinkingActive ? .secondary : .primary)
+                        .foregroundStyle((isThinkingActive || useDefaultTemperature) ? .secondary : .primary)
                 }
             }
             .onChange(of: temperature) { _, newValue in
@@ -113,6 +117,11 @@ struct ModelConfigurationEditorView: View {
                     thinkingBudget = 0
                 }
             }
+
+            Toggle("Use model default temperature", isOn: $useDefaultTemperature)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .disabled(isThinkingActive)
 
             LabeledContent("Max Output Tokens") {
                 TextField("4096", value: $maxOutputTokens, format: .number)
@@ -144,7 +153,10 @@ struct ModelConfigurationEditorView: View {
                         .onChange(of: thinkingBudget) { _, newValue in
                             if newValue > 0 {
                                 thinkingBudget = max(1024, newValue)
-                                temperature = 1.0
+                                // Anthropic requires temperature = 1.0 when thinking is enabled.
+                                if selectedProviderAPIType == .anthropic {
+                                    temperature = 1.0
+                                }
                             } else {
                                 thinkingBudget = 0
                             }
@@ -168,8 +180,17 @@ struct ModelConfigurationEditorView: View {
                 Text("Thinking enabled — temperature locked to 1.0 (Anthropic requirement). Minimum budget: 1,024 tokens.")
                     .font(.caption)
                     .foregroundStyle(.orange)
+            } else if selectedProviderAPIType == .alibabaCloud && thinkingBudget > 0 {
+                Text("Thinking enabled for Alibaba Cloud (Qwen3/3.5). Minimum budget: 1,024 tokens.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             } else {
-                Text("Extended thinking token budget (Anthropic only). Set to 0 to disable. Changing temperature disables thinking.")
+                Text("Extended thinking token budget. Set to 0 to disable.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if selectedProviderAPIType == .anthropic && !isThinkingActive {
+                Text("Changing temperature away from 1.0 disables thinking.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -326,11 +347,13 @@ struct ModelConfigurationEditorView: View {
         maxContextTokens = config.maxContextTokens
         thinkingBudget = config.thinkingBudget ?? 0
         extendedCacheTTL = config.extendedCacheTTL
+        useDefaultTemperature = config.useDefaultTemperature
         streaming = false
     }
 
     private func save() {
-        let effectiveThinkingBudget: Int? = (selectedProviderAPIType == .anthropic && thinkingBudget > 0) ? thinkingBudget : nil
+        let supportsThinking = selectedProviderAPIType == .anthropic || selectedProviderAPIType == .alibabaCloud
+        let effectiveThinkingBudget: Int? = (supportsThinking && thinkingBudget > 0) ? thinkingBudget : nil
         let config = ModelConfiguration(
             id: existingConfig?.id ?? UUID(),
             name: name,
@@ -341,6 +364,7 @@ struct ModelConfigurationEditorView: View {
             maxContextTokens: maxContextTokens,
             thinkingBudget: effectiveThinkingBudget,
             extendedCacheTTL: selectedProviderAPIType == .anthropic && extendedCacheTTL,
+            useDefaultTemperature: useDefaultTemperature,
             streaming: streaming
         )
         onSave(config)
