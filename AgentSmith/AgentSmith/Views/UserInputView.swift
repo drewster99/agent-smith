@@ -15,6 +15,7 @@ struct UserInputView: View {
     var onPaste: () -> Bool
 
     @State private var showingFilePicker = false
+    @State private var showingExpandedEditor = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,47 +28,81 @@ struct UserInputView: View {
             }
 
             HStack(spacing: 8) {
-                Button {
-                    showingFilePicker = true
-                } label: {
-                    Image(systemName: "paperclip")
-                        .imageScale(.large)
-                }
-                .buttonStyle(.borderless)
-                .disabled(!isRunning)
+                VStack(spacing: 6) {
+                    Button {
+                        showingFilePicker = true
+                    } label: {
+                        Image(systemName: "paperclip")
+                            .imageScale(.large)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(!isRunning)
 
-                TextField(
-                    isRunning ? "Message Agent Smith..." : "Press Start to begin messaging...",
-                    text: $text
-                )
-                    .font(AppFonts.inputField)
-                    .textFieldStyle(.plain)
-                    .padding(8)
-                    .background(AppColors.secondaryBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .onSubmit {
-                        if isRunning && hasContent {
-                            onSend()
-                        }
+                    Button {
+                        showingExpandedEditor = true
+                    } label: {
+                        Image(systemName: "square.and.pencil")
+                            .imageScale(.large)
                     }
-                    .onKeyPress(.upArrow) {
-                        onHistoryUp() ? .handled : .ignored
+                    .buttonStyle(.borderless)
+                    .disabled(!isRunning)
+                    .help("Open expanded editor")
+                }
+
+                ZStack(alignment: .topLeading) {
+                    // Placeholder text when empty
+                    if text.isEmpty {
+                        Text(isRunning ? "Message Agent Smith..." : "Press Start to begin messaging...")
+                            .font(AppFonts.inputField)
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .allowsHitTesting(false)
                     }
-                    .onKeyPress(.downArrow) {
-                        onHistoryDown() ? .handled : .ignored
+
+                    TextEditor(text: $text)
+                        .font(AppFonts.inputField)
+                        .scrollContentBackground(.hidden)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .frame(minHeight: lineHeight * 2 + verticalPadding,
+                               maxHeight: lineHeight * 5 + verticalPadding)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .background(AppColors.secondaryBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .onKeyPress(.return, phases: .down) { keyPress in
+                    // Shift+Enter or Option+Enter: insert newline (let through)
+                    if keyPress.modifiers.contains(.shift) || keyPress.modifiers.contains(.option) {
+                        return .ignored
                     }
-                    .onKeyPress(characters: .init(charactersIn: "v"), phases: .down, action: { keyPress in
-                        guard keyPress.modifiers == .command else { return .ignored }
-                        // Only intercept if the clipboard has non-text content (images/files).
-                        // Let normal text paste through to the TextField.
-                        let pasteboard = NSPasteboard.general
-                        let hasFiles = pasteboard.canReadObject(forClasses: [NSURL.self], options: [
-                            .urlReadingFileURLsOnly: true
-                        ])
-                        let hasImage = pasteboard.data(forType: .tiff) != nil
-                        guard hasFiles || hasImage else { return .ignored }
-                        return onPaste() ? .handled : .ignored
-                    })
+                    // Plain Enter: send message
+                    if isRunning && hasContent {
+                        onSend()
+                    }
+                    return .handled
+                }
+                .onKeyPress(.upArrow) {
+                    // Only use history navigation when text is empty or single-line
+                    guard text.isEmpty || !text.contains("\n") else { return .ignored }
+                    return onHistoryUp() ? .handled : .ignored
+                }
+                .onKeyPress(.downArrow) {
+                    guard text.isEmpty || !text.contains("\n") else { return .ignored }
+                    return onHistoryDown() ? .handled : .ignored
+                }
+                .onKeyPress(characters: .init(charactersIn: "v"), phases: .down, action: { keyPress in
+                    guard keyPress.modifiers == .command else { return .ignored }
+                    // Only intercept if the clipboard has non-text content (images/files).
+                    // Let normal text paste through to the TextEditor.
+                    let pasteboard = NSPasteboard.general
+                    let hasFiles = pasteboard.canReadObject(forClasses: [NSURL.self], options: [
+                        .urlReadingFileURLsOnly: true
+                    ])
+                    let hasImage = pasteboard.data(forType: .tiff) != nil
+                    guard hasFiles || hasImage else { return .ignored }
+                    return onPaste() ? .handled : .ignored
+                })
 
                 Button(action: onSend) {
                     Image(systemName: "paperplane.fill")
@@ -89,7 +124,15 @@ struct UserInputView: View {
                 onAttach(urls)
             }
         }
+        .sheet(isPresented: $showingExpandedEditor) {
+            ExpandedEditorSheet(text: $text)
+        }
     }
+
+    /// Approximate line height for the input font, used to size the TextEditor.
+    private let lineHeight: CGFloat = 18
+    /// Vertical padding inside the TextEditor (top + bottom).
+    private let verticalPadding: CGFloat = 12
 
     private var hasContent: Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingAttachments.isEmpty
@@ -172,5 +215,43 @@ private struct PendingAttachmentChip: View {
         if attachment.mimeType.hasPrefix("video/") { return "film" }
         if attachment.mimeType.hasPrefix("audio/") { return "waveform" }
         return "doc"
+    }
+}
+
+/// Large editor window for composing longer messages.
+private struct ExpandedEditorSheet: View {
+    @Binding var text: String
+    @Environment(\.dismiss) private var dismiss
+
+    /// Local copy so edits can be discarded on Cancel.
+    @State private var draft: String = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Compose Message")
+                    .font(.headline)
+                Spacer()
+                Button("Cancel") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button("Done") {
+                    text = draft
+                    dismiss()
+                }
+                .keyboardShortcut(.return, modifiers: .command)
+                .buttonStyle(.borderedProminent)
+            }
+            .padding()
+
+            Divider()
+
+            TextEditor(text: $draft)
+                .font(AppFonts.inputField)
+                .padding(8)
+        }
+        .frame(minWidth: 600, minHeight: 400)
+        .onAppear { draft = text }
     }
 }

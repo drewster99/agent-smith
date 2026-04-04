@@ -137,29 +137,77 @@ struct MarkdownText: View {
         .padding(.vertical, 4)
     }
 
+    /// Parses a line's leading whitespace and bullet/number prefix, returning
+    /// the nesting depth (in spaces), whether it's a list item, and the content text.
+    private struct LineParse {
+        let indent: Int         // leading whitespace count
+        let isList: Bool        // true for bullet or numbered list items
+        let isNumbered: Bool    // true for "1." style lists
+        let numberPrefix: String // e.g. "1." — preserved for display
+        let content: String     // text after the prefix
+    }
+
+    private func parseLine(_ line: String) -> LineParse {
+        let stripped = line.drop(while: { $0 == " " || $0 == "\t" })
+        let indent = line.count - stripped.count
+
+        // Bullet markers: "* ", "- "
+        if stripped.hasPrefix("* ") || stripped.hasPrefix("- ") {
+            return LineParse(indent: indent, isList: true, isNumbered: false, numberPrefix: "", content: String(stripped.dropFirst(2)))
+        }
+        // Unicode bullet: "• " or "•" (some LLMs omit the trailing space)
+        if stripped.hasPrefix("•") {
+            let afterBullet = stripped.dropFirst(1).drop(while: { $0 == " " })
+            return LineParse(indent: indent, isList: true, isNumbered: false, numberPrefix: "", content: String(afterBullet))
+        }
+
+        // Numbered list: "1. ", "2) ", etc. — preserve the prefix for display
+        if let match = stripped.prefixMatch(of: /\d+[.)]\s+/) {
+            let prefix = String(stripped[match.range]).trimmingCharacters(in: .whitespaces)
+            return LineParse(indent: indent, isList: true, isNumbered: true, numberPrefix: prefix, content: String(stripped[match.range.upperBound...]))
+        }
+
+        return LineParse(indent: indent, isList: false, isNumbered: false, numberPrefix: "", content: String(stripped))
+    }
+
     @ViewBuilder
     private func renderLine(_ line: String) -> some View {
-        if line.hasPrefix("### ") {
-            Text(LocalizedStringKey(linkifyBareURLs(String(line.dropFirst(4)))))
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+        if trimmed.hasPrefix("### ") {
+            Text(LocalizedStringKey(linkifyBareURLs(String(trimmed.dropFirst(4)))))
                 .font(AppFonts.markdownH3)
-        } else if line.hasPrefix("## ") {
-            Text(LocalizedStringKey(linkifyBareURLs(String(line.dropFirst(3)))))
+        } else if trimmed.hasPrefix("## ") {
+            Text(LocalizedStringKey(linkifyBareURLs(String(trimmed.dropFirst(3)))))
                 .font(AppFonts.markdownH2)
-        } else if line.hasPrefix("# ") {
-            Text(LocalizedStringKey(linkifyBareURLs(String(line.dropFirst(2)))))
+        } else if trimmed.hasPrefix("# ") {
+            Text(LocalizedStringKey(linkifyBareURLs(String(trimmed.dropFirst(2)))))
                 .font(AppFonts.markdownH1)
-        } else if line.hasPrefix("* ") || line.hasPrefix("- ") {
-            HStack(alignment: .top, spacing: 4) {
-                Text("•")
-                    .font(baseFont)
-                Text(LocalizedStringKey(linkifyBareURLs(String(line.dropFirst(2)))))
-                    .font(baseFont)
-            }
-        } else if line.trimmingCharacters(in: .whitespaces).isEmpty {
+        } else if trimmed.isEmpty {
             Color.clear.frame(height: 6)
         } else {
-            Text(LocalizedStringKey(linkifyBareURLs(line)))
-                .font(baseFont)
+            let parsed = parseLine(line)
+            if parsed.isList {
+                // Indent based on leading whitespace: 12pt base + 12pt per 2-space level
+                let depthPadding = CGFloat(max(0, parsed.indent / 2)) * 12
+                let marker = parsed.isNumbered ? parsed.numberPrefix : "•"
+                HStack(alignment: .top, spacing: 4) {
+                    Text(marker)
+                        .font(baseFont)
+                    Text(LocalizedStringKey(linkifyBareURLs(parsed.content)))
+                        .font(parsed.isNumbered ? baseFont.bold() : baseFont)
+                }
+                .padding(.leading, depthPadding)
+            } else if parsed.indent > 0 {
+                // Indented non-list text — preserve the indent
+                let depthPadding = CGFloat(max(0, parsed.indent / 2)) * 12
+                Text(LocalizedStringKey(linkifyBareURLs(parsed.content)))
+                    .font(baseFont)
+                    .padding(.leading, depthPadding)
+            } else {
+                Text(LocalizedStringKey(linkifyBareURLs(line)))
+                    .font(baseFont)
+            }
         }
     }
 

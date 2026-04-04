@@ -271,6 +271,32 @@ private struct MessageRow: View {
         return true
     }
 
+    /// True when Smith sends a private message to Brown.
+    private var isSmithToBrown: Bool {
+        guard case .agent(.smith) = message.sender else { return false }
+        guard case .agent(.brown) = message.recipient else { return false }
+        return true
+    }
+
+    /// True for any message sent by Brown (public or private).
+    private var isBrownMessage: Bool {
+        guard case .agent(.brown) = message.sender else { return false }
+        return true
+    }
+
+    /// True for any message sent by the Summarizer agent.
+    private var isSummarizerMessage: Bool {
+        guard case .agent(.summarizer) = message.sender else { return false }
+        return true
+    }
+
+    /// Default max visible lines for this message type. Nil means show all.
+    private var defaultMaxLines: Int? {
+        if isSummarizerMessage { return 2 }
+        if isSmithToBrown || isBrownMessage { return 5 }
+        return nil
+    }
+
     // MARK: - Tool request grouping
 
     private var dispositionIndicator: String? {
@@ -319,12 +345,6 @@ private struct MessageRow: View {
     /// Maximum characters for tool output before the view layer truncates.
     private static let outputTruncationLimit = 500
 
-    private var outputIsTruncatable: Bool {
-        if toolOutputMessage?.metadata?["truncatedContent"] != nil { return true }
-        guard let output = toolOutputMessage else { return false }
-        return output.content.count > Self.outputTruncationLimit
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             // Sender header: name, timestamp, and private indicator if applicable
@@ -357,6 +377,8 @@ private struct MessageRow: View {
                 Text(message.content)
                     .font(AppFonts.channelBody)
                     .foregroundStyle(securityReviewColor)
+            } else if let maxLines = defaultMaxLines {
+                collapsibleMessageBody(maxLines: maxLines)
             } else {
                 MarkdownText(content: message.content, baseFont: AppFonts.channelBody)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -486,14 +508,34 @@ private struct MessageRow: View {
                 .textSelection(.enabled)
         }
 
-        // Tool output (success/error message)
+        // Tool output: 1 line collapsed, full when expanded
         if let output = toolOutputMessage {
-            Text(output.content)
-                .font(AppFonts.channelBody.monospaced())
-                .foregroundStyle(.secondary)
+            if isExpanded {
+                Text(output.content)
+                    .font(AppFonts.channelBody.monospaced())
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            } else {
+                let firstLine = output.content.components(separatedBy: .newlines).first ?? output.content
+                let hasMore = output.content.contains(where: \.isNewline)
+                    || output.content.count > Self.outputTruncationLimit
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    Text(firstLine)
+                        .font(AppFonts.channelBody.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if hasMore {
+                        Text(" (show more)")
+                            .font(.caption)
+                            .foregroundStyle(.blue)
+                    }
+                }
                 .padding(.leading, 12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
+                .contentShape(Rectangle())
+                .onTapGesture { isExpanded = true }
+            }
         }
     }
 
@@ -508,11 +550,12 @@ private struct MessageRow: View {
 
     @ViewBuilder
     private var genericToolRequestBody: some View {
-        // Line 1: "Tool: shell: pwd ✅"
+        // Line 1: "Tool: bash: pwd ✅" — single line, no wrapping
         HStack(alignment: .firstTextBaseline, spacing: 4) {
-            Text("Tool: \(toolCallDisplayText)")
+            Text("Tool: \(isExpanded ? message.content : toolCallDisplayText)")
                 .font(AppFonts.channelBody)
                 .foregroundStyle(.secondary)
+                .lineLimit(isExpanded ? nil : 1)
             if let badge = parallelBadge {
                 Text("⚡\(badge)")
                     .font(.caption2.bold())
@@ -526,16 +569,10 @@ private struct MessageRow: View {
                 Text(indicator)
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture { isExpanded.toggle() }
 
-        if toolCallIsTruncatable {
-            Text(isExpanded ? "Show less" : "Show more")
-                .font(.caption)
-                .foregroundStyle(.blue)
-                .padding(.leading, 12)
-                .onTapGesture { isExpanded.toggle() }
-        }
-
-        // Disposition comment (for WARN/UNSAFE/ABORT)
+        // Disposition comment (for WARN/UNSAFE/ABORT) — always shown in full
         if let comment = dispositionComment {
             Text(comment)
                 .font(AppFonts.channelBody.italic())
@@ -543,39 +580,44 @@ private struct MessageRow: View {
                 .padding(.leading, 12)
         }
 
-        // Tool output (if approved and executed)
+        // Tool output: 1 line collapsed, full when expanded
         if let output = toolOutputMessage {
-            let displayText: String = {
-                if isExpanded {
-                    // Prefer expandedContent (capped excerpt) over raw content to avoid
-                    // rendering megabytes of data (e.g., binary blobs from osascript).
+            if isExpanded {
+                let fullText: String = {
                     if case .string(let expanded) = output.metadata?["expandedContent"] {
                         return expanded
                     }
                     return output.content
-                }
-                if case .string(let truncated) = output.metadata?["truncatedContent"] {
-                    return truncated
-                }
-                // View-layer fallback for long single-line outputs without backend truncation
-                if output.content.count > Self.outputTruncationLimit {
-                    let remaining = output.content.count - Self.outputTruncationLimit
-                    return String(output.content.prefix(Self.outputTruncationLimit)) + "… (\(remaining) more characters)"
-                }
-                return output.content
-            }()
-            Text(displayText)
-                .font(AppFonts.channelBody.monospaced())
-                .foregroundStyle(.secondary)
-                .padding(.leading, 12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-            if outputIsTruncatable {
-                Text(isExpanded ? "Show less" : "Show more")
+                }()
+                Text(fullText)
+                    .font(AppFonts.channelBody.monospaced())
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                Text("(show less)")
                     .font(.caption)
                     .foregroundStyle(.blue)
                     .padding(.leading, 12)
-                    .onTapGesture { isExpanded.toggle() }
+                    .onTapGesture { isExpanded = false }
+            } else {
+                let firstLine = output.content.components(separatedBy: .newlines).first ?? output.content
+                let hasMore = output.content.contains(where: \.isNewline)
+                    || output.content.count > Self.outputTruncationLimit
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    Text(firstLine)
+                        .font(AppFonts.channelBody.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if hasMore {
+                        Text(" (show more)")
+                            .font(.caption)
+                            .foregroundStyle(.blue)
+                    }
+                }
+                .padding(.leading, 12)
+                .contentShape(Rectangle())
+                .onTapGesture { isExpanded = true }
             }
         }
     }
@@ -611,6 +653,59 @@ private struct MessageRow: View {
         case "denied": return .orange
         case "abort": return .red
         default: return .secondary
+        }
+    }
+
+    // MARK: - Collapsible message body
+
+    /// Renders a message body with a default line limit and inline "(show more)".
+    /// Summarizer messages indent from the 2nd line onwards.
+    @ViewBuilder
+    private func collapsibleMessageBody(maxLines: Int) -> some View {
+        let lines = message.content.components(separatedBy: "\n")
+        let needsTruncation = lines.count > maxLines
+
+        if isExpanded || !needsTruncation {
+            VStack(alignment: .leading, spacing: 1) {
+                // For summarizer: indent all lines after the first
+                if isSummarizerMessage {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                        MarkdownText(content: line, baseFont: AppFonts.channelBody)
+                            .padding(.leading, index > 0 ? 12 : 0)
+                    }
+                } else {
+                    MarkdownText(content: message.content, baseFont: AppFonts.channelBody)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if needsTruncation {
+                Text("(show less)")
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+                    .padding(.leading, isSummarizerMessage ? 12 : 0)
+                    .onTapGesture { isExpanded = false }
+            }
+        } else {
+            let visibleLines = Array(lines.prefix(maxLines))
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(Array(visibleLines.dropLast().enumerated()), id: \.offset) { index, line in
+                    MarkdownText(content: line, baseFont: AppFonts.channelBody)
+                        .padding(.leading, isSummarizerMessage && index > 0 ? 12 : 0)
+                }
+                // Last visible line gets inline "(show more)"
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    Text(visibleLines.last ?? "")
+                        .font(AppFonts.channelBody)
+                        .lineLimit(1)
+                    Text(" (show more)")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                }
+                .padding(.leading, isSummarizerMessage && maxLines > 1 ? 12 : 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture { isExpanded = true }
         }
     }
 }

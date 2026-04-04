@@ -128,6 +128,164 @@ Add a setting (persisted in UserDefaults) that controls whether the system autom
 
 **Implemented:** `AppViewModel.autoRunNextTask` (defaults to `true`, persisted in UserDefaults). Passed to `OrchestrationRuntime` at init, which forwards it to `SmithBehavior.systemPrompt(autoAdvanceEnabled:)` — the auto-advance instructions in Steps 6, the Key Constraints table, and the `create_task` docs are all conditional on the setting. `ReviewWorkTool` also includes advance guidance in its tool result when enabled. UI toggle added in Settings → Account tab under a "Behavior" section. Takes effect on next start (system prompt is generated at agent creation time).
 
+### Skills — reusable prompt templates with arguments and embedded tool calls
+
+Skills are saved, reusable prompt templates that generate fully-formed user messages to send to Smith. A skill encapsulates a repeatable workflow — instead of typing out a detailed prompt every time, the user defines the skill once (with variables for the parts that change) and invokes it with arguments.
+
+#### Data model
+
+A skill has the following fields:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | UUID | auto | Unique identifier |
+| `name` | String | yes | Short name used for `/skill` invocation (no spaces; e.g. `code-review`, `summarize`) |
+| `displayName` | String | yes | Human-readable name shown in the sidebar and detail view |
+| `description` | String | yes | What the skill does, shown in the sidebar and detail view |
+| `prompt` | String | yes | The prompt template. Supports variable substitutions (`{{var}}`) and embedded tool calls (`{{file_read:path}}`, `{{bash:command}}`). See "Prompt template syntax" below. |
+| `arguments` | [SkillArgument] | no | Ordered list of arguments (required and optional). See "Arguments" below. |
+| `createdAt` | Date | auto | Creation timestamp |
+| `updatedAt` | Date | auto | Last modification timestamp |
+
+**Arguments** (`SkillArgument`):
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | String | yes | Argument name, used in `{{name}}` substitutions and as the keyword in CLI invocation |
+| `description` | String | yes | Shown in the run dialog and help text |
+| `required` | Bool | yes | Whether the argument must be provided before the skill can run |
+| `defaultValue` | String? | no | Default value if not provided. Only meaningful for optional arguments. |
+
+#### Prompt template syntax
+
+The prompt template is the core of a skill. It's a string that gets processed through two stages before being sent to Smith as a user message:
+
+**Stage 1 — Variable substitution.** All occurrences of `{{variable_name}}` are replaced with the corresponding argument value. Substitution happens everywhere in the template, including inside `file_read` paths and `bash` commands (so `{{file_read:{{project_root}}/README.md}}` works — the inner `{{project_root}}` is substituted first, then the `file_read` is executed).
+
+**Stage 2 — Embedded tool calls.** After variable substitution, the template is scanned for embedded tool calls:
+
+- `{{file_read:/path/to/file}}` — Reads the file at the given path and replaces the token with the file's contents. Uses the same `FileReadTool` logic (respects blocked paths, size limits, etc.).
+- `{{bash:command here}}` — Executes the command via `/bin/bash -c` and replaces the token with stdout. Uses the same `BashTool` logic (timeout, environment, etc.).
+
+**Tool call failure semantics:** If any embedded tool call fails (file not found, command exits non-zero, blocked path, timeout, etc.), the entire skill invocation fails. The user sees an error message explaining which tool call failed and why. The prompt is NOT sent to Smith. This is intentional — a skill whose context-gathering steps fail should not produce a half-baked prompt.
+
+**Escaping:** The double-brace `{{` / `}}` delimiters are chosen because single braces are common in code, JSON, and natural language. If the user needs literal `{{` in the output, they can use `\{{` to escape it. A trailing `\}}` escape is also supported. The backslash is consumed during processing.
+
+**Processing order summary:**
+1. Replace `\{{` → placeholder, `\}}` → placeholder
+2. Substitute all `{{variable_name}}` with argument values
+3. Execute all `{{file_read:...}}` and `{{bash:...}}`, replace with output
+4. Restore escaped-brace placeholders to literal `{{` / `}}`
+5. Result is the final prompt string sent to Smith as a user message
+
+#### Invocation
+
+Skills can be invoked three ways:
+
+**1. `/skill` command in the message input field:**
+
+- `/skill code-review` — If the skill has no required arguments (or all have defaults), runs immediately. If it has unfilled required arguments, opens the run dialog.
+- `/skill code-review repo_url=https://github.com/foo/bar issue_number=42` — Provides arguments as keyword=value pairs. Positional arguments (without `=`) are assigned to required arguments in order. If all required arguments are satisfied, runs immediately; otherwise opens the run dialog with the provided values pre-filled.
+- `/skill` with no name — Opens the skill sidebar/panel if not already visible.
+
+**2. Run button on the skill sidebar:** Each skill in the sidebar has a small play button. Clicking it either runs immediately (no required args) or opens the run dialog.
+
+**3. Run button on the skill detail view:** Same behavior as the sidebar run button.
+
+**When a skill runs:** The generated prompt is sent to Smith as a user message (exactly as if the user typed it). Smith then creates a task, assigns Brown, etc. through the normal workflow. The skill system is purely a prompt-generation convenience — it does not bypass Smith or create tasks directly.
+
+#### UI — Skill sidebar
+
+The left panel currently has a task list. Add a segmented control or tab bar at the top to switch between "Tasks" and "Skills" views.
+
+**Skill sidebar contents:**
+- List of all skills, sorted by name
+- Each row shows: skill `displayName`, a brief description (1 line, truncated), and a play (▶) button on the right
+- Clicking a skill row opens the **skill detail view** (not the run dialog — the user can review before running)
+- Clicking the play button opens the **run dialog** directly (or runs immediately if no required args)
+- A "+" button at the top to create a new skill
+
+#### UI — Skill detail view
+
+Shown when the user clicks a skill in the sidebar. Could be a sheet, a panel, or an inline expansion — design to match the existing task detail view style.
+
+**Contents:**
+- Skill `displayName` and `name` (the `/skill` invocable name)
+- Description (full text)
+- Arguments list: for each argument, show name, description, required/optional badge, default value if any
+- Prompt template preview: the raw template with `{{variable}}` markers visible, syntax-highlighted or at least in a monospaced font
+- **Run** button — opens the run dialog (or runs immediately if no args needed)
+- **Edit** button — opens the skill editor (see below)
+- **Delete** button — with confirmation
+
+#### UI — Run dialog (also serves as the "fill arguments" dialog)
+
+A modal sheet that appears when a skill is invoked with unfilled required arguments. Also appears when the user clicks Run from the detail view (if there are arguments to fill).
+
+**Contents:**
+- Skill `displayName` at the top
+- For each argument: a labeled text field, pre-filled with any provided value or the default value. Required arguments are visually marked (e.g., asterisk or red border if empty).
+- A **prompt preview** section at the bottom showing the generated prompt after substitution (updated live as the user types). Embedded tool calls show as `[file_read: /path/...]` or `[bash: command...]` placeholders in the preview (they don't execute until the user confirms).
+- **Cancel** button — dismisses without running
+- **Run** button — enabled only when all required arguments are filled. Executes the template processing pipeline (substitution → tool calls → send to Smith). Shows a spinner during tool call execution. On failure, shows the error inline without dismissing.
+
+#### UI — Skill editor
+
+For creating and editing skills. A sheet or panel with fields for:
+
+- `name` (the `/skill` invocable name) — validated: no spaces, no duplicates
+- `displayName`
+- `description` — multi-line text field
+- `prompt` — large multi-line text editor (similar to the expanded editor for the message input). Should be tall enough to comfortably edit multi-paragraph prompts.
+- **Arguments section:** a list of arguments with add/remove/reorder. Each argument has fields for `name`, `description`, `required` toggle, and `defaultValue` text field (shown only when not required, or always shown).
+- **Save** and **Cancel** buttons
+
+#### Persistence
+
+Skills are stored as a JSON array in a file managed by `PersistenceManager`, similar to tasks and memories. File location: Application Support directory alongside existing persistence files. The `Skill` struct conforms to `Codable`.
+
+A `SkillStore` (similar to `TaskStore`) manages in-memory state and persistence:
+- CRUD operations
+- `findByName(_ name: String) -> Skill?` for `/skill` command lookup
+- `onChange` callback for UI refresh (same pattern as `TaskStore`)
+- Owned by `AppViewModel` (not `OrchestrationRuntime` — skills are a UI/input concern, not an orchestration concern)
+
+#### Implementation phases
+
+**Phase 1 — Core data model and persistence:**
+- `Skill` and `SkillArgument` structs (Codable)
+- `SkillStore` with CRUD, persistence, and onChange callback
+- Wire into `PersistenceManager` (load/save)
+- Wire into `AppViewModel` (store ownership, published skill list)
+
+**Phase 2 — Template processing engine:**
+- `SkillRunner` or similar: takes a `Skill` + argument values, produces a final prompt string or an error
+- Stage 1: variable substitution with `\{{` / `\}}` escape handling
+- Stage 2: embedded `file_read` and `bash` execution (reuse existing tool logic or call the underlying functions directly)
+- Clear error reporting: which variable is missing, which tool call failed and why
+
+**Phase 3 — UI — Sidebar and detail view:**
+- Segmented control on left panel (Tasks / Skills)
+- Skill list view with play buttons
+- Skill detail view with Run / Edit / Delete
+- Skill editor (create + edit)
+
+**Phase 4 — UI — Run dialog and `/skill` command:**
+- Run dialog with argument fields, live prompt preview, Run/Cancel
+- `/skill` command parsing in `UserInputView` or `AppViewModel.sendMessage()`
+- Argument parsing: positional + keyword=value
+- Integration: on successful run, send generated prompt via `runtime.sendUserMessage()`
+
+#### Future additions (not part of initial implementation)
+
+**1. Turn completed task into a skill.** After a task completes, offer a "Save as Skill" action. Use an LLM call (via the summarizer or a dedicated model config) to:
+- Take the original task description and the completed result
+- Generate a reusable prompt template
+- Identify variable parts and suggest arguments (e.g., file paths, repo URLs, names that would change between invocations)
+- Present the generated skill in the editor for the user to review and save
+
+**2. Skill execution as agent tools.** Expose skills as tools available to Smith or Brown, so agents can invoke skills programmatically. This would allow meta-workflows where one skill's output feeds into another, or where Smith can decide which skill to run based on the user's request. Design TBD — needs careful thought about recursion depth, argument resolution, and whether tool-invoked skills skip the run dialog.
+
 ### Token usage cost estimation
 Add estimated cost columns to the Token Usage analytics window. Use LiteLLM pricing data (already available via `ModelMetadataService`) to calculate per-turn and per-task cost estimates based on model ID and token counts. Display in the Overview, By Task, and By Model/Provider tabs. Handle cache pricing correctly (Anthropic cached reads are cheaper than uncached input).
 
