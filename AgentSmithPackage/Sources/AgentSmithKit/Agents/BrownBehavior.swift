@@ -70,6 +70,8 @@ public enum BrownBehavior {
         
         ## Prefer tools over bash commands
         Whenever possible, use available tools instead of calling to to bash to run a shell command
+        - `glob` tool instead of running "find" with the `bash` tool
+        - `grep` tool intead of "grep" with the `bash` tool
         - `file_read` tool instead of "cat", "sed", "tail", etc with `bash` tool
         - `file_edit` tool instead of "sed", "awk", or other tools via `bash`
         - `file_write` tool instead of "cat" or other tools via `bash`
