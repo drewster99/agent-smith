@@ -3,7 +3,7 @@ import Foundation
 /// Executes bash commands. Has a hard blocklist of dangerous patterns.
 public struct BashTool: AgentTool {
     public let name = "bash"
-    public let toolDescription = "Execute a bash command and return its output. Do not submit dangerous or excessively complex commands. Default timeout is 300 seconds — pass a higher `timeout` for long-running commands. Before calling, consider if you have multiple bash commands you want to run that at not dependent upon each other. If so, send up to 20 `bash` calls in a single response."
+    public let toolDescription = "Execute a command in the \"bash\" shell and return its output. Every `bash` tool call is run in a separate shell. Do not submit dangerous or excessively complex commands. Default timeout is 300 seconds — pass a higher `timeout` for long-running commands. Make parallel tool calls whenever possible: Before calling, consider if you have multiple bash commands you may wish to run that at not dependent upon each other's results. If so, send up to 20 `bash` tool calls in a single response."
 
     public func description(for role: AgentRole) -> String {
         switch role {

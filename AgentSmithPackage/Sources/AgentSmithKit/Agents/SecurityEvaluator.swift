@@ -208,6 +208,7 @@ public actor SecurityEvaluator {
                 }
                 // Execute each file_read and append tool results.
                 for call in response.toolCalls {
+                    await postJonesFileReadToChannel(call)
                     let result = executeJonesFileRead(call)
                     conversationMessages.append(LLMMessage(role: .tool, content: .toolResult(toolCallID: call.id, content: result)))
                 }
@@ -483,6 +484,31 @@ public actor SecurityEvaluator {
         } else {
             return "Note: The target file does NOT currently exist — this is a new file creation."
         }
+    }
+
+    /// Posts a tool_request message to the channel so Jones's file reads appear in the transcript.
+    private func postJonesFileReadToChannel(_ call: LLMToolCall) async {
+        let path: String = {
+            guard let data = call.arguments.data(using: .utf8),
+                  let dict = try? JSONDecoder().decode([String: AnyCodable].self, from: data),
+                  case .string(let p) = dict["path"] else {
+                return call.arguments
+            }
+            return p
+        }()
+
+        await channel.post(ChannelMessage(
+            sender: .agent(.jones),
+            content: "file_read: \(path)",
+            metadata: [
+                "messageKind": .string("tool_request"),
+                "requestID": .string(call.id),
+                "tool": .string("file_read"),
+                "params": .string(call.arguments),
+                "toolDescription": .string(Self.fileReadToolDef.description),
+                "toolParameters": .string("")
+            ]
+        ))
     }
 
     /// Executes a file_read tool call for Jones without recording the read.
