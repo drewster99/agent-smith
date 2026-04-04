@@ -186,8 +186,13 @@ struct ModelConfigurationEditorView: View {
     }
 
     private var streamingSection: some View {
-        Toggle("Streaming", isOn: $streaming)
-            .disabled(true)
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("Streaming", isOn: $streaming)
+                .disabled(true)
+            Text("Streaming is not yet supported.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     // MARK: - Model Picker

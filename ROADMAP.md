@@ -289,6 +289,42 @@ A `SkillStore` (similar to `TaskStore`) manages in-memory state and persistence:
 ### Harden `isRetryableError` in TaskSummarizer
 `TaskSummarizer.isRetryableError` currently matches on `error.localizedDescription` strings (e.g. `hasPrefix("HTTP 429")`, regex for `^HTTP 5\d\d`). This works because `LLMProviderError.httpError` formats its description as `"HTTP \(code): \(body)"`, but it's fragile — if error wrapping or formatting changes, retries silently stop working. Replace with direct pattern matching on `LLMProviderError.httpError(statusCode:body:url:)` to check the status code as an integer.
 
+### Decouple SecurityEvaluator iteration counters
+`SecurityEvaluator.evaluate` uses a combined `totalIterations` counter (capped at 25) that conflates file-read rounds with parse-failure retries. If Jones reads many files (the prompt now says "up to 20 at a time"), it can exhaust the iteration budget before getting a chance to retry a parse failure. Fix: track `fileReadRounds` and `retryCount` independently, each with its own cap (e.g., 20 file reads, 5 retries). The combined counter was introduced to prevent unbounded loops, but separate caps achieve the same goal without the coupling.
+
+### Search: Cmd-F and Cmd-Shift-F
+Two levels of search:
+
+**Cmd-F — Find in current transcript.** Opens a search bar (similar to browser/IDE find-in-page) that highlights and jumps between matches in the visible channel log. Should support case-insensitive text matching at minimum; regex would be a bonus. The search bar should appear at the top of the channel log area with next/previous navigation and a match count indicator.
+
+**Cmd-Shift-F — Global search across tasks, transcript, and prior transcripts.** A more powerful search that covers:
+- Current transcript messages
+- All tasks (titles, descriptions, updates, results)
+- Prior session transcripts that are not currently loaded/visible
+
+Results should be grouped by source (current transcript, task, prior session) with enough context to understand each match. Clicking a result navigates to it or opens it in context.
+
+> **Note:** This implies we need a way to view prior transcripts. Currently, transcripts from previous sessions are persisted but only partially restorable. Consider adding a "Session History" or "Prior Transcripts" view (perhaps accessible from the sidebar or a dedicated tab) that lets the user browse, search, and read past session transcripts. This would also support the Cmd-Shift-F global search by providing the underlying data source and navigation target for prior-session matches.
+
+### Tool post-call behavior flags system
+`AgentActor.updatePostCallFlags` currently uses stringly-typed matching on tool names and exact return value strings to determine post-call behavior (should the agent idle? did it send a message? did it complete a task?). This is fragile — adding a new tool or changing a return string requires manual sync with the agent loop, and mistakes cause bugs like the task_update spam loop.
+
+Replace with a structured system where tools declare their post-call semantics via a protocol property or return type:
+- `PostCallBehavior.idle` — agent should wait for new input after this call (e.g., `message_user`, `reply_to_user`)
+- `PostCallBehavior.continue` — agent should keep working (e.g., `file_read`, `bash`, `task_update`)
+- `PostCallBehavior.awaitReview` — agent enters review-wait state (e.g., `task_complete`)
+- `PostCallBehavior.restart` — agent loop should exit for a system restart (e.g., `run_task`)
+
+The tool's `execute` method could return a `ToolResult` struct containing both the result string and the behavior flag, eliminating the need for string matching entirely. This also makes the agent loop's control flow self-documenting — each tool explicitly declares what should happen after it runs.
+
+### Enhanced model stats popover in inspector
+The model stats popover (shown when clicking the model name on an agent card) currently shows session-level stats computed from `LLMTurnRecord` data: LLM call count, tool call count, average latency, context resets, and token breakdowns. Future enhancements:
+- **Per-task breakdown**: Show stats grouped by task, so the user can see which tasks consumed the most tokens.
+- **Historical stats from UsageStore**: Aggregate across sessions using persisted `UsageRecord` data (not just the current session's `LLMTurnRecord` array). Show all-time totals, daily averages, and trends.
+- **Cost estimation**: Use pricing data from `ModelMetadataService` to show estimated dollar costs alongside token counts. See "Token usage cost estimation" below.
+- **Jones-specific stats**: For the security agent, show approval/denial/warning/abort counts from `EvaluationRecord` data (already available in `jonesEvaluationRecords`).
+- **Latency histogram or percentiles**: Show p50/p95/p99 latency instead of just the average.
+
 ### Token usage cost estimation
 Add estimated cost columns to the Token Usage analytics window. Use LiteLLM pricing data (already available via `ModelMetadataService`) to calculate per-turn and per-task cost estimates based on model ID and token counts. Display in the Overview, By Task, and By Model/Provider tabs. Handle cache pricing correctly (Anthropic cached reads are cheaper than uncached input).
 

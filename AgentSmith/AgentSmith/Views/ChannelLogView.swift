@@ -313,6 +313,20 @@ private struct MessageRow: View {
         }
     }
 
+    /// Human-readable tooltip text describing what the safety monitor determined.
+    private var dispositionTooltipText: String? {
+        guard let review = securityReviewMessage,
+              case .string(let d) = review.metadata?["securityDisposition"] else { return nil }
+        switch d {
+        case "approved": return "Safety: Approved"
+        case "autoApproved": return "Safety: Auto-approved (identical retry)"
+        case "warning": return "Safety: Warning"
+        case "denied": return "Safety: Denied"
+        case "abort": return "Safety: Abort triggered"
+        default: return nil
+        }
+    }
+
     private var dispositionComment: String? {
         guard let review = securityReviewMessage,
               case .string(let d) = review.metadata?["securityDisposition"] else { return nil }
@@ -412,6 +426,7 @@ private struct MessageRow: View {
             return Color.clear
         }())
         .clipShape(RoundedRectangle(cornerRadius: 4))
+        .contentShape(Rectangle())
         .overlay(alignment: .topTrailing) {
             if isHovering {
                 Button(action: {
@@ -446,6 +461,45 @@ private struct MessageRow: View {
             return message.content
         }
         return String(message.content.prefix(Self.toolCallTruncationLimit)) + "…"
+    }
+
+    // MARK: - Tool path extraction
+
+    /// Keys that contain file paths, in priority order.
+    private static let pathKeys = ["file_path", "path"]
+
+    /// Extracts the primary file path from the tool call's params metadata, if any.
+    /// Returns nil for tools that don't have path arguments or if params can't be parsed.
+    private var toolFilePath: String? {
+        guard let paramsJSON = message.stringMetadata("params"),
+              let data = paramsJSON.data(using: .utf8),
+              let dict = try? JSONDecoder().decode([String: AnyCodable].self, from: data) else {
+            return nil
+        }
+        for key in Self.pathKeys {
+            if case .string(let path) = dict[key], path.contains("/") {
+                return path
+            }
+        }
+        return nil
+    }
+
+    /// The tool call summary text with the primary path removed (for display alongside ToolPathText).
+    /// Returns nil if no path was extracted.
+    private func remainderWithoutPath(_ displayText: String, path: String) -> String {
+        let toolName = message.stringMetadata("tool") ?? displayText.prefix(while: { $0 != ":" }).description
+        var text = displayText
+        // Remove "toolName: " prefix
+        if text.hasPrefix(toolName) {
+            text = String(text.dropFirst(toolName.count))
+            if text.hasPrefix(": ") { text = String(text.dropFirst(2)) }
+        }
+        // Remove the path from the remaining text
+        text = text.replacingOccurrences(of: path, with: "")
+        // Clean up separators left behind (e.g. ", , " or leading ", ")
+        text = text.replacingOccurrences(of: ", ,", with: ",")
+        text = text.trimmingCharacters(in: CharacterSet(charactersIn: ", "))
+        return text
     }
 
     // MARK: - Tool request consolidated block
@@ -494,7 +548,11 @@ private struct MessageRow: View {
                     .foregroundStyle(.blue)
             }
             if let indicator = dispositionIndicator {
-                Text(indicator)
+                if let tooltip = dispositionTooltipText {
+                    Text(indicator).hoverTooltip(tooltip)
+                } else {
+                    Text(indicator)
+                }
             }
         }
         .contentShape(Rectangle())
@@ -557,14 +615,29 @@ private struct MessageRow: View {
 
     @ViewBuilder
     private var genericToolRequestBody: some View {
-        // Line 1: "bash: pwd (more) ✅" — tool name in blue, rest in secondary
+        // Line 1: "[bash] pwd (more) ✅" — tool name as chip, rest in secondary
         HStack(alignment: .firstTextBaseline, spacing: 4) {
             let displayText = isExpanded ? message.content : toolCallDisplayText
             let toolName = message.stringMetadata("tool") ?? displayText.prefix(while: { $0 != ":" }).description
-            let remainder = displayText.hasPrefix(toolName) ? String(displayText.dropFirst(toolName.count)) : ": \(displayText)"
-            Text("\(Text(toolName).foregroundColor(.blue))\(Text(remainder).foregroundColor(.secondary))")
-                .font(AppFonts.channelBody)
-                .lineLimit(isExpanded ? nil : 1)
+            ToolNameChip(name: toolName)
+            if let path = toolFilePath {
+                // Show path with highlighted filename, then remaining args
+                ToolPathText(path: path)
+                let extra = remainderWithoutPath(displayText, path: path)
+                if !extra.isEmpty {
+                    Text(extra)
+                        .font(AppFonts.channelBody)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(isExpanded ? nil : 1)
+                }
+            } else {
+                let remainder = displayText.hasPrefix(toolName) ? String(displayText.dropFirst(toolName.count)) : ": \(displayText)"
+                let cleanRemainder = remainder.hasPrefix(": ") ? String(remainder.dropFirst(2)) : remainder
+                Text(cleanRemainder)
+                    .font(AppFonts.channelBody)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(isExpanded ? nil : 1)
+            }
             if let badge = parallelBadge {
                 Text("⚡\(badge)")
                     .font(.caption2.bold())
@@ -584,7 +657,11 @@ private struct MessageRow: View {
                     .foregroundStyle(.blue)
             }
             if let indicator = dispositionIndicator {
-                Text(indicator)
+                if let tooltip = dispositionTooltipText {
+                    Text(indicator).hoverTooltip(tooltip)
+                } else {
+                    Text(indicator)
+                }
             }
         }
         .contentShape(Rectangle())
@@ -1187,23 +1264,57 @@ struct ImageLightbox: View {
 /// Renders a `file_write` path with colored directory components and a clickable filename.
 /// If the path traversed a symlink (detected by checking the resolved path), shows the
 /// symlink destination as a secondary label.
+/// Renders a tool name as a styled chip (blue text, light background, subtle border).
+private struct ToolNameChip: View {
+    let name: String
+
+    var body: some View {
+        Text(name)
+            .font(AppFonts.channelBody)
+            .foregroundStyle(.blue)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(.blue.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .strokeBorder(.blue.opacity(0.3), lineWidth: 0.5)
+            )
+    }
+}
+
+/// Renders a file path with the directory dimmed and the filename highlighted in bold cyan.
+private struct ToolPathText: View {
+    let path: String
+
+    private var directory: String {
+        guard !path.isEmpty else { return "" }
+        let dir = (path as NSString).deletingLastPathComponent
+        return dir.hasSuffix("/") ? dir : dir + "/"
+    }
+
+    private var filename: String {
+        (path as NSString).lastPathComponent
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Text(directory)
+                .font(AppFonts.channelBody)
+                .foregroundStyle(.secondary.opacity(0.7))
+                .lineLimit(1)
+            Text(filename)
+                .font(AppFonts.channelBody.bold())
+                .foregroundStyle(.cyan)
+                .lineLimit(1)
+        }
+    }
+}
+
 private struct FileWritePathView: View {
     let path: String
 
     private var url: URL { URL(fileURLWithPath: path) }
-
-    /// Directory portion (everything before the last component).
-    private var directory: String {
-        guard !path.isEmpty else { return "" }
-        let dir = (path as NSString).deletingLastPathComponent
-        // Ensure trailing slash for visual consistency
-        return dir.hasSuffix("/") ? dir : dir + "/"
-    }
-
-    /// The filename (last path component).
-    private var filename: String {
-        (path as NSString).lastPathComponent
-    }
 
     /// If the path is a symlink (or contains symlinks), returns the resolved destination.
     private var symlinkDestination: String? {
@@ -1214,18 +1325,9 @@ private struct FileWritePathView: View {
     }
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 0) {
-            Text("file_write ")
-                .font(AppFonts.channelBody)
-                .foregroundStyle(.secondary)
-
-            Text(directory)
-                .font(AppFonts.channelBody)
-                .foregroundStyle(.secondary.opacity(0.7))
-
-            Text(filename)
-                .font(AppFonts.channelBody.bold())
-                .foregroundStyle(.cyan)
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            ToolNameChip(name: "file_write")
+            ToolPathText(path: path)
                 .onTapGesture { openInFinder() }
 
             if let dest = symlinkDestination {
@@ -1246,5 +1348,41 @@ private struct FileWritePathView: View {
         if FileManager.default.fileExists(atPath: targetPath) {
             NSWorkspace.shared.activateFileViewerSelecting([targetURL])
         }
+    }
+}
+
+// MARK: - Hover Tooltip
+
+/// A lightweight tooltip that appears immediately on hover, positioned above the anchor view.
+/// Avoids the long delay of the system `.help()` modifier.
+private struct HoverTooltip: ViewModifier {
+    let text: String
+
+    @State private var isHovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .top) {
+                if isHovering {
+                    Text(text)
+                        .font(.caption)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .shadow(color: .black.opacity(0.15), radius: 3, y: 1)
+                        .fixedSize()
+                        .offset(y: -26)
+                        .allowsHitTesting(false)
+                        .transition(.opacity.animation(.easeInOut(duration: 0.12)))
+                }
+            }
+            .onHover { isHovering = $0 }
+    }
+}
+
+private extension View {
+    func hoverTooltip(_ text: String) -> some View {
+        modifier(HoverTooltip(text: text))
     }
 }

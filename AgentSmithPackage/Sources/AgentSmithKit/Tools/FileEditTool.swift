@@ -78,6 +78,12 @@ public struct FileEditTool: AgentTool {
         let url = URL(fileURLWithPath: filePath)
         let resolvedPath = url.resolvingSymlinksInPath().path
 
+        // Note: No "must read before edit" check here. The exact old_string matching
+        // requirement serves as an implicit guard — you can't successfully edit a file
+        // without knowing its precise content, which practically requires having read it.
+        // Explicit read gating is enforced on file_write instead, where blind overwrites
+        // are the real risk. Jones still reviews all edits for security.
+
         // Safety check — reuse FileWriteTool's path restriction logic.
         if let rejection = FileWriteTool.checkPathRestriction(resolvedPath: resolvedPath) {
             return rejection

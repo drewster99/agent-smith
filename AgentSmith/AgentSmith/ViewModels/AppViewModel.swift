@@ -14,6 +14,10 @@ final class AppViewModel {
     var hasRestoredHistory = false
     /// Number of messages loaded from disk at launch (available for restore).
     var persistedHistoryCount = 0
+    /// The first task currently awaiting Smith's review, if any. Drives the review banner.
+    var taskAwaitingReview: AgentTask? {
+        tasks.first { $0.status == .awaitingReview }
+    }
     /// Set when a task action (archive, delete) is blocked; drives the error alert.
     var taskActionError: String? = nil
     /// Set when a load/decode operation fails during startup; drives the error alert.
@@ -387,16 +391,18 @@ final class AppViewModel {
             if !savedMemories.isEmpty || !savedTaskSummaries.isEmpty {
                 await memoryStore.restore(memories: savedMemories, taskSummaries: savedTaskSummaries)
 
-                // Re-embed memories at Double precision.
+                // Re-embed all memories and task summaries with multi-sentence
+                // Double-precision vectors. Measures and logs wall-clock time.
+                let reembedStart = Date()
+
                 let memCount = try await memoryStore.reembedAllMemories()
 
-                // Re-embed task summaries from full task data (title, description,
-                // result, commentary, updates, summary) for richer embeddings.
                 let allTasks = await taskStore.allTasks()
                 let taskCount = try await memoryStore.reembedTaskSummariesFromTasks(allTasks)
 
+                let reembedMs = Int(Date().timeIntervalSince(reembedStart) * 1000)
                 if memCount > 0 || taskCount > 0 {
-                    print("[AgentSmith] Re-embedded \(memCount) memories, \(taskCount) task summaries (from full task data)")
+                    print("[AgentSmith] Re-embedded \(memCount) memories, \(taskCount) task summaries in \(reembedMs)ms")
                 }
             }
         } catch {

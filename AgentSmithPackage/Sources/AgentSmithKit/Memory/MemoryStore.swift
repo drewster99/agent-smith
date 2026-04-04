@@ -217,8 +217,12 @@ public actor MemoryStore {
         limit: Int = 5,
         threshold: Double = 0.10
     ) throws -> [MemorySearchResult] {
+        let start = Date()
         let queryEmbeddings = try embeddingService.splitAndEmbed(query)
-        return searchMemories(queryEmbeddings: queryEmbeddings, limit: limit, threshold: threshold)
+        let results = searchMemories(queryEmbeddings: queryEmbeddings, limit: limit, threshold: threshold)
+        let ms = Int(Date().timeIntervalSince(start) * 1000)
+        print("[MemoryStore] searchMemories: \(results.count) results from \(memories.count) memories in \(ms)ms (query: \(query.prefix(60)))")
+        return results
     }
 
     /// Searches memories using pre-computed query sentence embeddings.
@@ -258,8 +262,12 @@ public actor MemoryStore {
         limit: Int = 5,
         threshold: Double = 0.10
     ) throws -> [TaskSummarySearchResult] {
+        let start = Date()
         let queryEmbeddings = try embeddingService.splitAndEmbed(query)
-        return searchTaskSummaries(queryEmbeddings: queryEmbeddings, limit: limit, threshold: threshold)
+        let results = searchTaskSummaries(queryEmbeddings: queryEmbeddings, limit: limit, threshold: threshold)
+        let ms = Int(Date().timeIntervalSince(start) * 1000)
+        print("[MemoryStore] searchTaskSummaries: \(results.count) results from \(taskSummaries.count) summaries in \(ms)ms (query: \(query.prefix(60)))")
+        return results
     }
 
     /// Searches task summaries using pre-computed query sentence embeddings.
@@ -295,6 +303,7 @@ public actor MemoryStore {
         memoryLimit: Int = 3,
         taskLimit: Int = 3
     ) throws -> SemanticSearchResults {
+        let start = Date()
         let queryEmbeddings = try embeddingService.splitAndEmbed(query)
         let allMemories = searchMemories(queryEmbeddings: queryEmbeddings, limit: memoryLimit, threshold: 0.55)
         let allTasks = searchTaskSummaries(queryEmbeddings: queryEmbeddings, limit: taskLimit, threshold: 0.55)
@@ -333,13 +342,29 @@ public actor MemoryStore {
             }
         }
 
+        let ms = Int(Date().timeIntervalSince(start) * 1000)
+        print("[MemoryStore] searchAll: \(memoryResults.count) memories + \(taskResults.count) tasks in \(ms)ms (query: \(query.prefix(60)))")
         return SemanticSearchResults(memories: memoryResults, taskSummaries: taskResults)
     }
 
     // MARK: - Re-embedding
 
-    /// Re-embeds all memories by splitting content into sentences.
-    /// Returns the number of memories re-embedded.
+    /// Re-generates embedding vectors for all memories using multi-sentence splitting.
+    ///
+    /// Each memory's content is split into individual sentences via `NLTokenizer`,
+    /// and each sentence is embedded and L2-normalized separately. This replaces
+    /// any previously stored embeddings (including legacy single-vector Float embeddings).
+    ///
+    /// Use cases:
+    /// - Migration from single-vector to multi-vector embeddings
+    /// - Migration from Float to Double precision
+    /// - Recovering from a corrupted embedding state
+    /// - Re-embedding after the underlying NLEmbedding model changes
+    ///
+    /// This is an O(n * s) operation where n = memory count and s = avg sentences per memory.
+    /// Triggers a single `onChange` notification after all memories are processed.
+    ///
+    /// - Returns: The number of memories re-embedded.
     @discardableResult
     public func reembedAllMemories() throws -> Int {
         var count = 0
@@ -361,10 +386,23 @@ public actor MemoryStore {
         return count
     }
 
-    /// Re-embeds task summaries using full task data, split into sentences.
+    /// Re-generates embedding vectors for task summaries using full task data.
     ///
-    /// Builds rich embedding text from all task fields, then splits into
-    /// sentences for multi-vector embedding. Updates `embeddingSourceText`.
+    /// For each task that has an existing summary, builds a rich composite text from
+    /// all available fields (title, description, summary, result, commentary, updates),
+    /// then splits into individual sentences and embeds each one separately.
+    /// Also updates the `embeddingSourceText` field on each entry.
+    ///
+    /// Use cases:
+    /// - Migration from summary-only embeddings to full-task-data embeddings
+    /// - Migration from single-vector to multi-vector embeddings
+    /// - Re-embedding after task data has been modified externally
+    ///
+    /// Only processes tasks that have a matching entry in the task summary store.
+    /// Triggers a single `onChange` notification after all summaries are processed.
+    ///
+    /// - Parameter tasks: The full `AgentTask` objects to extract embedding text from.
+    /// - Returns: The number of task summaries re-embedded.
     @discardableResult
     public func reembedTaskSummariesFromTasks(_ tasks: [AgentTask]) throws -> Int {
         var count = 0

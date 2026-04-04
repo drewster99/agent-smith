@@ -44,6 +44,10 @@ struct MainView: View {
                     )
                 }
 
+                if let reviewTask = viewModel.taskAwaitingReview {
+                    ReviewBanner(taskTitle: reviewTask.title)
+                }
+
                 ChannelLogView(
                     messages: viewModel.messages,
                     persistedHistoryCount: viewModel.persistedHistoryCount,
@@ -334,6 +338,29 @@ private struct AbortBanner: View {
         }
         .padding(10)
         .background(.red.gradient)
+    }
+}
+
+/// Small banner shown when a task is awaiting Smith's review.
+private struct ReviewBanner: View {
+    let taskTitle: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "eye.circle.fill")
+                .foregroundStyle(.orange)
+            Text("Awaiting review:")
+                .font(.caption.bold())
+                .foregroundStyle(.orange)
+            Text(taskTitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.orange.opacity(0.08))
     }
 }
 

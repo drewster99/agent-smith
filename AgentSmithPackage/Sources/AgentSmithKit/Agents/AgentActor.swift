@@ -60,10 +60,19 @@ public actor AgentActor {
     private static let maxContextOverflowRetries = 3
 
     /// Tracks consecutive LLM responses that contain only text (no tool calls).
-    /// When this exceeds `maxConsecutiveTextOnlyResponses`, the agent is likely
+    /// When this exceeds the role-specific threshold, the agent is likely
     /// degenerate (e.g. repetition loop) and should be terminated.
+    /// Brown (tool-heavy) triggers at 6; Smith (conversational) at 30.
     private var consecutiveTextOnlyResponses = 0
-    private static let maxConsecutiveTextOnlyResponses = 6
+
+    /// Tracks consecutive identical tool calls (same name + same normalized arguments).
+    /// Catches degenerate loops where the LLM repeatedly calls the same tool with the same
+    /// arguments (e.g. task_update spam). Any different tool call or text-only response resets.
+    /// Threshold of 4 is safely above the WARN retry case (max 2 identical calls).
+    private var lastToolCallSignature: String?
+    private var consecutiveIdenticalToolCalls = 0
+    private static let maxConsecutiveIdenticalToolCalls = 4
+
     private var maxToolCallsPerIteration: Int
     /// Maximum concurrent Jones security evaluations to prevent overwhelming the LLM backend.
     private static let maxConcurrentEvaluations = 5
@@ -464,6 +473,9 @@ public actor AgentActor {
         let toolCalls = response.toolCalls
         if toolCalls.isEmpty {
             consecutiveTextOnlyResponses += 1
+            // Reset tool repetition tracker — a text-only response breaks any tool call streak.
+            lastToolCallSignature = nil
+            consecutiveIdenticalToolCalls = 0
 
             // Text-only response — record and wait for new input
             if let text = response.text, !text.isEmpty {
@@ -476,7 +488,9 @@ public actor AgentActor {
 
             // Circuit breaker: if the model keeps returning text without tool calls,
             // it's likely degenerate (repetition loop or unable to use tools). Terminate.
-            if consecutiveTextOnlyResponses >= Self.maxConsecutiveTextOnlyResponses {
+            // Brown (tool-heavy worker) triggers quickly at 6; Smith (conversational orchestrator) at 30.
+            let textOnlyLimit = configuration.role == .smith ? 30 : 6
+            if consecutiveTextOnlyResponses >= textOnlyLimit {
                 await toolContext.channel.post(ChannelMessage(
                     sender: .system,
                     content: "Agent \(configuration.role.displayName) returned \(consecutiveTextOnlyResponses) consecutive text-only responses without calling any tools. Terminating — the model may be in a degenerate loop."
@@ -756,6 +770,33 @@ public actor AgentActor {
             ))
         }
 
+        // --- Repetition circuit breaker ---
+        // Track consecutive identical tool calls (same name + same normalized arguments).
+        // Any different tool call resets the counter. Text-only responses reset separately.
+        if let firstCall = callsToExecute.first {
+            let sig = Self.toolCallSignature(name: firstCall.name, arguments: firstCall.arguments)
+            if sig == lastToolCallSignature {
+                consecutiveIdenticalToolCalls += 1
+            } else {
+                lastToolCallSignature = sig
+                consecutiveIdenticalToolCalls = 1
+            }
+        } else {
+            lastToolCallSignature = nil
+            consecutiveIdenticalToolCalls = 0
+        }
+
+        if consecutiveIdenticalToolCalls >= Self.maxConsecutiveIdenticalToolCalls {
+            await toolContext.channel.post(ChannelMessage(
+                sender: .system,
+                content: "Agent \(configuration.role.displayName) called \(callsToExecute.first?.name ?? "unknown") with identical arguments \(consecutiveIdenticalToolCalls) times in a row. Breaking loop — agent will idle until new input arrives."
+            ))
+            consecutiveIdenticalToolCalls = 0
+            lastToolCallSignature = nil
+            hasUnprocessedInput = false
+            return
+        }
+
         // run_task fires a detached restart — stop the run loop so we don't
         // race the restart and accidentally trigger it a second time.
         if calledCreateTask {
@@ -973,6 +1014,7 @@ public actor AgentActor {
         if call.name == "message_user" && result == "Message sent to user." { sentMessage = true }
         if call.name == "review_work" && (result.contains("accepted and completed") || result.contains("Feedback sent to Brown")) { sentMessage = true }
         if call.name == "message_brown" && result == "Message sent to Brown." { sentMessage = true }
+        if call.name == "reply_to_user" && result == "Reply sent to user." { sentMessage = true }
         if call.name == "task_complete" && result.hasPrefix("Task submitted for review:") { calledTaskComplete = true }
         if call.name == "run_task" && result.contains("System is restarting") { calledCreateTask = true }
     }
@@ -1206,6 +1248,25 @@ public actor AgentActor {
                 return String(describing: value)
             }
         }
+    }
+
+    /// JSON encoder with sorted keys for deterministic argument normalization.
+    private static let sortedEncoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        return encoder
+    }()
+
+    /// Computes a deduplication signature for a tool call: "toolName|hash(normalizedArgs)".
+    /// Arguments are decoded and re-encoded with sorted keys so that JSON key order doesn't matter.
+    private static func toolCallSignature(name: String, arguments: String) -> String {
+        if let data = arguments.data(using: .utf8),
+           let dict = try? JSONDecoder().decode([String: AnyCodable].self, from: data),
+           let normalized = try? sortedEncoder.encode(dict),
+           let normalizedString = String(data: normalized, encoding: .utf8) {
+            return "\(name)|\(normalizedString.hashValue)"
+        }
+        return "\(name)|\(arguments.hashValue)"
     }
 
     /// Maximum characters for a tool result stored in conversation history.

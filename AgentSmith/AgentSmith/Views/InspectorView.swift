@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import SwiftLLMKit
 import AgentSmithKit
 
 /// Inspector panel showing per-agent status: activity, context, tools, and direct messaging.
@@ -135,17 +136,22 @@ private struct AgentCard: View {
         return min(100, (inputTokens * 100) / config.maxContextTokens)
     }
 
+    @State private var showingModelStats = false
+
     private func modelInfoLine(config: ModelConfiguration) -> some View {
         let contextLabel = Self.formatTokenCount(config.maxContextTokens)
         return HStack(spacing: 6) {
             Text(config.modelID)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .onTapGesture { showingModelStats = true }
+                .popover(isPresented: $showingModelStats, arrowEdge: .bottom) {
+                    ModelStatsPopover(turns: llmTurns, modelID: config.modelID, role: role)
+                }
+            Spacer()
             if let pct = contextPercent, let tokens = lastInputTokens {
-                Text("·")
                 Text("\(Self.formatTokenCount(tokens)) / \(contextLabel) (\(pct)%)")
             } else {
-                Text("·")
                 Text("\(contextLabel) ctx")
             }
         }
@@ -249,10 +255,11 @@ private struct AgentCard: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
 
-            // Model info subtitle
+            // Model info subtitle — aligned with agent name text (past the dot)
             if let config = modelConfig {
                 modelInfoLine(config: config)
-                    .padding(.horizontal, 12)
+                    .padding(.leading, 28) // 12 (container) + 8 (dot) + 8 (spacing)
+                    .padding(.trailing, 12)
                     .padding(.bottom, 6)
             }
 
@@ -1431,5 +1438,105 @@ private func formatLatency(_ ms: Int) -> String {
         return String(format: "%.1fs", Double(ms) / 1000.0)
     } else {
         return String(format: "%.0fs", Double(ms) / 1000.0)
+    }
+}
+
+// MARK: - Model Stats Popover
+
+/// Aggregated stats computed from LLM turn records for a given agent role.
+private struct ModelStats {
+    let totalCalls: Int
+    let totalInputTokens: Int
+    let totalOutputTokens: Int
+    let totalCacheReadTokens: Int
+    let totalCacheWriteTokens: Int
+    let totalToolCalls: Int
+    let avgLatencyMs: Int
+    let contextResets: Int
+
+    init(turns: [LLMTurnRecord]) {
+        totalCalls = turns.count
+        totalInputTokens = turns.compactMap(\.usage?.inputTokens).reduce(0, +)
+        totalOutputTokens = turns.compactMap(\.usage?.outputTokens).reduce(0, +)
+        totalCacheReadTokens = turns.compactMap(\.usage?.cacheReadTokens).reduce(0, +)
+        totalCacheWriteTokens = turns.compactMap(\.usage?.cacheWriteTokens).reduce(0, +)
+        totalToolCalls = turns.reduce(0) { $0 + $1.response.toolCalls.count }
+        let latencies = turns.map(\.latencyMs).filter { $0 > 0 }
+        avgLatencyMs = latencies.isEmpty ? 0 : latencies.reduce(0, +) / latencies.count
+        // Count turns where input tokens dropped significantly (context reset indicator)
+        var resets = 0
+        var prevInput = 0
+        for turn in turns {
+            let input = turn.usage?.inputTokens ?? 0
+            if prevInput > 0 && input < prevInput / 2 { resets += 1 }
+            prevInput = input
+        }
+        contextResets = resets
+    }
+}
+
+/// Popover showing aggregated session statistics for an agent's model usage.
+private struct ModelStatsPopover: View {
+    let turns: [LLMTurnRecord]
+    let modelID: String
+    let role: AgentRole
+
+    private var stats: ModelStats { ModelStats(turns: turns) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(role.displayName) — Session Stats")
+                .font(.headline)
+
+            Text(modelID)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+                statRow("LLM calls", "\(stats.totalCalls)")
+                statRow("Tool calls issued", "\(stats.totalToolCalls)")
+                statRow("Avg response time", formatLatency(stats.avgLatencyMs))
+                statRow("Context resets", "\(stats.contextResets)")
+
+                GridRow { Divider().gridCellColumns(2) }
+
+                statRow("Input tokens", formatCount(stats.totalInputTokens))
+                statRow("Output tokens", formatCount(stats.totalOutputTokens))
+                if stats.totalCacheReadTokens > 0 {
+                    statRow("Cache read tokens", formatCount(stats.totalCacheReadTokens))
+                }
+                if stats.totalCacheWriteTokens > 0 {
+                    statRow("Cache write tokens", formatCount(stats.totalCacheWriteTokens))
+                }
+            }
+        }
+        .padding()
+        .frame(minWidth: 240)
+    }
+
+    @ViewBuilder
+    private func statRow(_ label: String, _ value: String) -> some View {
+        GridRow {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.monospacedDigit())
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
+    private func formatCount(_ count: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter.string(from: NSNumber(value: count)) ?? "\(count)"
+    }
+
+    private func formatLatency(_ ms: Int) -> String {
+        guard ms > 0 else { return "—" }
+        if ms < 1000 { return "\(ms)ms" }
+        return String(format: "%.1fs", Double(ms) / 1000.0)
     }
 }
