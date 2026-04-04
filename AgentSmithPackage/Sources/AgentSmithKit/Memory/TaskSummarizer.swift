@@ -41,52 +41,72 @@ public actor TaskSummarizer {
         self.maxOutputTokens = maxOutputTokens
     }
 
+    private static let maxRetries = 3
+    private static let retryBackoffSeconds: [Double] = [5, 15, 45]
+
     /// Summarizes a task and saves the embedded summary to the memory store.
     ///
-    /// Runs the LLM to generate a summary, then embeds and persists it.
+    /// Retries transient HTTP errors (429, 5xx) with exponential backoff.
     /// Returns the generated summary text on success, or `nil` if summarization failed.
     /// Errors are posted to the channel rather than thrown, since this runs
     /// as a fire-and-forget background operation.
     @discardableResult
     public func summarizeAndEmbed(task: AgentTask) async -> String? {
         let startTime = Date()
-        do {
-            let summary = try await generateSummary(for: task)
-            let latencyMs = Int(Date().timeIntervalSince(startTime) * 1000)
-            try await memoryStore.saveTaskSummary(
-                taskID: task.id,
-                title: task.title,
-                summary: summary,
-                status: task.status
-            )
-            await channel.post(ChannelMessage(
-                sender: .agent(.summarizer),
-                content: summary,
-                metadata: [
-                    "messageKind": .string("task_summarized"),
-                    "taskID": .string(task.id.uuidString),
-                    "latencyMs": .int(latencyMs)
-                ]
-            ))
-            return summary
-        } catch {
-            let latencyMs = Int(Date().timeIntervalSince(startTime) * 1000)
-            await channel.post(ChannelMessage(
-                sender: .agent(.summarizer),
-                content: "Task summarization failed for '\(task.title)': \(error.localizedDescription)",
-                metadata: [
-                    "isError": .bool(true),
-                    "latencyMs": .int(latencyMs)
-                ]
-            ))
-            return nil
+        var lastError: Error?
+
+        for attempt in 0...Self.maxRetries {
+            if attempt > 0 {
+                let delay = Self.retryBackoffSeconds[min(attempt - 1, Self.retryBackoffSeconds.count - 1)]
+                await channel.post(ChannelMessage(
+                    sender: .agent(.summarizer),
+                    content: "Summarization retry \(attempt)/\(Self.maxRetries) for '\(task.title)' after \(Int(delay))s",
+                    metadata: ["isWarning": .bool(true)]
+                ))
+                do { try await Task.sleep(for: .seconds(delay)) } catch { break }
+            }
+
+            do {
+                let summary = try await generateSummary(for: task)
+                let latencyMs = Int(Date().timeIntervalSince(startTime) * 1000)
+                try await memoryStore.saveTaskSummary(
+                    task: task,
+                    summary: summary,
+                    status: task.status
+                )
+                await channel.post(ChannelMessage(
+                    sender: .agent(.summarizer),
+                    content: summary,
+                    metadata: [
+                        "messageKind": .string("task_summarized"),
+                        "taskID": .string(task.id.uuidString),
+                        "latencyMs": .int(latencyMs)
+                    ]
+                ))
+                return summary
+            } catch {
+                lastError = error
+                guard Self.isRetryableError(error) else { break }
+            }
         }
+
+        let latencyMs = Int(Date().timeIntervalSince(startTime) * 1000)
+        await channel.post(ChannelMessage(
+            sender: .agent(.summarizer),
+            content: "Task summarization failed for '\(task.title)': \(lastError?.localizedDescription ?? "unknown error")",
+            metadata: [
+                "isError": .bool(true),
+                "latencyMs": .int(latencyMs)
+            ]
+        ))
+        return nil
     }
 
     // MARK: - Memory Consolidation
 
     /// Merges two related memory texts into one consolidated memory using an LLM call.
     ///
+    /// Retries transient HTTP errors (429, 5xx) with exponential backoff.
     /// Returns the merged text, or `nil` if the LLM call fails.
     public func mergeMemoryTexts(existing: String, new: String) async -> String? {
         let systemPrompt = """
@@ -102,20 +122,31 @@ public actor TaskSummarizer {
             LLMMessage(role: .user, text: userPrompt)
         ]
 
-        do {
-            let response = try await provider.send(messages: messages, tools: [])
-            guard let text = response.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                return nil
+        var lastError: Error?
+        for attempt in 0...Self.maxRetries {
+            if attempt > 0 {
+                let delay = Self.retryBackoffSeconds[min(attempt - 1, Self.retryBackoffSeconds.count - 1)]
+                do { try await Task.sleep(for: .seconds(delay)) } catch { break }
             }
-            return text.trimmingCharacters(in: .whitespacesAndNewlines)
-        } catch {
-            await channel.post(ChannelMessage(
-                sender: .agent(.summarizer),
-                content: "Memory merge failed: \(error.localizedDescription)",
-                metadata: ["isError": .bool(true)]
-            ))
-            return nil
+
+            do {
+                let response = try await provider.send(messages: messages, tools: [])
+                guard let text = response.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return nil
+                }
+                return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            } catch {
+                lastError = error
+                guard Self.isRetryableError(error) else { break }
+            }
         }
+
+        await channel.post(ChannelMessage(
+            sender: .agent(.summarizer),
+            content: "Memory merge failed: \(lastError?.localizedDescription ?? "unknown error")",
+            metadata: ["isError": .bool(true)]
+        ))
+        return nil
     }
 
     // MARK: - Private
@@ -191,6 +222,20 @@ public actor TaskSummarizer {
         }
 
         return sections.joined(separator: "\n\n")
+    }
+
+    /// Returns `true` for transient HTTP errors that are worth retrying (429, 5xx).
+    private static func isRetryableError(_ error: Error) -> Bool {
+        let description = error.localizedDescription
+        // LLMProviderError.httpError includes the status code in its description.
+        // Match 429 (rate limit) and 5xx (server errors like 500, 502, 503, 529).
+        if description.hasPrefix("HTTP 429") { return true }
+        if let range = description.range(of: #"^HTTP 5\d\d"#, options: .regularExpression) {
+            return !range.isEmpty
+        }
+        // Also retry on URLSession-level network errors (timeouts, connection reset, etc.).
+        if (error as NSError).domain == NSURLErrorDomain { return true }
+        return false
     }
 
     public enum SummarizerError: Error, LocalizedError {

@@ -215,7 +215,7 @@ struct MarkdownText: View {
     /// so that `Text(LocalizedStringKey(_:))` renders them as tappable links.
     private func linkifyBareURLs(_ text: String) -> String {
         guard let regex = try? NSRegularExpression(
-            pattern: #"(?<![(\[])https?://[^\s)\]]+"#
+            pattern: #"(?<![(\[])https?://[^\s)\]*]+"#
         ) else { return text }
 
         let fullRange = NSRange(location: 0, length: (text as NSString).length)

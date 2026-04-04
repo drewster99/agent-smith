@@ -102,6 +102,20 @@ public actor TaskStore {
         onChange?()
     }
 
+    /// Replaces a task's description entirely.
+    /// Only allowed for pending or paused tasks.
+    /// Returns true if the update succeeded, false if the task wasn't found or status doesn't allow editing.
+    @discardableResult
+    public func updateDescription(id: UUID, description: String) -> Bool {
+        guard var task = tasks[id] else { return false }
+        guard task.status == .pending || task.status == .paused else { return false }
+        task.description = description
+        task.updatedAt = Date()
+        tasks[id] = task
+        onChange?()
+        return true
+    }
+
     /// Appends a clearly-labeled amendment to a task's description.
     /// Used by Smith to relay user clarifications so that Brown and Jones see the updated context.
     public func amendDescription(id: UUID, amendment: String) {

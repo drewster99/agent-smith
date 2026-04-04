@@ -12,8 +12,8 @@ struct MemoryEditorView: View {
     @State private var editTags = ""
     @State private var showTaskSummaries = false
     @State private var editError: String?
-    @State private var memorySimilarities: [UUID: Float] = [:]
-    @State private var taskSummarySimilarities: [UUID: Float] = [:]
+    @State private var memorySimilarities: [UUID: Double] = [:]
+    @State private var taskSummarySimilarities: [UUID: Double] = [:]
     @State private var searchTask: Task<Void, Never>?
     @State private var isSearching = false
 
@@ -49,11 +49,11 @@ struct MemoryEditorView: View {
                 let taskResults = await viewModel.searchTaskSummaries(query: query)
                 guard !Task.isCancelled else { return }
 
-                var memScores: [UUID: Float] = [:]
+                var memScores: [UUID: Double] = [:]
                 for r in memResults { memScores[r.memory.id] = r.similarity }
                 memorySimilarities = memScores
 
-                var taskScores: [UUID: Float] = [:]
+                var taskScores: [UUID: Double] = [:]
                 for r in taskResults { taskScores[r.summary.id] = r.similarity }
                 taskSummarySimilarities = taskScores
                 isSearching = false
@@ -314,10 +314,10 @@ struct MemoryEditorView: View {
         }
     }
 
-    private func similarityColor(_ score: Float) -> Color {
-        if score >= 0.55 { return .green }
-        if score >= 0.45 { return .yellow }
-        if score >= 0.35 { return .orange }
+    private func similarityColor(_ score: Double) -> Color {
+        if score >= 0.80 { return .green }
+        if score >= 0.70 { return .yellow }
+        if score >= 0.60 { return .orange }
         return .red
     }
 

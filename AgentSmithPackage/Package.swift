@@ -11,7 +11,7 @@ let package = Package(
         .library(name: "AgentSmithKit", targets: ["AgentSmithKit"])
     ],
     dependencies: [
-        .package(url: "git@github.com:drewster99/swift-llm-kit.git", from: "0.0.9")
+        .package(url: "git@github.com:drewster99/swift-llm-kit.git", from: "0.0.10")
     ],
     targets: [
         .target(

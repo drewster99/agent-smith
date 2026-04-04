@@ -9,6 +9,14 @@ public struct ReviewWorkTool: AgentTool {
         Set `accepted` to `true` to mark the task completed and terminate Brown + Jones. \
         Set `accepted` to `false` to return the task to running and send feedback to Brown. \
         `feedback` is required when `accepted` is `false`.
+        
+        To perform your review:
+        1. Call `get_task_details` to see the current and latest task description, progress and details
+        2. Carefully step through every requirement described in the task. For each requirement, review the work submitted by Agent Brown to determine if the requirement has been satisfied. If necessary, call `file_read` to validate the results. Be sure that each requirement is not only satisfied, but has been satisfied in the best most complete way possible.
+        3. Compile a list of ALL potential deficiencies in the submitted work.
+        4. Re-check the task details again and look for key points that could have been misinterpreted or easily missed. Double check those items are complete.
+        5. If you have previously rejected submitted work, review your earlier rejection response. Anything you rejected previously must be resolved and any questions or concerns expressed in your earlier rejection must be addressed.
+        5. If there are ANY identified deficiencies OR any unaddressed questions OR any concerns, then you MUST REJECT the work, by calling `review_work` with `accepted` = `false`. Include your complete and detailed feedback in the `feedback` field. The feedback must include ALL items identified in any of the steps above, including any outstanding issues from prior rejections you may have sent.
         """
 
     public let parameters: [String: AnyCodable] = [

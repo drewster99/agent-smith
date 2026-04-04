@@ -6,10 +6,18 @@ struct TaskDetailWindow: View {
     let taskID: UUID
     var viewModel: AppViewModel
     @Environment(\.dismiss) private var dismiss
+    @State private var isEditingDescription = false
+    @State private var editedDescription = ""
 
     /// Live task looked up from the view model on each render, so updates are reflected.
     private var task: AgentTask? {
         viewModel.tasks.first { $0.id == taskID }
+    }
+
+    /// Whether the current task's description can be edited.
+    private var isDescriptionEditable: Bool {
+        guard let task else { return false }
+        return task.status == .pending || task.status == .paused
     }
 
     var body: some View {
@@ -47,11 +55,52 @@ struct TaskDetailWindow: View {
                 Divider()
 
                 // MARK: Description
-                sectionHeader("Description")
-                Text(task.description)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack {
+                    sectionHeader("Description")
+                    Spacer()
+                    if isDescriptionEditable && !isEditingDescription {
+                        Button {
+                            editedDescription = task.description
+                            isEditingDescription = true
+                        } label: {
+                            Image(systemName: "pencil")
+                                .font(.callout)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+                if isEditingDescription {
+                    TextEditor(text: $editedDescription)
+                        .font(.body)
+                        .frame(minHeight: 80, maxHeight: 200)
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .background(Color(nsColor: .controlBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    HStack {
+                        Spacer()
+                        Button("Cancel") {
+                            isEditingDescription = false
+                        }
+                        Button("Save") {
+                            Task {
+                                await viewModel.updateTaskDescription(
+                                    id: task.id,
+                                    description: editedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                                )
+                            }
+                            isEditingDescription = false
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!isDescriptionEditable || editedDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                } else {
+                    Text(task.description)
+                        .font(.body)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
 
                 // MARK: Commentary
                 if let commentary = task.commentary, !commentary.isEmpty {

@@ -34,8 +34,10 @@ public struct SaveMemoryTool: AgentTool {
         "required": .array([.string("content")])
     ]
 
-    /// Minimum cosine similarity to consider two memories as candidates for consolidation.
-    private static let consolidationThreshold: Float = 0.82
+    /// Minimum max-sentence-similarity to consider two memories as candidates for consolidation.
+    /// With multi-vector search this is a sentence-level match, so 0.85 means at least one
+    /// sentence pair is very similar. Tag overlap is also required (see guard below).
+    private static let consolidationThreshold: Double = 0.85
 
     public init() {}
 
@@ -82,6 +84,17 @@ public struct SaveMemoryTool: AgentTool {
         }
 
         if let match = similarMemories.first {
+            // Require at least one shared tag before consolidating — pure semantic similarity
+            // from local NLEmbedding is too noisy and can produce false-positive merges
+            // between completely unrelated memories.
+            let sharedTags = Set(match.memory.tags).intersection(tags)
+            guard !tags.isEmpty, !match.memory.tags.isEmpty, !sharedTags.isEmpty else {
+                return try await saveNew(
+                    content: content, source: source, tags: tags,
+                    sourceTaskID: sourceTaskID, consolidated: false, context: context
+                )
+            }
+
             // Attempt LLM-based merge of the existing and new content.
             if let merged = await context.mergeMemoryContent(match.memory.content, content) {
                 let mergedTags = Array(Set(match.memory.tags + tags))

@@ -386,9 +386,21 @@ final class AppViewModel {
             let savedTaskSummaries = try await persistenceManager.loadTaskSummaries()
             if !savedMemories.isEmpty || !savedTaskSummaries.isEmpty {
                 await memoryStore.restore(memories: savedMemories, taskSummaries: savedTaskSummaries)
+
+                // Re-embed memories at Double precision.
+                let memCount = try await memoryStore.reembedAllMemories()
+
+                // Re-embed task summaries from full task data (title, description,
+                // result, commentary, updates, summary) for richer embeddings.
+                let allTasks = await taskStore.allTasks()
+                let taskCount = try await memoryStore.reembedTaskSummariesFromTasks(allTasks)
+
+                if memCount > 0 || taskCount > 0 {
+                    print("[AgentSmith] Re-embedded \(memCount) memories, \(taskCount) task summaries (from full task data)")
+                }
             }
         } catch {
-            print("[AgentSmith] Failed to load memories: \(error)")
+            print("[AgentSmith] Failed to load/re-embed memories: \(error)")
         }
 
         // Wire memory persistence and UI refresh — save to disk and update published
@@ -534,6 +546,14 @@ final class AppViewModel {
         let succeeded = await taskStore.permanentlyDelete(id: id)
         if !succeeded {
             taskActionError = "This task is in progress and cannot be permanently deleted."
+        }
+    }
+
+    func updateTaskDescription(id: UUID, description: String) async {
+        guard let taskStore else { return }
+        let succeeded = await taskStore.updateDescription(id: id, description: description)
+        if !succeeded {
+            taskActionError = "Only pending or paused tasks can be edited."
         }
     }
 

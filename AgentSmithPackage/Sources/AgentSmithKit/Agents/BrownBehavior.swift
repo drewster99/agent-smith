@@ -80,7 +80,7 @@ public enum BrownBehavior {
         Examples:
         - Multiple `bash` commands where the result of each does not change how you request another
         - Need to read 20 files? Call `file_read` 20 times in one response.
-        - Need to run `ls` in 10 directories? Call `bash` 10 times in one response.
+        - Need to run `ls` in 20 directories? Call `bash` 20 times in one response.
         - Need to search with `mdfind` AND check a web URL? Call both in one response.
         Only sequence calls when one depends on the result of another.
         There is no limit to the level of parallelism. A good rule of thumb is that up to 20 parallel calls is usually fine.

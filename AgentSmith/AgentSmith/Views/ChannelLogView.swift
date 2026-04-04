@@ -467,7 +467,7 @@ private struct MessageRow: View {
 
     @ViewBuilder
     private var fileWriteRequestBody: some View {
-        // Line 1: "file_write /dir/path/filename ⚡1/3 ✅ (show content)"
+        // Line 1: "file_write /dir/path/filename ⚡1/3 (show content) (show more) ✅"
         HStack(alignment: .firstTextBaseline, spacing: 4) {
             FileWritePathView(path: message.stringMetadata("fileWritePath") ?? "")
             if let badge = parallelBadge {
@@ -479,16 +479,26 @@ private struct MessageRow: View {
                     .background(.cyan.opacity(0.15))
                     .clipShape(Capsule())
             }
-            if let indicator = dispositionIndicator {
-                Text(indicator)
-            }
             if let content = message.stringMetadata("fileWriteContent"), !content.isEmpty {
                 Text(isExpanded ? "(hide content)" : "(show content)")
                     .font(.caption)
                     .foregroundStyle(.blue)
-                    .onTapGesture { isExpanded.toggle() }
+            }
+            if isExpanded {
+                Text("(show less)")
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+            } else if toolOutputHasMore {
+                Text("(show more)")
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+            }
+            if let indicator = dispositionIndicator {
+                Text(indicator)
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture { isExpanded.toggle() }
 
         // Disposition comment (for WARN/UNSAFE/ABORT)
         if let comment = dispositionComment {
@@ -508,7 +518,7 @@ private struct MessageRow: View {
                 .textSelection(.enabled)
         }
 
-        // Tool output: 1 line collapsed, full when expanded
+        // Tool output: first line always shown (selectable); full content when expanded
         if let output = toolOutputMessage {
             if isExpanded {
                 Text(output.content)
@@ -519,22 +529,12 @@ private struct MessageRow: View {
                     .textSelection(.enabled)
             } else {
                 let firstLine = output.content.components(separatedBy: .newlines).first ?? output.content
-                let hasMore = output.content.contains(where: \.isNewline)
-                    || output.content.count > Self.outputTruncationLimit
-                HStack(alignment: .firstTextBaseline, spacing: 0) {
-                    Text(firstLine)
-                        .font(AppFonts.channelBody.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    if hasMore {
-                        Text(" (show more)")
-                            .font(.caption)
-                            .foregroundStyle(.blue)
-                    }
-                }
-                .padding(.leading, 12)
-                .contentShape(Rectangle())
-                .onTapGesture { isExpanded = true }
+                Text(firstLine)
+                    .font(AppFonts.channelBody.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .padding(.leading, 12)
+                    .textSelection(.enabled)
             }
         }
     }
@@ -548,13 +548,22 @@ private struct MessageRow: View {
         return "\(index + 1)/\(count)"
     }
 
+    /// Whether the tool output has more content than the first line.
+    private var toolOutputHasMore: Bool {
+        guard let output = toolOutputMessage else { return false }
+        return output.content.contains(where: \.isNewline)
+            || output.content.count > Self.outputTruncationLimit
+    }
+
     @ViewBuilder
     private var genericToolRequestBody: some View {
-        // Line 1: "Tool: bash: pwd ✅" — single line, no wrapping
+        // Line 1: "bash: pwd (more) ✅" — tool name in blue, rest in secondary
         HStack(alignment: .firstTextBaseline, spacing: 4) {
-            Text("Tool: \(isExpanded ? message.content : toolCallDisplayText)")
+            let displayText = isExpanded ? message.content : toolCallDisplayText
+            let toolName = message.stringMetadata("tool") ?? displayText.prefix(while: { $0 != ":" }).description
+            let remainder = displayText.hasPrefix(toolName) ? String(displayText.dropFirst(toolName.count)) : ": \(displayText)"
+            Text("\(Text(toolName).foregroundColor(.blue))\(Text(remainder).foregroundColor(.secondary))")
                 .font(AppFonts.channelBody)
-                .foregroundStyle(.secondary)
                 .lineLimit(isExpanded ? nil : 1)
             if let badge = parallelBadge {
                 Text("⚡\(badge)")
@@ -564,6 +573,15 @@ private struct MessageRow: View {
                     .padding(.vertical, 1)
                     .background(.cyan.opacity(0.15))
                     .clipShape(Capsule())
+            }
+            if isExpanded {
+                Text("(show less)")
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+            } else if toolOutputHasMore {
+                Text("(show more)")
+                    .font(.caption)
+                    .foregroundStyle(.blue)
             }
             if let indicator = dispositionIndicator {
                 Text(indicator)
@@ -580,7 +598,7 @@ private struct MessageRow: View {
                 .padding(.leading, 12)
         }
 
-        // Tool output: 1 line collapsed, full when expanded
+        // Tool output: first line always shown (selectable); full content when expanded
         if let output = toolOutputMessage {
             if isExpanded {
                 let fullText: String = {
@@ -595,29 +613,14 @@ private struct MessageRow: View {
                     .padding(.leading, 12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
-                Text("(show less)")
-                    .font(.caption)
-                    .foregroundStyle(.blue)
-                    .padding(.leading, 12)
-                    .onTapGesture { isExpanded = false }
             } else {
                 let firstLine = output.content.components(separatedBy: .newlines).first ?? output.content
-                let hasMore = output.content.contains(where: \.isNewline)
-                    || output.content.count > Self.outputTruncationLimit
-                HStack(alignment: .firstTextBaseline, spacing: 0) {
-                    Text(firstLine)
-                        .font(AppFonts.channelBody.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    if hasMore {
-                        Text(" (show more)")
-                            .font(.caption)
-                            .foregroundStyle(.blue)
-                    }
-                }
-                .padding(.leading, 12)
-                .contentShape(Rectangle())
-                .onTapGesture { isExpanded = true }
+                Text(firstLine)
+                    .font(AppFonts.channelBody.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .padding(.leading, 12)
+                    .textSelection(.enabled)
             }
         }
     }

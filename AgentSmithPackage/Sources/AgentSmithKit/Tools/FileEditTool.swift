@@ -6,7 +6,7 @@ import Foundation
 /// Reuses `FileWriteTool.checkPathRestriction` for safety validation.
 public struct FileEditTool: AgentTool {
     public let name = "file_edit"
-    public let toolDescription = "Perform an exact string replacement in a file. The `old_string` must match exactly and be unique in the file unless `replace_all` is `true`."
+    public let toolDescription = "Perform an EXACT string replacement in a file. The `old_string` must match EXACTLY, including all whitespace, and be unique in the file unless `replace_all` is `true`. Lines from text files returned by `file_read` are each returned with a line number followed by two spaces. Those two spaces MUST NOT be included as part of `old_string`."
 
     public func description(for role: AgentRole) -> String {
         switch role {
@@ -28,7 +28,7 @@ public struct FileEditTool: AgentTool {
             ]),
             "old_string": .dictionary([
                 "type": .string("string"),
-                "description": .string("The EXACT text to find and replace - include plenty of context to avoid mismatches. Must match the file content exactly, including indentation.")
+                "description": .string("The EXACT text to find and replace - include plenty of context to avoid mismatches. Must match the file content EXACTLY, including all indentation and whitespace. Pay close attention to leading whitespace. Lines from text files returned by the `file_read` tool start with a line number, followed by two spaces, followed by the line's content. You MUST NOT include the line numbers or those two spaces in `old_string`")
             ]),
             "new_string": .dictionary([
                 "type": .string("string"),
@@ -124,11 +124,11 @@ public struct FileEditTool: AgentTool {
         let occurrences = content.occurrenceCount(of: oldString)
 
         guard occurrences > 0 else {
-            return "Error: `old_string` not found in the file. Make sure it matches the file content exactly, including whitespace and indentation."
+            return "Error: `old_string` not found in the file. Make sure it matches the file content exactly, including EXACT whitespace and indentation. Use `file_read` to inspect the file content"
         }
 
         if !replaceAll && occurrences > 1 {
-            return "Error: `old_string` appears \(occurrences) times in the file. Provide more surrounding context to make it unique, or set `replace_all` to `true`."
+            return "Error: `old_string` appears \(occurrences) times in the file. Provide more surrounding context to make it unique, or set `replace_all` to `true`. Use `file_read` to inspect the file content"
         }
 
         // Perform replacement.
