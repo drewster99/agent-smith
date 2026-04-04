@@ -160,6 +160,7 @@ public actor SecurityEvaluator {
 
         let startTime = Date()
         var retryCount = 0
+        var lastError: Error?
         // Total iterations includes file read rounds + retries. Prevents unbounded loops
         // if Jones keeps requesting file reads without producing a verdict.
         var totalIterations = 0
@@ -194,6 +195,7 @@ public actor SecurityEvaluator {
                     recordEvaluation(toolName: toolName, toolParams: toolParams, taskTitle: taskTitle, prompt: evalPrompt, response: "(cancelled)", disposition: disposition, startTime: startTime)
                     return disposition
                 }
+                lastError = error
                 retryCount += 1
                 continue
             }
@@ -254,10 +256,16 @@ public actor SecurityEvaluator {
         // Exhausted retries or iteration limit — this evaluation fully failed.
         consecutiveEvaluationFailures += 1
 
+        let lastErrorDescription = lastError?.localizedDescription
+
         if consecutiveEvaluationFailures >= Self.maxConsecutiveFailures {
+            var abortContent = "Jones produced \(consecutiveEvaluationFailures) consecutive failed evaluations — aborting. Check Jones model configuration."
+            if let desc = lastErrorDescription {
+                abortContent += "\nLast error: \(desc)"
+            }
             await channel.post(ChannelMessage(
                 sender: .system,
-                content: "Jones produced \(consecutiveEvaluationFailures) consecutive failed evaluations — aborting. Check Jones model configuration."
+                content: abortContent
             ))
             await abort(
                 "Jones security gatekeeper failed to produce valid output after \(consecutiveEvaluationFailures) consecutive evaluations",
@@ -265,11 +273,16 @@ public actor SecurityEvaluator {
             )
         }
 
+        var fallbackMessage = "Security evaluation failed after \(totalIterations) iterations (\(retryCount) retries)"
+        if let desc = lastErrorDescription {
+            fallbackMessage += "\nLast error: \(desc)"
+        }
         let fallback = SecurityDisposition(
             approved: false,
-            message: "Security evaluation failed after \(totalIterations) iterations (\(retryCount) retries)"
+            message: fallbackMessage
         )
-        recordEvaluation(toolName: toolName, toolParams: toolParams, taskTitle: taskTitle, prompt: evalPrompt, response: "(parse failure)", disposition: fallback, startTime: startTime)
+        let recordedResponse = lastErrorDescription ?? "(parse failure)"
+        recordEvaluation(toolName: toolName, toolParams: toolParams, taskTitle: taskTitle, prompt: evalPrompt, response: recordedResponse, disposition: fallback, startTime: startTime)
         return fallback
     }
 
