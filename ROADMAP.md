@@ -114,6 +114,9 @@ Ripgrep-based content search tool for Agent Brown. Parameters: `pattern` (requir
 ### Task-scoped working directory for relative paths
 Currently all tools (except `file_read`) require absolute paths. Relative paths would save significant tokens — paths like `/Users/andrew/Documents/ncc_source/cursor/agent-smith/AgentSmithPackage/Sources/AgentSmithKit/Tools/GrepTool.swift` are 100+ characters each, repeated across many tool calls per task. The approach: `CreateTaskTool` accepts an optional `working_directory` parameter. When set, all tools resolve relative paths against it. The working directory is immutable for the task's lifetime (no races). Tool output (glob/grep results) returns relative paths when a working directory is set, further reducing token usage. Full design documented in project memory.
 
+### Manually start pending tasks from the UI
+Add a "Start" or "Run" button to pending tasks, accessible from both the task list (e.g., a play icon on the task row) and the task detail window. Clicking it should call `run_task` via the orchestration runtime, equivalent to Smith picking up the task. This lets the user manually kick off queued work without waiting for Smith or typing a command — especially useful when `autoRunNextTask` is disabled.
+
 ### Streamline model configuration UI
 The current Settings flow requires managing configurations as separate objects, then assigning them to agent roles across two different tabs. Redesign the UI to feel agent-centric — each agent/role has its own settings panel showing provider, model, temperature, max tokens, etc. directly. The underlying `ModelConfiguration` concept stays in the data model for reuse and persistence, but the UI abstracts it away so it feels like "adjusting Smith's settings" rather than "creating a configuration and assigning it."
 
