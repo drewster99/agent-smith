@@ -423,6 +423,13 @@ final class AppViewModel {
             }
         }
 
+        // Push live conversation history from agents into the inspector store.
+        await newRuntime.setOnContextChanged { [weak self] role, messages in
+            Task { @MainActor [weak self] in
+                self?.inspectorStore.updateLiveContext(messages, for: role)
+            }
+        }
+
         // Push security evaluation records into the inspector store incrementally.
         await newRuntime.setOnEvaluationRecorded { [weak self] record in
             Task { @MainActor [weak self] in

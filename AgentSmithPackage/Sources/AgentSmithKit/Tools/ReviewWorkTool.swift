@@ -80,7 +80,7 @@ public struct ReviewWorkTool: AgentTool {
             // Fetch the updated task to get completedAt/startedAt timestamps.
             let completedTask = await context.taskStore.task(id: taskID) ?? task
 
-            for agentID in task.assigneeIDs {
+            for agentID in completedTask.assigneeIDs {
                 _ = await context.terminateAgent(agentID, context.agentID)
             }
 
@@ -99,7 +99,7 @@ public struct ReviewWorkTool: AgentTool {
             ))
 
             // Deliver Brown's result directly to the user as a Smith message.
-            if let result = task.result, !result.isEmpty {
+            if let result = completedTask.result, !result.isEmpty {
                 await context.channel.post(ChannelMessage(
                     sender: .agent(context.agentRole),
                     recipientID: OrchestrationRuntime.userID,
@@ -114,7 +114,7 @@ public struct ReviewWorkTool: AgentTool {
             let advanceGuidance = context.autoAdvanceEnabled
                 ? " Check `list_tasks` for pending tasks and `run_task` the next one."
                 : ""
-            return "Task '\(task.title)' accepted and marked COMPLETE. Agents terminated. Result ALREADY delivered to user (do not deliver it again yourself, Agent Smith).\(advanceGuidance)"
+            return "Task '\(completedTask.title)' accepted and marked COMPLETE. Agents terminated. Result ALREADY delivered to user (do not deliver it again yourself, Agent Smith).\(advanceGuidance)"
         } else {
             // ---- Reject path ----
             let feedback: String

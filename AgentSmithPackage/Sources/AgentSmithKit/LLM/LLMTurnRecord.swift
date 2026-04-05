@@ -11,7 +11,8 @@ public struct LLMTurnRecord: Identifiable, Sendable {
     /// Total message count in history when this call was made (for reference).
     public let totalMessageCount: Int
     /// Snapshot of the full message array sent to the LLM for this turn.
-    public let contextSnapshot: [LLMMessage]
+    /// Stripped to an empty array on older turns to avoid O(n^2) memory growth.
+    public private(set) var contextSnapshot: [LLMMessage]
     /// Wall-clock time for the LLM API call, in milliseconds.
     public let latencyMs: Int
 
@@ -58,5 +59,10 @@ public struct LLMTurnRecord: Identifiable, Sendable {
         self.maxOutputTokens = maxOutputTokens
         self.thinkingBudget = thinkingBudget
         self.usage = usage
+    }
+
+    /// Releases the heavy context snapshot to reclaim memory on older turn records.
+    public mutating func stripContextSnapshot() {
+        contextSnapshot = []
     }
 }

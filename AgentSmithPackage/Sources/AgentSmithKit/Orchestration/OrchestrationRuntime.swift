@@ -73,6 +73,8 @@ public actor OrchestrationRuntime {
     private var onTurnRecorded: (@Sendable (AgentRole, LLMTurnRecord) -> Void)?
     /// Callback fired when a security evaluation is recorded, for incremental UI updates.
     private var onEvaluationRecorded: (@Sendable (EvaluationRecord) -> Void)?
+    /// Callback fired when an agent's conversation history changes, for live inspector updates.
+    private var onContextChanged: (@Sendable (AgentRole, [LLMMessage]) -> Void)?
 
     public init(
         providers: [AgentRole: any LLMProvider],
@@ -117,6 +119,11 @@ public actor OrchestrationRuntime {
     /// Registers a callback fired when a security evaluation is recorded.
     public func setOnEvaluationRecorded(_ handler: @escaping @Sendable (EvaluationRecord) -> Void) {
         onEvaluationRecorded = handler
+    }
+
+    /// Registers a callback fired when an agent's conversation history changes.
+    public func setOnContextChanged(_ handler: @escaping @Sendable (AgentRole, [LLMMessage]) -> Void) {
+        onContextChanged = handler
     }
 
     /// Whether the system has been aborted by Jones.
@@ -258,6 +265,9 @@ public actor OrchestrationRuntime {
         await smithAgent.setUsageStore(usageStore)
         if let turnCallback = onTurnRecorded {
             await smithAgent.setOnTurnRecorded { turn in turnCallback(.smith, turn) }
+        }
+        if let contextCallback = onContextChanged {
+            await smithAgent.setOnContextChanged { messages in contextCallback(.smith, messages) }
         }
 
         smith = smithAgent
@@ -611,6 +621,9 @@ public actor OrchestrationRuntime {
         await brownAgent.setUsageStore(usageStore)
         if let turnCallback = onTurnRecorded {
             await brownAgent.setOnTurnRecorded { turn in turnCallback(.brown, turn) }
+        }
+        if let contextCallback = onContextChanged {
+            await brownAgent.setOnContextChanged { messages in contextCallback(.brown, messages) }
         }
         if let evalCallback = onEvaluationRecorded {
             await evaluator.setOnEvaluationRecorded(evalCallback)

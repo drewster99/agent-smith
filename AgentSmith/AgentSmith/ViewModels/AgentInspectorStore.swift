@@ -10,7 +10,18 @@ import SwiftLLMKit
 @MainActor
 final class AgentInspectorStore {
     /// Per-turn LLM call records, pushed incrementally as each turn completes.
+    /// Old turns beyond `recentSnapshotWindow` have their contextSnapshot stripped
+    /// to prevent O(n^2) memory growth on long sessions.
     var turnsByRole: [AgentRole: [LLMTurnRecord]] = [:]
+
+    /// Maximum number of turn records kept per role. Oldest are dropped when exceeded.
+    private static let maxTurnRecords = 100
+
+    /// Only the most recent N turns per role retain their full contextSnapshot.
+    private static let recentSnapshotWindow = 10
+
+    /// Live conversation history for each agent, pushed on every material change.
+    var liveContexts: [AgentRole: [LLMMessage]] = [:]
 
     /// Security evaluation records from Jones/SecurityEvaluator.
     var evaluationRecords: [EvaluationRecord] = []
@@ -20,6 +31,37 @@ final class AgentInspectorStore {
     /// Appends a newly completed LLM turn for the given agent role.
     func appendTurn(_ turn: LLMTurnRecord, for role: AgentRole) {
         turnsByRole[role, default: []].append(turn)
+        pruneOldTurnSnapshots(for: role)
+    }
+
+    /// Caps turn record count and strips contextSnapshot from older turns for a given role.
+    private func pruneOldTurnSnapshots(for role: AgentRole) {
+        guard var turns = turnsByRole[role] else { return }
+        var modified = false
+
+        // Drop oldest records when exceeding the hard cap.
+        if turns.count > Self.maxTurnRecords {
+            turns.removeFirst(turns.count - Self.maxTurnRecords)
+            modified = true
+        }
+
+        // Strip heavy snapshots from turns outside the recent window.
+        let stripCount = turns.count - Self.recentSnapshotWindow
+        if stripCount > 0 {
+            for i in 0..<stripCount where !turns[i].contextSnapshot.isEmpty {
+                turns[i].stripContextSnapshot()
+                modified = true
+            }
+        }
+
+        if modified {
+            turnsByRole[role] = turns
+        }
+    }
+
+    /// Updates the live conversation history for the given agent role.
+    func updateLiveContext(_ messages: [LLMMessage], for role: AgentRole) {
+        liveContexts[role] = messages
     }
 
     /// Appends a newly completed security evaluation record.
@@ -30,22 +72,24 @@ final class AgentInspectorStore {
     /// Clears all data for a specific agent role (e.g. when agent is replaced).
     func clear(for role: AgentRole) {
         turnsByRole[role] = nil
+        liveContexts[role] = nil
     }
 
     /// Clears all inspector data (e.g. on full stop/reset).
     func clearAll() {
         turnsByRole.removeAll()
+        liveContexts.removeAll()
         evaluationRecords.removeAll()
     }
 
     // MARK: - Derived accessors
 
-    /// Returns the latest context snapshot for a role, derived from its most recent turn.
+    /// Returns the live conversation history for a role, falling back to the latest turn snapshot.
     func contextMessages(for role: AgentRole) -> [LLMMessage] {
-        turnsByRole[role]?.last?.contextSnapshot ?? []
+        liveContexts[role] ?? turnsByRole[role]?.last?.contextSnapshot ?? []
     }
 
-    /// Extracts the current system prompt for a role from its latest context snapshot.
+    /// Extracts the current system prompt for a role from its context.
     func systemPrompt(for role: AgentRole) -> String {
         contextMessages(for: role)
             .first { $0.role == .system }

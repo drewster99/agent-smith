@@ -40,8 +40,8 @@ public struct AmendTaskTool: AgentTool {
         guard case .string(let amendment) = arguments["amendment"] else {
             throw ToolCallError.missingRequiredArgument("amendment")
         }
-        guard let trimmed = Optional(amendment.trimmingCharacters(in: .whitespacesAndNewlines)),
-              !trimmed.isEmpty else {
+        let trimmed = amendment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
             return "Error: amendment must not be empty."
         }
 

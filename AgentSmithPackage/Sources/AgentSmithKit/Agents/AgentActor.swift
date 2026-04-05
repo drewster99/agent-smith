@@ -94,10 +94,19 @@ public actor AgentActor {
     private var llmTurns: [LLMTurnRecord] = []
     /// Message count at the time of the previous LLM call — used to compute inputDelta.
     private var lastTurnMessageCount: Int = 0
-    // No cap — keep all turn records for the session lifetime.
+
+    /// Maximum number of turn records kept per agent. Oldest are dropped when exceeded.
+    private static let maxTurnRecords = 100
+
+    /// Only the most recent N turns retain their full contextSnapshot; older turns
+    /// have the snapshot stripped to avoid O(n^2) memory growth across long sessions.
+    private static let recentSnapshotWindow = 10
 
     /// Fires after each LLM turn is recorded, pushing the turn to the UI layer.
     private var onTurnRecorded: (@Sendable (LLMTurnRecord) -> Void)?
+
+    /// Fires when the conversation history changes, pushing a live snapshot to the UI layer.
+    private var onContextChanged: (@Sendable ([LLMMessage]) -> Void)?
 
     public init(
         id: UUID = UUID(),
@@ -142,6 +151,11 @@ public actor AgentActor {
         onTurnRecorded = handler
     }
 
+    /// Registers a callback fired when the conversation history changes materially.
+    public func setOnContextChanged(_ handler: @escaping @Sendable ([LLMMessage]) -> Void) {
+        onContextChanged = handler
+    }
+
     /// Returns a snapshot of the agent's full conversation history for inspection.
     public func contextSnapshot() -> [LLMMessage] {
         conversationHistory
@@ -156,6 +170,7 @@ public actor AgentActor {
     public func updateSystemPrompt(_ prompt: String) {
         guard !conversationHistory.isEmpty else { return }
         conversationHistory[0] = LLMMessage(role: .system, text: prompt)
+        pushLiveContext()
     }
 
     /// Updates the idle poll interval for this agent.
@@ -182,6 +197,7 @@ public actor AgentActor {
         if let instruction = initialInstruction {
             conversationHistory.append(LLMMessage(role: .user, text: instruction))
             hasUnprocessedInput = true
+            pushLiveContext()
         }
 
         let role = configuration.role
@@ -348,6 +364,7 @@ public actor AgentActor {
                     usage: response.usage
                 )
                 llmTurns.append(turnRecord)
+                pruneOldTurnSnapshots()
                 onTurnRecorded?(turnRecord)
 
                 // Persist usage record for analytics.
@@ -489,6 +506,7 @@ public actor AgentActor {
             // Text-only response — record and wait for new input
             if let text = response.text, !text.isEmpty {
                 conversationHistory.append(LLMMessage(role: .assistant, text: text))
+                pushLiveContext()
 
                 if configuration.suppressesRawTextToChannel, !implicitMessageSent {
                     appendDiscardedTextWarning()
@@ -596,6 +614,7 @@ public actor AgentActor {
                         role: .tool,
                         content: .toolResult(toolCallID: call.id, content: Self.capToolResult(result))
                     ))
+                    pushLiveContext()
                 }
             } else if segment.calls.count > 1 && configuration.requiresToolApproval,
                       let evaluator = securityEvaluator {
@@ -739,6 +758,7 @@ public actor AgentActor {
                         content: .toolResult(toolCallID: r.callID, content: Self.capToolResult(r.result))
                     ))
                 }
+                pushLiveContext()
             } else {
                 // --- Sequential approval path (single call or no evaluator) ---
                 let approvalSummaries: [String] = segment.calls.count > 1
@@ -766,18 +786,22 @@ public actor AgentActor {
                         role: .tool,
                         content: .toolResult(toolCallID: call.id, content: Self.capToolResult(result))
                     ))
+                    pushLiveContext()
                 }
             }
         }
 
         // Safety: if any segment loop exited early (stop() during await), append placeholder
         // results for remaining tool_calls to maintain the API invariant.
+        var appendedPlaceholders = false
         for call in callsToExecute where !executedCallIDs.contains(call.id) {
             conversationHistory.append(LLMMessage(
                 role: .tool,
                 content: .toolResult(toolCallID: call.id, content: "Tool execution cancelled (agent stopped)")
             ))
+            appendedPlaceholders = true
         }
+        if appendedPlaceholders { pushLiveContext() }
 
         // --- Repetition circuit breaker ---
         // Track consecutive identical tool calls (same name + same normalized arguments).
@@ -861,7 +885,8 @@ public actor AgentActor {
 
         guard let evaluator = securityEvaluator else {
             assertionFailure("Brown requires tool approval but no SecurityEvaluator is configured")
-            return await directExecute(call, tool: tool)
+            Self.agentLogger.error("Tool '\(call.name, privacy: .public)' denied — no SecurityEvaluator configured. This is a configuration bug.")
+            return "Tool execution denied: No security evaluator is configured. Tool cannot be executed without approval."
         }
 
         let siblings = siblingCallSummaries.isEmpty ? nil : siblingCallSummaries.joined(separator: "\n")
@@ -1080,6 +1105,26 @@ public actor AgentActor {
             text: "[System: Your scheduled follow-up timer has elapsed. Review the current state and continue as appropriate.]"
         ))
         hasUnprocessedInput = true
+        pushLiveContext()
+    }
+
+    /// Notifies the UI layer that the conversation history has changed.
+    private func pushLiveContext() {
+        onContextChanged?(conversationHistory)
+    }
+
+    /// Caps the turn record count and strips contextSnapshot from older turns.
+    private func pruneOldTurnSnapshots() {
+        // Drop oldest records when exceeding the hard cap.
+        if llmTurns.count > Self.maxTurnRecords {
+            llmTurns.removeFirst(llmTurns.count - Self.maxTurnRecords)
+        }
+        // Strip heavy snapshots from turns outside the recent window.
+        let stripCount = llmTurns.count - Self.recentSnapshotWindow
+        guard stripCount > 0 else { return }
+        for i in 0..<stripCount where !llmTurns[i].contextSnapshot.isEmpty {
+            llmTurns[i].stripContextSnapshot()
+        }
     }
 
     private func drainPendingMessages() {
@@ -1196,6 +1241,7 @@ public actor AgentActor {
                 images: images
             ))
         }
+        pushLiveContext()
     }
 
     /// Formats tool parameter definitions from a JSON Schema parameters dictionary into a human-readable string.
@@ -1475,6 +1521,7 @@ public actor AgentActor {
         newHistory.append(contentsOf: conversationHistory[keepFromIndex...])
         conversationHistory = newHistory
         lastTurnMessageCount = conversationHistory.count
+        pushLiveContext()
 
         let roleName = configuration.role.displayName
         let channel = toolContext.channel
@@ -1538,6 +1585,7 @@ public actor AgentActor {
         newHistory.append(contentsOf: conversationHistory[keepFromIndex...])
         conversationHistory = newHistory
         lastTurnMessageCount = conversationHistory.count
+        pushLiveContext()
 
         let roleName = configuration.role.displayName
         let channel = toolContext.channel
@@ -1644,6 +1692,7 @@ public actor AgentActor {
         lastTurnMessageCount = conversationHistory.count
         llmTurns.removeAll()
         hasUnprocessedInput = true
+        pushLiveContext()
 
         let channel = toolContext.channel
         let prunedLabel = configuration.role.displayName

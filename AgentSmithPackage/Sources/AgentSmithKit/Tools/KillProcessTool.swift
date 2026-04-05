@@ -92,7 +92,7 @@ public struct KillProcessTool: AgentTool {
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
         process.arguments = ["-p", "\(pid)", "-o", "user="]
         process.standardOutput = pipe
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
 
         do {
             try process.run()
