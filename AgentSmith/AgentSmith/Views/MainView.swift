@@ -133,30 +133,7 @@ struct MainView: View {
             return .handled
         }
         .inspector(isPresented: $viewModel.showInspector) {
-            InspectorView(
-                messages: viewModel.messages,
-                processingRoles: viewModel.processingRoles,
-                agentToolNames: viewModel.agentToolNames,
-                agentContexts: viewModel.agentContexts,
-                agentTurns: viewModel.agentTurns,
-                agentPollIntervals: viewModel.agentPollIntervals,
-                agentMaxToolCalls: viewModel.agentMaxToolCalls,
-                agentModelConfigs: viewModel.resolvedAgentConfigs,
-                jonesEvaluationRecords: viewModel.jonesEvaluationRecords,
-                speechController: viewModel.speechController,
-                onSendDirectMessage: { role, text in
-                    Task { await viewModel.sendDirectMessage(to: role, text: text) }
-                },
-                onUpdateSystemPrompt: { role, prompt in
-                    Task { await viewModel.updateSystemPrompt(for: role, prompt: prompt) }
-                },
-                onUpdatePollInterval: { role, interval in
-                    Task { await viewModel.updatePollInterval(for: role, interval: interval) }
-                },
-                onUpdateMaxToolCalls: { role, count in
-                    Task { await viewModel.updateMaxToolCalls(for: role, count: count) }
-                }
-            )
+            InspectorView(viewModel: viewModel)
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {

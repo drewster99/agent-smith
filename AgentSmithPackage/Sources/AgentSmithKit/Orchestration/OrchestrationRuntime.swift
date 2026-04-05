@@ -69,6 +69,10 @@ public actor OrchestrationRuntime {
     private var onProcessingStateChange: (@Sendable (AgentRole, Bool) -> Void)?
     /// Callback fired when an agent comes online, passing its role and configured tool names.
     private var onAgentStarted: (@Sendable (AgentRole, [String]) -> Void)?
+    /// Callback fired when an agent records a new LLM turn, for incremental UI updates.
+    private var onTurnRecorded: (@Sendable (AgentRole, LLMTurnRecord) -> Void)?
+    /// Callback fired when a security evaluation is recorded, for incremental UI updates.
+    private var onEvaluationRecorded: (@Sendable (EvaluationRecord) -> Void)?
 
     public init(
         providers: [AgentRole: any LLMProvider],
@@ -103,6 +107,16 @@ public actor OrchestrationRuntime {
     /// Registers a callback fired when an agent comes online, with its role and tool names.
     public func setOnAgentStarted(_ handler: @escaping @Sendable (AgentRole, [String]) -> Void) {
         onAgentStarted = handler
+    }
+
+    /// Registers a callback fired when any agent records a new LLM turn.
+    public func setOnTurnRecorded(_ handler: @escaping @Sendable (AgentRole, LLMTurnRecord) -> Void) {
+        onTurnRecorded = handler
+    }
+
+    /// Registers a callback fired when a security evaluation is recorded.
+    public func setOnEvaluationRecorded(_ handler: @escaping @Sendable (EvaluationRecord) -> Void) {
+        onEvaluationRecorded = handler
     }
 
     /// Whether the system has been aborted by Jones.
@@ -242,6 +256,9 @@ public actor OrchestrationRuntime {
         )
         await followUpScheduler.set(agent: smithAgent)
         await smithAgent.setUsageStore(usageStore)
+        if let turnCallback = onTurnRecorded {
+            await smithAgent.setOnTurnRecorded { turn in turnCallback(.smith, turn) }
+        }
 
         smith = smithAgent
         agents[id] = smithAgent
@@ -592,6 +609,12 @@ public actor OrchestrationRuntime {
         )
         await brownAgent.setSecurityEvaluator(evaluator)
         await brownAgent.setUsageStore(usageStore)
+        if let turnCallback = onTurnRecorded {
+            await brownAgent.setOnTurnRecorded { turn in turnCallback(.brown, turn) }
+        }
+        if let evalCallback = onEvaluationRecorded {
+            await evaluator.setOnEvaluationRecorded(evalCallback)
+        }
 
         agents[brownID] = brownAgent
         agentRoles[brownID] = .brown

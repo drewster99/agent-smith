@@ -22,8 +22,8 @@ struct AgentInspectorWindow: View {
 
     private var isProcessing: Bool { viewModel.processingRoles.contains(role) }
     private var availableTools: [String] { viewModel.agentToolNames[role] ?? [] }
-    private var contextMessages: [LLMMessage] { viewModel.agentContexts[role] ?? [] }
-    private var llmTurns: [LLMTurnRecord] { viewModel.agentTurns[role] ?? [] }
+    private var contextMessages: [LLMMessage] { viewModel.inspectorStore.contextMessages(for: role) }
+    private var llmTurns: [LLMTurnRecord] { viewModel.inspectorStore.turnsByRole[role] ?? [] }
 
     private var roleMessages: [ChannelMessage] {
         viewModel.messages.filter {

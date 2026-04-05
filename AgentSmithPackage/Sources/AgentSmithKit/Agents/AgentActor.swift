@@ -96,6 +96,9 @@ public actor AgentActor {
     private var lastTurnMessageCount: Int = 0
     // No cap — keep all turn records for the session lifetime.
 
+    /// Fires after each LLM turn is recorded, pushing the turn to the UI layer.
+    private var onTurnRecorded: (@Sendable (LLMTurnRecord) -> Void)?
+
     public init(
         id: UUID = UUID(),
         configuration: AgentConfiguration,
@@ -132,6 +135,11 @@ public actor AgentActor {
     /// Injects the usage store for persistent token analytics.
     public func setUsageStore(_ store: UsageStore) {
         usageStore = store
+    }
+
+    /// Registers a callback fired after each LLM turn is recorded.
+    public func setOnTurnRecorded(_ handler: @escaping @Sendable (LLMTurnRecord) -> Void) {
+        onTurnRecorded = handler
     }
 
     /// Returns a snapshot of the agent's full conversation history for inspection.
@@ -326,7 +334,7 @@ public actor AgentActor {
                 consecutiveContextOverflows = 0
                 let inputDelta = Array(conversationHistory[lastTurnMessageCount...])
                 lastTurnMessageCount = conversationHistory.count
-                llmTurns.append(LLMTurnRecord(
+                let turnRecord = LLMTurnRecord(
                     inputDelta: inputDelta,
                     response: response,
                     totalMessageCount: conversationHistory.count,
@@ -338,8 +346,9 @@ public actor AgentActor {
                     maxOutputTokens: configuration.llmConfig.maxTokens,
                     thinkingBudget: configuration.llmConfig.thinkingBudget,
                     usage: response.usage
-                ))
-                // All turn records kept for session lifetime — no pruning.
+                )
+                llmTurns.append(turnRecord)
+                onTurnRecorded?(turnRecord)
 
                 // Persist usage record for analytics.
                 if let usage = response.usage, let usageStore {

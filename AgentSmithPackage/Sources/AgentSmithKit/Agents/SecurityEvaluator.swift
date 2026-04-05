@@ -77,6 +77,9 @@ public actor SecurityEvaluator {
     private var history: [EvaluationRecord] = []
     private static let maxHistory = 50
 
+    /// Fires after each evaluation is recorded, pushing the record to the UI layer.
+    private var onEvaluationRecorded: (@Sendable (EvaluationRecord) -> Void)?
+
     /// Token usage store for persistent analytics.
     private let usageStore: UsageStore?
     /// Model metadata for usage records.
@@ -107,6 +110,11 @@ public actor SecurityEvaluator {
     /// Returns the evaluation history for inspector display.
     public func evaluationHistory() -> [EvaluationRecord] {
         history
+    }
+
+    /// Registers a callback fired after each security evaluation is recorded.
+    public func setOnEvaluationRecorded(_ handler: @escaping @Sendable (EvaluationRecord) -> Void) {
+        onEvaluationRecorded = handler
     }
 
     /// Evaluates a tool request and returns a security disposition.
@@ -318,6 +326,7 @@ public actor SecurityEvaluator {
         if history.count > Self.maxHistory {
             history.removeFirst(history.count - Self.maxHistory)
         }
+        onEvaluationRecorded?(record)
     }
 
     private func buildEvalPrompt(

@@ -59,12 +59,8 @@ final class AppViewModel {
     var agentToolNames: [AgentRole: [String]] = [:]
     /// Whether the Inspector panel is visible.
     var showInspector = false
-    /// Snapshots of each active agent's full LLM conversation history.
-    var agentContexts: [AgentRole: [LLMMessage]] = [:]
-    /// Snapshots of per-turn LLM call records for each active agent.
-    var agentTurns: [AgentRole: [LLMTurnRecord]] = [:]
-    /// Security evaluation records from Jones (SecurityEvaluator).
-    var jonesEvaluationRecords: [EvaluationRecord] = []
+    /// Dedicated observable store for inspector data, updated via push callbacks.
+    let inspectorStore = AgentInspectorStore()
     /// Current idle poll intervals for each agent role (seconds).
     var agentPollIntervals: [AgentRole: TimeInterval] = [
         .smith: 20, .brown: 25, .jones: 13
@@ -99,7 +95,6 @@ final class AppViewModel {
     /// Kept alive independently of `runtime` so task operations work even when agents aren't running.
     private var taskStore: TaskStore?
     private var channelStreamTask: Task<Void, Never>?
-    private var contextRefreshTask: Task<Void, Never>?
     private var persistenceManager: PersistenceManager
     /// Persistent token usage analytics store.
     private(set) var usageStore: UsageStore
@@ -331,8 +326,7 @@ final class AppViewModel {
                 self.isRunning = false
                 self.processingRoles.removeAll()
                 self.agentToolNames.removeAll()
-                self.agentContexts.removeAll()
-                self.agentTurns.removeAll()
+                self.inspectorStore.clearAll()
                 self.runtime = nil
             }
         }
@@ -422,9 +416,21 @@ final class AppViewModel {
         // Initial population of the memory arrays for the UI.
         await refreshMemories()
 
-        await newRuntime.start()
+        // Push LLM turn records from agents into the inspector store incrementally.
+        await newRuntime.setOnTurnRecorded { [weak self] role, turn in
+            Task { @MainActor [weak self] in
+                self?.inspectorStore.appendTurn(turn, for: role)
+            }
+        }
 
-        startContextRefresh()
+        // Push security evaluation records into the inspector store incrementally.
+        await newRuntime.setOnEvaluationRecorded { [weak self] record in
+            Task { @MainActor [weak self] in
+                self?.inspectorStore.appendEvaluation(record)
+            }
+        }
+
+        await newRuntime.start()
     }
 
     /// Sends user input (with any pending attachments) to Smith.
@@ -619,12 +625,9 @@ final class AppViewModel {
         isRunning = false
         processingRoles.removeAll()
         agentToolNames.removeAll()
-        agentContexts.removeAll()
-        agentTurns.removeAll()
+        inspectorStore.clearAll()
         channelStreamTask?.cancel()
         channelStreamTask = nil
-        contextRefreshTask?.cancel()
-        contextRefreshTask = nil
         self.runtime = nil
 
         // Reset any tasks that were mid-flight back to pending.
@@ -651,8 +654,7 @@ final class AppViewModel {
     /// Clears the message display and inspector snapshots. The full history is always retained on disk.
     func clearLog() {
         messages.removeAll()
-        agentContexts.removeAll()
-        agentTurns.removeAll()
+        inspectorStore.clearAll()
     }
 
     /// Prepends the persisted history before the current live messages.
@@ -800,35 +802,6 @@ final class AppViewModel {
     }
 
     // MARK: - Private
-
-    /// Polls each agent's conversation history every 2 seconds while the system is running.
-    private func startContextRefresh() {
-        contextRefreshTask?.cancel()
-        contextRefreshTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                guard let self, let runtime = self.runtime else { break }
-                for role in AgentRole.allCases {
-                    if let context = await runtime.contextSnapshot(for: role) {
-                        self.agentContexts[role] = context
-                    } else if let archived = await runtime.archivedSnapshot(for: role) {
-                        self.agentContexts[role] = archived.contextSnapshot
-                    }
-                    if let turns = await runtime.turnsSnapshot(for: role) {
-                        self.agentTurns[role] = turns
-                    } else if let archived = await runtime.archivedSnapshot(for: role) {
-                        self.agentTurns[role] = archived.turnsSnapshot
-                    }
-                }
-                // Fetch Jones security evaluation records.
-                self.jonesEvaluationRecords = await runtime.evaluationHistory()
-                do {
-                    try await Task.sleep(for: .seconds(2))
-                } catch {
-                    break
-                }
-            }
-        }
-    }
 
     private func persistMessages() {
         let snapshot = allPersistedMessages

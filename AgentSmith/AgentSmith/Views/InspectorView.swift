@@ -5,22 +5,10 @@ import AgentSmithKit
 
 /// Inspector panel showing per-agent status: activity, context, tools, and direct messaging.
 struct InspectorView: View {
-    let messages: [ChannelMessage]
-    let processingRoles: Set<AgentRole>
-    let agentToolNames: [AgentRole: [String]]
-    let agentContexts: [AgentRole: [LLMMessage]]
-    let agentTurns: [AgentRole: [LLMTurnRecord]]
-    let agentPollIntervals: [AgentRole: TimeInterval]
-    let agentMaxToolCalls: [AgentRole: Int]
-    let agentModelConfigs: [AgentRole: ModelConfiguration]
-    let jonesEvaluationRecords: [EvaluationRecord]
-    let speechController: SpeechController
-    let onSendDirectMessage: (AgentRole, String) -> Void
-    let onUpdateSystemPrompt: (AgentRole, String) -> Void
-    let onUpdatePollInterval: (AgentRole, TimeInterval) -> Void
-    let onUpdateMaxToolCalls: (AgentRole, Int) -> Void
+    let viewModel: AppViewModel
 
     var body: some View {
+        let store = viewModel.inspectorStore
         VStack(spacing: 0) {
             Text("Agents")
                 .font(AppFonts.sectionHeader)
@@ -31,55 +19,61 @@ struct InspectorView: View {
 
             Divider()
 
-            // Scrollable agent details
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                ForEach(AgentRole.allCases.filter { $0 != .summarizer }, id: \.self) { role in
-                    let roleMessages = messages.filter {
-                        if case .agent(let r) = $0.sender { return r == role }
-                        return false
-                    }
-                    let recentMessages = Array(roleMessages.suffix(5).reversed())
-                    let recentTools = Array(
-                        roleMessages.filter { $0.metadata?["tool"] != nil }.suffix(3).reversed()
-                    )
-                    let context = agentContexts[role] ?? []
-                    let turns = agentTurns[role] ?? []
-                    let pollInterval = agentPollIntervals[role] ?? 5
-                    let maxToolCalls = agentMaxToolCalls[role] ?? 100
-                    let currentSystemPrompt = context.first(where: { $0.role == .system })
-                        .flatMap { $0.content.textValue } ?? ""
+                    ForEach(AgentRole.allCases.filter { $0 != .summarizer }, id: \.self) { role in
+                        let roleMessages = viewModel.messages.filter {
+                            if case .agent(let r) = $0.sender { return r == role }
+                            return false
+                        }
+                        let recentMessages = Array(roleMessages.suffix(5).reversed())
+                        let recentTools = Array(
+                            roleMessages.filter { $0.metadata?["tool"] != nil }.suffix(3).reversed()
+                        )
+                        let context = store.contextMessages(for: role)
+                        let turns = store.turnsByRole[role] ?? []
+                        let pollInterval = viewModel.agentPollIntervals[role] ?? 5
+                        let maxToolCalls = viewModel.agentMaxToolCalls[role] ?? 100
+                        let currentSystemPrompt = store.systemPrompt(for: role)
 
-                    AgentCard(
-                        role: role,
-                        isProcessing: processingRoles.contains(role),
-                        hasActivity: !roleMessages.isEmpty,
-                        availableTools: agentToolNames[role] ?? [],
-                        recentMessages: recentMessages,
-                        recentToolUses: recentTools,
-                        contextMessages: context,
-                        llmTurns: turns,
-                        modelConfig: agentModelConfigs[role],
-                        evaluationRecords: role == .jones ? jonesEvaluationRecords : [],
-                        currentSystemPrompt: currentSystemPrompt,
-                        pollInterval: pollInterval,
-                        maxToolCalls: maxToolCalls,
-                        speechController: speechController,
-                        onSendDirectMessage: { text in onSendDirectMessage(role, text) },
-                        onUpdateSystemPrompt: { prompt in onUpdateSystemPrompt(role, prompt) },
-                        onUpdatePollInterval: { interval in onUpdatePollInterval(role, interval) },
-                        onUpdateMaxToolCalls: { count in onUpdateMaxToolCalls(role, count) }
+                        AgentCard(
+                            role: role,
+                            isProcessing: viewModel.processingRoles.contains(role),
+                            hasActivity: !roleMessages.isEmpty,
+                            availableTools: viewModel.agentToolNames[role] ?? [],
+                            recentMessages: recentMessages,
+                            recentToolUses: recentTools,
+                            contextMessages: context,
+                            llmTurns: turns,
+                            modelConfig: viewModel.resolvedAgentConfigs[role],
+                            evaluationRecords: role == .jones ? store.evaluationRecords : [],
+                            currentSystemPrompt: currentSystemPrompt,
+                            pollInterval: pollInterval,
+                            maxToolCalls: maxToolCalls,
+                            speechController: viewModel.speechController,
+                            onSendDirectMessage: { text in
+                                Task { await viewModel.sendDirectMessage(to: role, text: text) }
+                            },
+                            onUpdateSystemPrompt: { prompt in
+                                Task { await viewModel.updateSystemPrompt(for: role, prompt: prompt) }
+                            },
+                            onUpdatePollInterval: { interval in
+                                Task { await viewModel.updatePollInterval(for: role, interval: interval) }
+                            },
+                            onUpdateMaxToolCalls: { count in
+                                Task { await viewModel.updateMaxToolCalls(for: role, count: count) }
+                            }
+                        )
+                    }
+
+                    SummarizerCard(
+                        messages: viewModel.messages,
+                        isProcessing: viewModel.processingRoles.contains(.summarizer)
                     )
                 }
-
-                SummarizerCard(
-                    messages: messages,
-                    isProcessing: processingRoles.contains(.summarizer)
-                )
             }
         }
-    }
-    .inspectorColumnWidth(min: 280, ideal: 320, max: 460)
+        .inspectorColumnWidth(min: 280, ideal: 320, max: 460)
     }
 }
 

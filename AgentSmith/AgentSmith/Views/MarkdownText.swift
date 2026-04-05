@@ -143,7 +143,6 @@ struct MarkdownText: View {
             }
             Text(lines.joined(separator: "\n"))
                 .font(baseFont)
-                .textSelection(.enabled)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
         }
