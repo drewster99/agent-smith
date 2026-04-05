@@ -1132,7 +1132,16 @@ public actor AgentActor {
         var allTextParts: [String] = []
 
         for message in pendingChannelMessages {
-            let formatted = "[\(message.sender.displayName)]: \(message.content)"
+            let senderLabel: String
+            switch message.sender {
+            case .user:
+                senderLabel = "USER (\(message.sender.displayName))"
+            case .agent:
+                senderLabel = "AGENT \(message.sender.displayName)"
+            case .system:
+                senderLabel = "SYSTEM"
+            }
+            let formatted = "[\(senderLabel)]: \(message.content)"
 
             let imageAttachments = message.attachments.filter(\.isImage)
             for attachment in imageAttachments {

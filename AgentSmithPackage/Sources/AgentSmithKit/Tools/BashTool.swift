@@ -1,6 +1,6 @@
 import Foundation
 
-/// Executes bash commands. Has a hard blocklist of dangerous patterns.
+/// Executes bash commands. Security evaluation is handled by Jones (SecurityEvaluator).
 public struct BashTool: AgentTool {
     public let name = "bash"
     public let toolDescription = "Execute a command in the \"bash\" shell and return its output. Every `bash` tool call is run in a separate shell. Do not submit dangerous or excessively complex commands. Default timeout is 300 seconds — pass a higher `timeout` for long-running commands. Make parallel tool calls whenever possible: Before calling, consider if you have multiple bash commands you may wish to run that at not dependent upon each other's results. If so, send up to 20 `bash` tool calls in a single response."
@@ -44,14 +44,6 @@ public struct BashTool: AgentTool {
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
         guard case .string(let command) = arguments["command"] else {
             throw ToolCallError.missingRequiredArgument("command")
-        }
-
-        if let rejection = CommandBlocklist.validate(command) {
-            await context.channel.post(ChannelMessage(
-                sender: .system,
-                content: "\u{26A0}\u{FE0F} \(rejection)"
-            ))
-            return rejection
         }
 
         let timeoutSeconds: Int

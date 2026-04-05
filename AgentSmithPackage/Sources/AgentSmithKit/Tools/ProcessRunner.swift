@@ -28,7 +28,7 @@ enum ProcessRunner {
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
                 let pipe = Pipe()
-
+            
                 process.executableURL = URL(fileURLWithPath: executable)
                 process.arguments = arguments
                 process.standardOutput = pipe
@@ -76,6 +76,14 @@ enum ProcessRunner {
                     }
                     done.signal()
                 }
+
+                // Prevent interactive prompts from hanging the process indefinitely.
+                // Without this, SSH/git may wait for a passphrase on stdin that will never arrive.
+                process.standardInput = FileHandle.nullDevice
+                var env = ProcessInfo.processInfo.environment
+                env["GIT_TERMINAL_PROMPT"] = "0"  // git: don't prompt for credentials
+                env["SSH_ASKPASS"] = ""            // SSH: don't invoke GUI askpass program
+                process.environment = env
 
                 do {
                     try process.run()

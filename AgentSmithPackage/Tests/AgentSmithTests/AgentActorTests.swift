@@ -22,59 +22,7 @@ struct AgentActorTests {
         )
     }
 
-    // MARK: - BashTool Blocklist
-
-// ABSOLUTELY NOT - DO NOT FUCKING TEST RM -RF /
-
-    @Test("BashTool blocks rm -rf /")
-    func shellBlocksRmRfRoot() async throws {
-        let tool = BashTool()
-        let result = try await tool.execute(
-            arguments: ["command": .string("rm -rf /")],
-            context: makeContext()
-        )
-        #expect(result.contains("BLOCKED"))
-    }
-
-    @Test("BashTool blocks rm -rf / with extra whitespace")
-    func shellBlocksRmRfRootExtraSpaces() async throws {
-        let tool = BashTool()
-        let result = try await tool.execute(
-            arguments: ["command": .string("rm  -rf   /")],
-            context: makeContext()
-        )
-        #expect(result.contains("BLOCKED"))
-    }
-
-    @Test("BashTool blocks rm -rf ~")
-    func shellBlocksRmRfHome() async throws {
-        let tool = BashTool()
-        let result = try await tool.execute(
-            arguments: ["command": .string("rm -rf ~")],
-            context: makeContext()
-        )
-        #expect(result.contains("BLOCKED"))
-    }
-
-    @Test("BashTool blocks mkfs")
-    func shellBlocksMkfs() async throws {
-        let tool = BashTool()
-        let result = try await tool.execute(
-            arguments: ["command": .string("mkfs /dev/sda1")],
-            context: makeContext()
-        )
-        #expect(result.contains("BLOCKED"))
-    }
-
-    @Test("BashTool blocks dd if=")
-    func shellBlocksDd() async throws {
-        let tool = BashTool()
-        let result = try await tool.execute(
-            arguments: ["command": .string("dd if=/dev/zero of=/dev/sda")],
-            context: makeContext()
-        )
-        #expect(result.contains("BLOCKED"))
-    }
+    // MARK: - BashTool
 
     @Test("BashTool allows safe commands")
     func shellAllowsSafeCommands() async throws {
@@ -93,7 +41,7 @@ struct AgentActorTests {
             arguments: ["command": .string("ls /tmp")],
             context: makeContext()
         )
-        #expect(!result.contains("BLOCKED"))
+        #expect(result.contains("BLOCKED") == false)
     }
 
     // MARK: - CreateTaskTool
