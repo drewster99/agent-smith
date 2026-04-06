@@ -29,6 +29,13 @@ struct MainView: View {
                 ))
                 .font(.caption)
                 .padding(.horizontal, 12)
+
+                Toggle("Auto-run interrupted tasks", isOn: Binding(
+                    get: { viewModel.autoRunInterruptedTasks },
+                    set: { viewModel.autoRunInterruptedTasks = $0 }
+                ))
+                .font(.caption)
+                .padding(.horizontal, 12)
                 .padding(.bottom, 6)
 
                 ScrollView {

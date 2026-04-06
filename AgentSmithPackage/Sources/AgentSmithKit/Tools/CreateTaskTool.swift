@@ -38,7 +38,7 @@ public struct CreateTaskTool: AgentTool {
 
         // Refuse to create a duplicate of an existing active task with the same title.
         let existingTasks = await context.taskStore.allTasks()
-        let actionableStatuses: Set<AgentTask.Status> = [.pending, .running, .paused, .awaitingReview]
+        let actionableStatuses: Set<AgentTask.Status> = [.pending, .running, .paused, .awaitingReview, .interrupted]
         if let duplicate = existingTasks.first(where: {
             $0.disposition == .active && actionableStatuses.contains($0.status) && $0.title.caseInsensitiveCompare(title) == .orderedSame
         }) {

@@ -17,7 +17,7 @@ struct TaskDetailWindow: View {
     /// Whether the current task's description can be edited.
     private var isDescriptionEditable: Bool {
         guard let task else { return false }
-        return task.status == .pending || task.status == .paused
+        return task.status.isRunnable
     }
 
     var body: some View {
@@ -96,8 +96,7 @@ struct TaskDetailWindow: View {
                         .disabled(!isDescriptionEditable || editedDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 } else {
-                    Text(task.description)
-                        .font(.body)
+                    MarkdownText(content: task.description, baseFont: .body)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -141,8 +140,7 @@ struct TaskDetailWindow: View {
                 if let summary = task.summary, !summary.isEmpty {
                     Divider()
                     sectionHeader("Summary")
-                    Text(summary)
-                        .font(.body)
+                    MarkdownText(content: summary, baseFont: .body)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
@@ -165,8 +163,7 @@ struct TaskDetailWindow: View {
                                     Text(String(format: "%.0f%%", memory.similarity * 100))
                                         .font(.caption.monospaced())
                                         .foregroundStyle(.tertiary)
-                                    Text(memory.content)
-                                        .font(.callout)
+                                    MarkdownText(content: memory.content, baseFont: .callout)
                                         .textSelection(.enabled)
                                 }
                             }
@@ -188,8 +185,7 @@ struct TaskDetailWindow: View {
                                             .font(.caption.monospaced())
                                             .foregroundStyle(.tertiary)
                                     }
-                                    Text(prior.summary)
-                                        .font(.callout)
+                                    MarkdownText(content: prior.summary, baseFont: .callout)
                                         .foregroundStyle(.secondary)
                                         .textSelection(.enabled)
                                 }

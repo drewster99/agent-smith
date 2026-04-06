@@ -37,7 +37,7 @@ public struct TaskAcknowledgedTool: AgentTool {
             recipientID: smithID,
             recipient: .agent(.smith),
             content: "Task '\(task.title)' acknowledged. Beginning work.",
-            metadata: ["messageKind": .string("task_lifecycle")]
+            metadata: ["messageKind": .string("task_acknowledged")]
         ))
 
         return "Task acknowledged: \(task.title)"

@@ -322,7 +322,7 @@ public actor AgentActor {
 
             do {
                 let activeTasks = await toolContext.taskStore.allTasks().filter { $0.disposition == .active }
-                let hasPendingOrPaused = activeTasks.contains { $0.status == .pending || $0.status == .paused }
+                let hasPendingOrPaused = activeTasks.contains { $0.status.isRunnable }
                 let hasAwaitingReview = activeTasks.contains { $0.status == .awaitingReview }
                 let availabilityContext = ToolAvailabilityContext(
                     lastDirectUserMessageAt: lastDirectUserMessageAt,
@@ -1168,7 +1168,7 @@ public actor AgentActor {
             // Lifecycle and agent_online messages are informational — drain them into
             // history for context but don't trigger a new LLM call. Only messages that
             // require Smith's action (user messages, task_complete, errors) should wake it.
-            let nonWakingKinds: Set<String> = ["task_lifecycle", "agent_online"]
+            let nonWakingKinds: Set<String> = ["task_lifecycle", "task_acknowledged", "agent_online"]
             let hasActionableMessage = pendingChannelMessages.contains { msg in
                 if case .string(let kind) = msg.metadata?["messageKind"],
                    nonWakingKinds.contains(kind) {

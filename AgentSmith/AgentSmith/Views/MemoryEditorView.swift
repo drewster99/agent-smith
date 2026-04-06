@@ -133,8 +133,7 @@ struct MemoryEditorView: View {
     private func memoryRow(memory: MemoryEntry) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .top) {
-                Text(memory.content)
-                    .font(.body)
+                MarkdownText(content: memory.content, baseFont: .body)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
 
@@ -279,8 +278,7 @@ struct MemoryEditorView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 3))
                     }
 
-                    Text(summary.summary)
-                        .font(.callout)
+                    MarkdownText(content: summary.summary, baseFont: .callout)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
 
@@ -329,6 +327,7 @@ struct MemoryEditorView: View {
         case .completed: return .green
         case .failed: return .red
         case .paused: return .secondary
+        case .interrupted: return .yellow
         }
     }
 }

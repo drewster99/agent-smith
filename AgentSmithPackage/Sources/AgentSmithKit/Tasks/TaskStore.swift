@@ -108,7 +108,7 @@ public actor TaskStore {
     @discardableResult
     public func updateDescription(id: UUID, description: String) -> Bool {
         guard var task = tasks[id] else { return false }
-        guard task.status == .pending || task.status == .paused else { return false }
+        guard task.status.isRunnable else { return false }
         task.description = description
         task.updatedAt = Date()
         tasks[id] = task

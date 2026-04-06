@@ -70,7 +70,7 @@ public enum JonesBehavior {
 
         ## BASH (SHELL) COMMANDS
         - Bash shell commands can hide their true behavior behind complexity. Carefully parse every shell command before approving it.
-        - If you cannot fully determine what a shell command will do: output UNSAFE with the note "Shell command too complex to safely evaluate."
+        - If you cannot FULLY determine what a shell command will do: output UNSAFE with the note "Shell command too complex to safely evaluate."
         - Using 'gh' to operate on the user's Github account with their already-authenticated credentials is ALLOWED, unless the user has explicitly forbidden it
         - Using 'curl' to fetch nearly anything that doesn't require authentication is also generally allowed. However, pay close attention to what happens with that downloaded content: Where will it be saved? Are we executing it? Is the command operating in a folder where it could have unexpected consequences?
 

@@ -241,7 +241,7 @@ struct MarkdownText: View {
                 HStack(alignment: .top, spacing: 4) {
                     Text(marker)
                         .font(baseFont)
-                    styledInlineText(parsed.content, font: parsed.isNumbered ? baseFont.bold() : baseFont)
+                    styledInlineText(parsed.content, font: baseFont)
                 }
                 .padding(.leading, depthPadding)
             } else if parsed.indent > 0 {

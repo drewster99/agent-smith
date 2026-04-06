@@ -392,9 +392,10 @@ public actor OrchestrationRuntime {
                 that is already in the task.
                 """
         } else {
-            // No tasks were running — surface any pending, paused, or recently failed tasks.
+            // No tasks were running — surface any pending, paused, interrupted, or recently failed tasks.
             let pendingTasks = activeTasks.filter { $0.status == .pending }
             let pausedTasks = activeTasks.filter { $0.status == .paused }
+            let interruptedTasks = activeTasks.filter { $0.status == .interrupted }
             let recentFailed = Array(
                 activeTasks
                     .filter { $0.status == .failed }
@@ -402,7 +403,7 @@ public actor OrchestrationRuntime {
                     .prefix(5)
             )
 
-            if pendingTasks.isEmpty && pausedTasks.isEmpty && recentFailed.isEmpty {
+            if pendingTasks.isEmpty && pausedTasks.isEmpty && interruptedTasks.isEmpty && recentFailed.isEmpty {
                 initialInstruction = """
                     No tasks are pending. Introduce yourself with "Hello <user's nickname>, how can I help?" - and nothing more.
                     """
@@ -434,6 +435,21 @@ public actor OrchestrationRuntime {
                         }
                         .joined(separator: "\n")
                     parts.append("The following task(s) are paused:\n\(list)")
+                }
+                if !interruptedTasks.isEmpty {
+                    let list = interruptedTasks
+                        .map { task in
+                            var entry = "- \(task.title) (id: \(task.id.uuidString)) — interrupted"
+                            if !task.description.isEmpty {
+                                entry += "\n  Description: \(task.description)"
+                            }
+                            if let lastUpdate = task.updates.last {
+                                entry += "\n  Last update: \(lastUpdate.message)"
+                            }
+                            return entry
+                        }
+                        .joined(separator: "\n")
+                    parts.append("The following task(s) were interrupted by app shutdown and can be resumed with `run_task`:\n\(list)")
                 }
                 if !recentFailed.isEmpty {
                     let list = recentFailed

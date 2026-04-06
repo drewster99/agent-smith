@@ -48,10 +48,17 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         case failed
         case paused
         case awaitingReview
+        /// The task was running when the app was interrupted (crash or force-quit).
+        case interrupted
 
         /// Whether this status represents work that is actively running — prevents archiving or deletion.
         public var isInProgress: Bool {
             self == .running || self == .paused || self == .awaitingReview
+        }
+
+        /// Whether this status allows `run_task` / `spawn_brown` to start execution.
+        public var isRunnable: Bool {
+            self == .pending || self == .paused || self == .interrupted
         }
     }
 

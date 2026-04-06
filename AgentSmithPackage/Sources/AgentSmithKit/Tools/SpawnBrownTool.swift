@@ -39,9 +39,9 @@ public struct SpawnBrownTool: AgentTool {
             return "No task found with ID \(taskID). Use list_tasks to see available tasks."
         }
 
-        let runnableStatuses: Set<AgentTask.Status> = [.pending, .running, .paused]
+        let runnableStatuses: Set<AgentTask.Status> = [.pending, .running, .paused, .interrupted]
         guard runnableStatuses.contains(task.status) else {
-            return "Task '\(task.title)' has status '\(task.status.rawValue)' — `spawn_brown` requires a pending, running, or paused task. Use `create_task` for new work."
+            return "Task '\(task.title)' has status '\(task.status.rawValue)' — `spawn_brown` requires a pending, running, paused, or interrupted task. Use `create_task` for new work."
         }
 
         // Check that no active Brown is already assigned

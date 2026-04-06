@@ -19,6 +19,10 @@ enum AppColors {
     static let taskCreatedAccent = Color.blue
     /// Accent for task-completed banners in the channel log.
     static let taskCompletedAccent = Color(red: 0.85, green: 0.65, blue: 0.13)
+    /// Accent for task-acknowledged banners in the channel log.
+    static let taskAcknowledgedAccent = Color.cyan
+    /// Accent for task-update banners in the channel log.
+    static let taskUpdateAccent = Color.orange
 
     /// Returns the color for a given channel message sender.
     static func color(for sender: ChannelMessage.Sender) -> Color {
@@ -59,6 +63,7 @@ enum TaskStatusBadge {
         case .failed: return .red
         case .paused: return .indigo
         case .awaitingReview: return .orange
+        case .interrupted: return .yellow
         }
     }
 
@@ -70,6 +75,7 @@ enum TaskStatusBadge {
         case .failed: return "xmark.circle.fill"
         case .paused: return "pause.circle.fill"
         case .awaitingReview: return "eye.circle.fill"
+        case .interrupted: return "exclamationmark.circle.fill"
         }
     }
 }

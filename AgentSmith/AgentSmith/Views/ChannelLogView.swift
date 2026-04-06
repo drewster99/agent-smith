@@ -91,6 +91,12 @@ struct ChannelLogView: View {
                                 // Folded into a tool_request row — don't render standalone
                             } else if case .string(let kind) = message.metadata?["messageKind"], kind == "agent_online" {
                                 // Agent online announcements are internal coordination messages
+                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_acknowledged" {
+                                TaskAcknowledgedBanner(
+                                    title: message.content,
+                                    timestamp: message.timestamp
+                                )
+                                    .id(message.id)
                             } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_created" {
                                 TaskCreatedBanner(
                                     title: message.content,
@@ -100,6 +106,14 @@ struct ChannelLogView: View {
                                     contextPriorTasks: message.stringMetadata("contextPriorTasks"),
                                     memoryCount: message.intMetadata("contextMemoryCount") ?? 0,
                                     priorTaskCount: message.intMetadata("contextPriorTaskCount") ?? 0
+                                )
+                                    .id(message.id)
+                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_update" {
+                                TaskUpdateBanner(
+                                    content: message.content,
+                                    senderName: message.sender.displayName,
+                                    recipientName: message.recipient?.displayName,
+                                    timestamp: message.timestamp
                                 )
                                     .id(message.id)
                             } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_completed" {
@@ -388,8 +402,7 @@ private struct MessageRow: View {
                 standaloneToolOutput
             } else if isSecurityReview {
                 // Standalone security review (no parent tool_request found — edge case)
-                Text(message.content)
-                    .font(AppFonts.channelBody)
+                MarkdownText(content: message.content, baseFont: AppFonts.channelBody)
                     .foregroundStyle(securityReviewColor)
             } else if let maxLines = defaultMaxLines {
                 collapsibleMessageBody(maxLines: maxLines)
@@ -560,8 +573,7 @@ private struct MessageRow: View {
 
         // Disposition comment (for WARN/UNSAFE/ABORT)
         if let comment = dispositionComment {
-            Text(comment)
-                .font(AppFonts.channelBody.italic())
+            MarkdownText(content: comment, baseFont: AppFonts.channelBody.italic())
                 .foregroundStyle(dispositionCommentColor)
                 .padding(.leading, 12)
         }
@@ -669,8 +681,7 @@ private struct MessageRow: View {
 
         // Disposition comment (for WARN/UNSAFE/ABORT) — always shown in full
         if let comment = dispositionComment {
-            Text(comment)
-                .font(AppFonts.channelBody.italic())
+            MarkdownText(content: comment, baseFont: AppFonts.channelBody.italic())
                 .foregroundStyle(dispositionCommentColor)
                 .padding(.leading, 12)
         }
@@ -859,8 +870,7 @@ private struct TaskCreatedBanner: View {
                 .padding(.bottom, description != nil || hasContext ? 2 : 6)
 
             if let description {
-                Text(description)
-                    .font(AppFonts.channelBody.italic())
+                MarkdownText(content: description, baseFont: AppFonts.channelBody.italic())
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 10)
@@ -1013,6 +1023,103 @@ private struct TaskCompletedBanner: View {
         return mins > 0 ? "\(hours)h \(mins)m" : "\(hours)h"
     }
 
+}
+
+/// Banner for task_acknowledged messages in the channel log, styled like task created/completed.
+private struct TaskAcknowledgedBanner: View {
+    let title: String
+    let timestamp: Date
+
+    private let accentColor = AppColors.taskAcknowledgedAccent
+
+    var body: some View {
+        VStack(spacing: 0) {
+            accentColor.frame(height: 1).opacity(0.4)
+
+            HStack(spacing: 8) {
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(accentColor)
+
+                Text("Task Acknowledged")
+                    .font(AppFonts.channelSender)
+                    .foregroundStyle(accentColor)
+
+                Spacer()
+
+                Text(sharedTimestampFormatter.string(from: timestamp))
+                    .font(AppFonts.channelTimestamp)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+
+            Text(title)
+                .font(AppFonts.channelBody.bold())
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 6)
+
+            accentColor.frame(height: 1).opacity(0.4)
+        }
+        .background(accentColor.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .padding(.vertical, 4)
+    }
+}
+
+/// Small banner for task_update messages in the channel log.
+private struct TaskUpdateBanner: View {
+    let content: String
+    let senderName: String
+    let recipientName: String?
+    let timestamp: Date
+
+    private let accentColor = AppColors.taskUpdateAccent
+
+    var body: some View {
+        VStack(spacing: 0) {
+            accentColor.frame(height: 1).opacity(0.4)
+
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 12))
+                    .foregroundStyle(accentColor)
+
+                Text("Task Update")
+                    .font(AppFonts.channelSender)
+                    .foregroundStyle(accentColor)
+
+                if let recipientName {
+                    Text("\(senderName) \u{2192} \(recipientName)")
+                        .font(AppFonts.channelTimestamp)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(sharedTimestampFormatter.string(from: timestamp))
+                    .font(AppFonts.channelTimestamp)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+
+            MarkdownText(content: content, baseFont: AppFonts.channelBody)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 6)
+
+            accentColor.frame(height: 1).opacity(0.4)
+        }
+        .background(accentColor.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .padding(.vertical, 4)
+    }
 }
 
 /// Green mini-banner for memory save/search events in the channel log.

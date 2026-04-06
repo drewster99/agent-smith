@@ -41,6 +41,13 @@ final class AppViewModel {
     }() {
         didSet { UserDefaults.standard.set(autoRunNextTask, forKey: "autoRunNextTask") }
     }
+    /// Whether interrupted tasks are automatically resumed on launch.
+    var autoRunInterruptedTasks: Bool = {
+        if UserDefaults.standard.object(forKey: "autoRunInterruptedTasks") == nil { return false }
+        return UserDefaults.standard.bool(forKey: "autoRunInterruptedTasks")
+    }() {
+        didSet { UserDefaults.standard.set(autoRunInterruptedTasks, forKey: "autoRunInterruptedTasks") }
+    }
     var isRunning = false
     var isAborted = false
     var abortReason = ""
@@ -203,6 +210,25 @@ final class AppViewModel {
 
         do {
             var savedTasks = try await persistenceManager.loadTasks()
+            // Mark any tasks that were running when the app last exited as interrupted.
+            var anyStatusChanged = false
+            for i in savedTasks.indices {
+                if savedTasks[i].status == .running {
+                    savedTasks[i].status = .interrupted
+                    savedTasks[i].updatedAt = Date()
+                    anyStatusChanged = true
+                }
+            }
+            // If auto-run interrupted tasks is enabled, promote them to pending so Smith picks them up.
+            if autoRunInterruptedTasks {
+                for i in savedTasks.indices {
+                    if savedTasks[i].status == .interrupted {
+                        savedTasks[i].status = .pending
+                        savedTasks[i].updatedAt = Date()
+                        anyStatusChanged = true
+                    }
+                }
+            }
             // Archive any completed tasks that have been sitting for more than 4 hours.
             let cutoff = Date().addingTimeInterval(-4 * 3600)
             var anyArchived = false
@@ -215,7 +241,7 @@ final class AppViewModel {
                 }
             }
             tasks = savedTasks
-            if anyArchived { persistTasks() }
+            if anyArchived || anyStatusChanged { persistTasks() }
 
             // Populate a standalone task store immediately so task operations (archive, delete, etc.)
             // work even before the user starts the runtime. start() will replace this with the

@@ -10,8 +10,8 @@ public struct ListTasksTool: AgentTool {
         "properties": .dictionary([
             "status_filter": .dictionary([
                 "type": .string("string"),
-                "description": .string("Optional filter: 'pending', 'running', 'paused', 'completed', 'failed', or 'awaitingReview'. Omit to list all tasks."),
-                "enum": .array([.string("pending"), .string("running"), .string("paused"), .string("completed"), .string("failed"), .string("awaitingReview")])
+                "description": .string("Optional filter: 'pending', 'running', 'paused', 'completed', 'failed', 'awaitingReview', or 'interrupted'. Omit to list all tasks."),
+                "enum": .array([.string("pending"), .string("running"), .string("paused"), .string("completed"), .string("failed"), .string("awaitingReview"), .string("interrupted")])
             ])
         ]),
         "required": .array([])
@@ -28,7 +28,7 @@ public struct ListTasksTool: AgentTool {
 
         if case .string(let filterValue) = arguments["status_filter"] {
             guard let status = AgentTask.Status(rawValue: filterValue) else {
-                return "Invalid status_filter: '\(filterValue)'. Valid values: pending, running, paused, awaitingReview, completed, failed"
+                return "Invalid status_filter: '\(filterValue)'. Valid values: pending, running, paused, awaitingReview, completed, failed, interrupted"
             }
             tasks = tasks.filter { $0.status == status }
         }

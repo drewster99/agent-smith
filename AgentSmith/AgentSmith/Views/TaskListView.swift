@@ -131,6 +131,8 @@ private struct ActiveTaskRow: View {
     let task: AgentTask
     let viewModel: AppViewModel
 
+    @State private var rotation: Double = 0
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: TaskStatusBadge.icon(for: task.status))
@@ -138,6 +140,19 @@ private struct ActiveTaskRow: View {
                 .imageScale(.medium)
                 .frame(width: 18)
                 .padding(.top, 2)
+                .rotationEffect(task.status == .running ? .degrees(rotation) : .zero)
+                .task(id: task.status) {
+                    guard task.status == .running else {
+                        rotation = 0
+                        return
+                    }
+                    while !Task.isCancelled {
+                        withAnimation(.linear(duration: 3)) {
+                            rotation += 360
+                        }
+                        try? await Task.sleep(for: .seconds(3))
+                    }
+                }
 
             VStack(alignment: .leading, spacing: 3) {
                 // Title row — spans full width; running tasks get inline controls on the right.
@@ -242,7 +257,7 @@ private struct ActiveTaskRow: View {
             case .awaitingReview:
                 EmptyView()
 
-            case .pending, .paused:
+            case .pending, .paused, .interrupted:
                 Button(action: { Task { await viewModel.archiveTask(id: task.id) } }, label: {
                     Label("Archive", systemImage: "archivebox")
                 })

@@ -3,7 +3,7 @@ import Foundation
 /// Allows Smith to run an existing pending or paused task without duplicating it.
 public struct RunTaskTool: AgentTool {
     public let name = "run_task"
-    public let toolDescription = "Run an existing pending or paused task. Restarts with a clean context and auto-spawns Brown+Jones. The `instructions` field is REQUIRED — include any updates, permissions, scope changes, or clarifications from the user. These are appended to the task description and survive the restart.\nIMPORTANT: One one task can run at a time. Calling `run_task` will STOP any currently executing task."
+    public let toolDescription = "Run an existing pending, paused, or interrupted task. Restarts with a clean context and auto-spawns Brown+Jones. The `instructions` field is REQUIRED — include any updates, permissions, scope changes, or clarifications from the user. These are appended to the task description and survive the restart.\nIMPORTANT: Only one task can run at a time. Calling `run_task` will STOP any currently executing task."
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
@@ -36,9 +36,9 @@ public struct RunTaskTool: AgentTool {
         guard let task = await context.taskStore.task(id: taskID) else {
             return "No task found with ID \(taskID). Use `list_tasks` to see available tasks."
         }
-        guard task.status == .pending || task.status == .paused else {
+        guard task.status.isRunnable else {
             return """
-                Task '\(task.title)' has status '\(task.status.rawValue)' — run_task only works on pending or paused tasks. \
+                Task '\(task.title)' has status '\(task.status.rawValue)' — run_task only works on pending, paused, or interrupted tasks. \
                 Use list_tasks to check current statuses, or create_task if you need a new task.
                 """
         }

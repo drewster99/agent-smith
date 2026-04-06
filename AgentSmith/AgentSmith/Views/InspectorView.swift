@@ -99,6 +99,7 @@ private struct AgentCard: View {
 
     @Environment(\.openWindow) private var openWindow
     @State private var expanded = true
+    @State private var processingStartDate: Date?
     @State private var showingConfig = false
     @State private var expandedTurnIDs: Set<UUID> = []
 
@@ -196,6 +197,9 @@ private struct AgentCard: View {
                                 Text(role == .jones ? "Evaluating" : "Thinking")
                                     .font(AppFonts.inspectorLabel)
                                     .foregroundStyle(.secondary)
+                                if let start = processingStartDate {
+                                    ThinkingElapsedTime(since: start, font: AppFonts.inspectorLabel)
+                                }
                             }
                         } else if hasActivity {
                             if role != .jones && availableTools.isEmpty && !contextMessages.isEmpty {
@@ -359,6 +363,30 @@ private struct AgentCard: View {
                     onUpdateMaxToolCalls(maxCalls)
                 }
             )
+        }
+        .onAppear { if isProcessing { processingStartDate = Date() } }
+        .onChange(of: isProcessing) { _, newValue in
+            processingStartDate = newValue ? Date() : nil
+        }
+    }
+}
+
+// MARK: - Shared Views
+
+/// Shows elapsed time (MM:SS) after 5 seconds of processing. Updates every second.
+struct ThinkingElapsedTime: View {
+    let since: Date
+    let font: Font
+
+    var body: some View {
+        TimelineView(.periodic(from: since, by: 1)) { timeline in
+            let elapsed = Int(timeline.date.timeIntervalSince(since))
+            if elapsed >= 5 {
+                Text(String(format: "%02d:%02d", elapsed / 60, elapsed % 60))
+                    .font(font)
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+            }
         }
     }
 }

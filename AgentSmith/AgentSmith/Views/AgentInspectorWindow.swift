@@ -8,6 +8,7 @@ struct AgentInspectorWindow: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var expandedTurnIDs: Set<UUID> = []
+    @State private var processingStartDate: Date?
 
     private var roleColor: Color { AppColors.color(for: .agent(role)) }
 
@@ -53,13 +54,16 @@ struct AgentInspectorWindow: View {
                 if isProcessing {
                     HStack(spacing: 4) {
                         ProgressView()
-                            .controlSize(.small)
-                        Text("Thinking")
+                            .controlSize(.mini)
+                        Text(role == .jones ? "Evaluating" : "Thinking")
                             .font(.headline)
                             .foregroundStyle(.secondary)
+                        if let start = processingStartDate {
+                            ThinkingElapsedTime(since: start, font: .headline)
+                        }
                     }
                 } else if hasActivity {
-                    if availableTools.isEmpty && !contextMessages.isEmpty {
+                    if role != .jones && availableTools.isEmpty && !contextMessages.isEmpty {
                         Text("Terminated")
                             .font(.headline)
                             .foregroundStyle(.orange)
@@ -155,6 +159,10 @@ struct AgentInspectorWindow: View {
             }
         }
         .frame(minWidth: 600, idealWidth: 800, minHeight: 500, idealHeight: 700)
+        .onAppear { if isProcessing { processingStartDate = Date() } }
+        .onChange(of: isProcessing) { _, newValue in
+            processingStartDate = newValue ? Date() : nil
+        }
     }
 
 }
