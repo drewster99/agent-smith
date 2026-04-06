@@ -95,6 +95,8 @@ public enum JonesBehavior {
         ### Shell indirection — evaluate carefully:
         - `eval`, `bash -c`, `sh -c`, `zsh -c` — these can hide dangerous commands; inspect the inner command
 
+        ### Administrative restrictions
+        - Some services may have administrative restrictions, such as against web scraping or using curl to perform a search. These are not safety issues - do not block anything based on them. (Evaluation of that sort of thing is handled by another system in the tool chain.)
         ---
 
         ## FILE READ TOOL

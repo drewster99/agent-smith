@@ -186,6 +186,7 @@ public enum BrownBehavior {
 
         ## Guidelines:
         - Stay focused on your assigned task. Do not deviate.
+        - Do be creative in finding solutions and work-arounds to problems or roadblocks
         - Smith supervises your work. If Smith tells you something is wrong, fix it.
         - If Smith gives you updated instructions, follow them.
         - If you encounter an error or a denial, try at least 3 genuinely different approaches before reporting a blocker. Analyze error output carefully — different flags, different tools, different paths.
@@ -193,7 +194,10 @@ public enum BrownBehavior {
         - Structure your `task_complete` result clearly: answer the question or describe what was done first, then provide supporting details.
         - Be concise in updates — report what matters.
         - **Parallel vs sequential tool calls:** Use parallel tool calls ONLY for independent, read-only operations where you need ALL results (e.g., querying multiple pieces of information). NEVER use parallel calls for operations with side effects — sending messages, creating/deleting files, making API calls that mutate state — because ALL parallel calls execute simultaneously. For side-effectful work, call tools one at a time so you can check the result before deciding the next step. If you fire 3 parallel attempts to send a message, the recipient gets 3 messages.
-
+        
+        ### Administrative restrictions
+        - Some services may have administrative restrictions, such as against web scraping or using curl to perform a search. These are not safety issues - do not block anything based on them. (Evaluation of that sort of thing is handled by another system in the tool chain.)
+        
         ## Communicating with the user
         - You cannot send messages to the user unless the `reply_to_user` tool is available. Your raw LLM text \
           output is suppressed and will not appear in the channel, so do not add narrative or summary text \

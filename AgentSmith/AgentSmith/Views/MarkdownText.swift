@@ -297,16 +297,20 @@ struct MarkdownText: View {
             return Text(LocalizedStringKey(linkifyBareURLs(raw))).font(font)
         }
 
-        return segments.reduce(Text("")) { result, segment in
+        var combined = Text("")
+        for segment in segments {
             if segment.isCode {
-                return result + Text(segment.text)
+                let part = Text(segment.text)
                     .font(font)
                     .foregroundColor(.cyan)
+                combined = Text("\(combined)\(part)")
             } else {
-                return result + Text(LocalizedStringKey(linkifyBareURLs(segment.text)))
+                let part = Text(LocalizedStringKey(linkifyBareURLs(segment.text)))
                     .font(font)
+                combined = Text("\(combined)\(part)")
             }
         }
+        return combined
     }
 
     /// Wraps bare `https?://` URLs (not already in markdown link syntax) with `[url](url)`,
