@@ -39,7 +39,7 @@ public struct TaskUpdateTool: AgentTool {
         }
 
         let guidance = """
-            [System] Agent Brown has sent the task update above. Review it closely in the \
+            [System] Agent Brown has sent the task update above. Scrutinize EVERY piece of it closely in the \
             context of the user's intent and the task description. Make sure Brown is on track \
             and hasn't veered off course. Offer assistance or helpful suggestions if you can, \
             but do not reply if you have nothing meaningful to add.
