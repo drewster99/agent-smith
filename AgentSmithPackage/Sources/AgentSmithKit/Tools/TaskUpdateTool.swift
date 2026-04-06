@@ -38,11 +38,18 @@ public struct TaskUpdateTool: AgentTool {
             return "Agent Smith is not available."
         }
 
+        let guidance = """
+            [System] Agent Brown has sent the task update above. Review it closely in the \
+            context of the user's intent and the task description. Make sure Brown is on track \
+            and hasn't veered off course. Offer assistance or helpful suggestions if you can, \
+            but do not reply if you have nothing meaningful to add.
+            """
+
         await context.channel.post(ChannelMessage(
             sender: .agent(context.agentRole),
             recipientID: smithID,
             recipient: .agent(.smith),
-            content: "Task update for '\(task.title)': \(message)",
+            content: "Task update for '\(task.title)': \(message)\n\n\(guidance)",
             metadata: ["messageKind": .string("task_update")]
         ))
 
