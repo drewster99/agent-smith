@@ -8,6 +8,7 @@ struct TaskDetailWindow: View {
     @Environment(\.dismiss) private var dismiss
     @State private var isEditingDescription = false
     @State private var editedDescription = ""
+    @State private var recentlyCopiedSection: String?
 
     /// Live task looked up from the view model on each render, so updates are reflected.
     private var task: AgentTask? {
@@ -56,8 +57,10 @@ struct TaskDetailWindow: View {
 
                 // MARK: Description
                 HStack {
-                    sectionHeader("Description")
+                    Text("Description")
+                        .font(.title3.bold())
                     Spacer()
+                    copyButton(text: task.description, id: "description")
                     if isDescriptionEditable && !isEditingDescription {
                         Button {
                             editedDescription = task.description
@@ -104,7 +107,7 @@ struct TaskDetailWindow: View {
                 // MARK: Commentary
                 if let commentary = task.commentary, !commentary.isEmpty {
                     Divider()
-                    sectionHeader("Commentary")
+                    sectionHeader("Commentary", copyText: commentary)
                     MarkdownText(content: commentary, baseFont: .body)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -112,7 +115,7 @@ struct TaskDetailWindow: View {
                 // MARK: Updates
                 if !task.updates.isEmpty {
                     Divider()
-                    sectionHeader("Updates")
+                    sectionHeader("Updates", copyText: Self.formattedUpdates(task.updates))
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(Array(task.updates.enumerated()), id: \.offset) { _, update in
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -131,7 +134,7 @@ struct TaskDetailWindow: View {
                 // MARK: Result
                 if let result = task.result, !result.isEmpty {
                     Divider()
-                    sectionHeader("Result")
+                    sectionHeader("Result", copyText: result)
                     MarkdownText(content: result, baseFont: .body)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -139,7 +142,7 @@ struct TaskDetailWindow: View {
                 // MARK: Summary
                 if let summary = task.summary, !summary.isEmpty {
                     Divider()
-                    sectionHeader("Summary")
+                    sectionHeader("Summary", copyText: summary)
                     MarkdownText(content: summary, baseFont: .body)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -151,7 +154,7 @@ struct TaskDetailWindow: View {
                 // MARK: Relevant Context
                 if Self.hasRelevantContext(task) {
                     Divider()
-                    sectionHeader("Context Retrieved at Creation")
+                    sectionHeader("Context Retrieved at Creation", copyText: Self.formattedContext(task))
 
                     if let memories = task.relevantMemories, !memories.isEmpty {
                         Text("Memories")
@@ -255,9 +258,36 @@ struct TaskDetailWindow: View {
             .gridColumnAlignment(.trailing)
     }
 
-    private func sectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.title3.bold())
+    private func sectionHeader(_ title: String, copyText: String? = nil) -> some View {
+        HStack {
+            Text(title)
+                .font(.title3.bold())
+            Spacer()
+            if let copyText, !copyText.isEmpty {
+                copyButton(text: copyText, id: title)
+            }
+        }
+    }
+
+    private func copyButton(text: String, id: String? = nil) -> some View {
+        let sectionID = id ?? text
+        return Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            recentlyCopiedSection = sectionID
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                if recentlyCopiedSection == sectionID {
+                    recentlyCopiedSection = nil
+                }
+            }
+        } label: {
+            Image(systemName: recentlyCopiedSection == sectionID ? "checkmark" : "doc.on.doc")
+                .font(.callout)
+                .foregroundStyle(recentlyCopiedSection == sectionID ? .green : .secondary)
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .buttonStyle(.plain)
+        .help("Copy to clipboard")
     }
 
     /// Whether the task has any relevant memories or prior task summaries attached.
@@ -265,6 +295,33 @@ struct TaskDetailWindow: View {
         let hasMemories = task.relevantMemories.map { !$0.isEmpty } ?? false
         let hasPriorTasks = task.relevantPriorTasks.map { !$0.isEmpty } ?? false
         return hasMemories || hasPriorTasks
+    }
+
+    // MARK: - Copy text formatters
+
+    private static func formattedUpdates(_ updates: [AgentTask.TaskUpdate]) -> String {
+        updates.map { update in
+            "[\(update.date.formatted(date: .omitted, time: .standard))] \(update.message)"
+        }.joined(separator: "\n")
+    }
+
+    private static func formattedContext(_ task: AgentTask) -> String {
+        var parts: [String] = []
+        if let memories = task.relevantMemories, !memories.isEmpty {
+            parts.append("Memories:")
+            for memory in memories {
+                parts.append("  \(String(format: "%.0f%%", memory.similarity * 100)) — \(memory.content)")
+            }
+        }
+        if let priorTasks = task.relevantPriorTasks, !priorTasks.isEmpty {
+            if !parts.isEmpty { parts.append("") }
+            parts.append("Prior Tasks:")
+            for prior in priorTasks {
+                parts.append("  \(prior.title) (\(String(format: "%.0f%%", prior.similarity * 100)))")
+                parts.append("  \(prior.summary)")
+            }
+        }
+        return parts.joined(separator: "\n")
     }
 
     // MARK: - Elapsed time
