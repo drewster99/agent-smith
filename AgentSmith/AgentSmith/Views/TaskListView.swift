@@ -29,8 +29,12 @@ struct TaskListView: View {
             VStack(alignment: .leading, spacing: 0) {
                 // Active task rows
                 ForEach(activeTasks) { task in
-                    ActiveTaskRow(task: task, viewModel: viewModel)
-                        .onTapGesture { openWindow(value: task.id) }
+                    Button {
+                        openWindow(value: task.id)
+                    } label: {
+                        ActiveTaskRow(task: task, viewModel: viewModel)
+                    }
+                    .buttonStyle(.plain)
                     Divider()
                 }
 
@@ -69,8 +73,12 @@ struct TaskListView: View {
                 if showArchived && !archivedTasks.isEmpty {
                     TaskSectionHeader(title: "Archived")
                     ForEach(archivedTasks) { task in
-                        ArchivedTaskRow(task: task, viewModel: viewModel)
-                            .onTapGesture { openWindow(value: task.id) }
+                        Button {
+                            openWindow(value: task.id)
+                        } label: {
+                            ArchivedTaskRow(task: task, viewModel: viewModel)
+                        }
+                        .buttonStyle(.plain)
                         Divider()
                     }
                 }
@@ -79,8 +87,12 @@ struct TaskListView: View {
                 if showDeleted && !deletedTasks.isEmpty {
                     TaskSectionHeader(title: "Recently Deleted")
                     ForEach(deletedTasks) { task in
-                        DeletedTaskRow(task: task, viewModel: viewModel)
-                            .onTapGesture { openWindow(value: task.id) }
+                        Button {
+                            openWindow(value: task.id)
+                        } label: {
+                            DeletedTaskRow(task: task, viewModel: viewModel)
+                        }
+                        .buttonStyle(.plain)
                         Divider()
                     }
                 }

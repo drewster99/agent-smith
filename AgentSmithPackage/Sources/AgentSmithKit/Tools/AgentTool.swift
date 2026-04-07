@@ -25,15 +25,15 @@ public struct ToolAvailabilityContext: Sendable {
     public let lastDirectUserMessageAt: Date?
     /// The role of the agent whose tools are being evaluated.
     public let agentRole: AgentRole
-    /// Whether the task store contains any active tasks with pending or paused status.
-    public let hasPendingOrPausedTasks: Bool
+    /// Whether the task store contains any active tasks with a runnable status (pending, paused, or interrupted).
+    public let hasRunnableTasks: Bool
     /// Whether the task store contains any active tasks with awaitingReview status.
     public let hasAwaitingReviewTasks: Bool
 
-    public init(lastDirectUserMessageAt: Date? = nil, agentRole: AgentRole, hasPendingOrPausedTasks: Bool = false, hasAwaitingReviewTasks: Bool = false) {
+    public init(lastDirectUserMessageAt: Date? = nil, agentRole: AgentRole, hasRunnableTasks: Bool = false, hasAwaitingReviewTasks: Bool = false) {
         self.lastDirectUserMessageAt = lastDirectUserMessageAt
         self.agentRole = agentRole
-        self.hasPendingOrPausedTasks = hasPendingOrPausedTasks
+        self.hasRunnableTasks = hasRunnableTasks
         self.hasAwaitingReviewTasks = hasAwaitingReviewTasks
     }
 }

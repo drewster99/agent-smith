@@ -23,7 +23,7 @@ public struct RunTaskTool: AgentTool {
     public init() {}
 
     public func isAvailable(in context: ToolAvailabilityContext) -> Bool {
-        context.hasPendingOrPausedTasks && context.agentRole == .smith
+        context.hasRunnableTasks && context.agentRole == .smith
     }
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {

@@ -103,7 +103,7 @@ public actor TaskStore {
     }
 
     /// Replaces a task's description entirely.
-    /// Only allowed for pending or paused tasks.
+    /// Only allowed for runnable tasks (pending, paused, or interrupted).
     /// Returns true if the update succeeded, false if the task wasn't found or status doesn't allow editing.
     @discardableResult
     public func updateDescription(id: UUID, description: String) -> Bool {

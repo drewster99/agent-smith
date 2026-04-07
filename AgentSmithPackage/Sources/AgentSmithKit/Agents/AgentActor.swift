@@ -330,7 +330,7 @@ public actor AgentActor {
                 let availabilityContext = ToolAvailabilityContext(
                     lastDirectUserMessageAt: lastDirectUserMessageAt,
                     agentRole: configuration.role,
-                    hasPendingOrPausedTasks: hasRunnableTasks,
+                    hasRunnableTasks: hasRunnableTasks,
                     hasAwaitingReviewTasks: hasAwaitingReview
                 )
                 let toolDefinitions = tools

@@ -271,20 +271,25 @@ struct TaskDetailWindow: View {
 
     private func copyButton(text: String, id: String? = nil) -> some View {
         let sectionID = id ?? text
+        let isCopied = recentlyCopiedSection == sectionID
         return Button {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
-            recentlyCopiedSection = sectionID
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            withAnimation {
+                recentlyCopiedSection = sectionID
+            }
+            Task {
+                try? await Task.sleep(for: .seconds(1.5))
                 if recentlyCopiedSection == sectionID {
-                    recentlyCopiedSection = nil
+                    withAnimation {
+                        recentlyCopiedSection = nil
+                    }
                 }
             }
         } label: {
-            Image(systemName: recentlyCopiedSection == sectionID ? "checkmark" : "doc.on.doc")
+            Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
                 .font(.callout)
-                .foregroundStyle(recentlyCopiedSection == sectionID ? .green : .secondary)
-                .contentTransition(.symbolEffect(.replace))
+                .foregroundStyle(isCopied ? .green : .secondary)
         }
         .buttonStyle(.plain)
         .help("Copy to clipboard")

@@ -242,6 +242,11 @@ public actor TaskSummarizer {
     /// Uses 80% of the context window (in tokens, converted to chars) minus overhead
     /// for the system prompt and other prompt sections. This gives the summarizer as
     /// much detail as the model can handle.
+    ///
+    /// We intentionally ignore `maxOutputTokens` here: the summarizer produces only a
+    /// few sentences, so the configured max output (often 4K–8K) far exceeds actual
+    /// usage. Subtracting it from the input budget would needlessly shrink the result
+    /// text we can feed in. The 20% headroom is more than sufficient.
     private var resultCharBudget: Int {
         let inputTokenBudget = contextWindowSize * 4 / 5  // 80% of full context window
         // Conservative estimate: ~3 characters per token

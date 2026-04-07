@@ -265,7 +265,7 @@ struct ModelConfigurationEditorView: View {
                             .foregroundStyle(.secondary)
                     }
                     if let pricing = model.pricing, pricing.base.hasAnyRate {
-                        Text(pricingSummary(pricing))
+                        Text(PricingFormatter.summary(pricing))
                             .foregroundStyle(.green)
                     }
                 }
@@ -299,7 +299,7 @@ struct ModelConfigurationEditorView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 3))
             }
             if let pricing = info.pricing, pricing.base.hasAnyRate {
-                Text(pricingSummary(pricing))
+                Text(PricingFormatter.summary(pricing))
                     .foregroundStyle(.green)
             }
         }
@@ -349,33 +349,6 @@ struct ModelConfigurationEditorView: View {
         streaming = false
     }
 
-    /// Compact pricing summary string for display.
-    private func pricingSummary(_ pricing: ModelPricing) -> String {
-        var parts: [String] = []
-        if let input = pricing.base.input {
-            parts.append("\(formatCostPerMillion(input * 1_000_000)) in")
-        }
-        if let output = pricing.base.output {
-            parts.append("\(formatCostPerMillion(output * 1_000_000)) out")
-        }
-        guard !parts.isEmpty else { return "" }
-        var result = parts.joined(separator: " / ") + " per M"
-        if !pricing.tokenThresholdTiers.isEmpty {
-            result += " (tiered)"
-        }
-        return result
-    }
-
-    /// Formats a cost-per-million-tokens value as a compact dollar string.
-    private func formatCostPerMillion(_ cost: Double) -> String {
-        if cost < 0.01 {
-            return String(format: "$%.4f", cost)
-        } else if cost < 1 {
-            return String(format: "$%.2f", cost)
-        } else {
-            return String(format: "$%.1f", cost)
-        }
-    }
 
     private func save() {
         let supportsThinking = selectedProviderAPIType == .anthropic || selectedProviderAPIType == .alibabaCloud

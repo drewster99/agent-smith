@@ -1,5 +1,6 @@
 import SwiftUI
 import AgentSmithKit
+import SwiftLLMKit
 
 /// Centralized color definitions with semantic names.
 enum AppColors {
@@ -51,6 +52,37 @@ enum AppFonts {
     static let markdownH3 = Font.system(.headline, design: .default, weight: .bold)
     static let inspectorLabel = Font.system(.caption, design: .monospaced)
     static let inspectorBody = Font.system(.caption2, design: .monospaced)
+}
+
+/// Pricing display formatting.
+enum PricingFormatter {
+    /// Compact pricing summary string for display (e.g., "$3.00 in / $15.0 out per M").
+    static func summary(_ pricing: ModelPricing) -> String {
+        var parts: [String] = []
+        if let input = pricing.base.input {
+            parts.append("\(costPerMillion(input * 1_000_000)) in")
+        }
+        if let output = pricing.base.output {
+            parts.append("\(costPerMillion(output * 1_000_000)) out")
+        }
+        guard !parts.isEmpty else { return "" }
+        var result = parts.joined(separator: " / ") + " per M"
+        if !pricing.tokenThresholdTiers.isEmpty {
+            result += " (tiered)"
+        }
+        return result
+    }
+
+    /// Formats a cost-per-million-tokens value as a compact dollar string.
+    static func costPerMillion(_ cost: Double) -> String {
+        if cost < 0.01 {
+            return String(format: "$%.4f", cost)
+        } else if cost < 1 {
+            return String(format: "$%.2f", cost)
+        } else {
+            return String(format: "$%.1f", cost)
+        }
+    }
 }
 
 /// Task status badge styling.

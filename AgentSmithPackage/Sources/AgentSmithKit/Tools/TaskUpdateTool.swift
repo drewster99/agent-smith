@@ -38,19 +38,22 @@ public struct TaskUpdateTool: AgentTool {
             return "Agent Smith is not available."
         }
 
-        let guidance = """
-            [System] Agent Brown has sent the task update above. Scrutinize EVERY piece of it closely in the \
-            context of the user's intent and the task description. Make sure Brown is on track \
-            and hasn't veered off course. Offer assistance or helpful suggestions if you can, \
-            but do not reply if you have nothing meaningful to add.
-            """
-
+        // Post Brown's update as clean content — no system guidance embedded in it,
+        // so Brown cannot craft text that manipulates the guidance via prompt injection.
         await context.channel.post(ChannelMessage(
             sender: .agent(context.agentRole),
             recipientID: smithID,
             recipient: .agent(.smith),
-            content: "Task update for '\(task.title)': \(message)\n\n\(guidance)",
+            content: "Task update for '\(task.title)': \(message)",
             metadata: ["messageKind": .string("task_update")]
+        ))
+
+        // Post guidance as a separate system message so it cannot be influenced by Brown's text.
+        await context.channel.post(ChannelMessage(
+            sender: .system,
+            recipientID: smithID,
+            content: "Scrutinize Brown's task update above closely in the context of the user's intent and the task description. Make sure Brown is on track and hasn't veered off course. Offer assistance or helpful suggestions if you can, but do not reply if you have nothing meaningful to add.",
+            metadata: ["messageKind": .string("task_update_guidance")]
         ))
 
         return "Update sent to Agent Smith."

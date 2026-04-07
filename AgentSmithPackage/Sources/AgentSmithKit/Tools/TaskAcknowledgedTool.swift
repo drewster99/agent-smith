@@ -22,7 +22,7 @@ public struct TaskAcknowledgedTool: AgentTool {
             return "No active task assigned to you."
         }
 
-        guard task.status == .pending || task.status == .running || task.status == .interrupted || task.status == .paused else {
+        guard task.status.isRunnable || task.status == .running else {
             return "Task '\(task.title)' cannot be acknowledged in its current state (\(task.status.rawValue))."
         }
 

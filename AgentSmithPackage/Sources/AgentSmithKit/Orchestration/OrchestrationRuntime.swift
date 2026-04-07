@@ -53,8 +53,8 @@ public actor OrchestrationRuntime {
     private var providerAPITypes: [AgentRole: ProviderAPIType]
     private var agentTuning: [AgentRole: AgentTuningConfig]
     /// Whether Smith should automatically run the next pending task after completing one.
-    /// Mutable so the user can toggle it at runtime and have it take effect immediately.
-    public var autoAdvanceEnabled: Bool
+    /// Mutable so the user can toggle it at runtime via `setAutoAdvance(_:)`.
+    public private(set) var autoAdvanceEnabled: Bool
     /// Whether interrupted tasks should be auto-resumed on launch.
     private let autoRunInterruptedTasks: Bool
     /// Persistent token usage tracking across all agents.
@@ -248,11 +248,16 @@ public actor OrchestrationRuntime {
                 return false
             }
             // For system messages, only pass through diagnostics directly relevant to Smith:
-            // agent lifecycle events (errors, termination) and rate-limit notices.
-            // Drop startup/shutdown notices, monitoring summaries, approval statuses, etc.
+            // agent lifecycle events (errors, termination), rate-limit notices, and
+            // system guidance injected by tools (e.g., task_update_guidance).
             if case .system = message.sender {
-                let c = message.content
-                guard c.hasPrefix("Agent ") || c.hasPrefix("Rate limit:") else { return false }
+                if case .string(let kind) = message.metadata?["messageKind"],
+                   kind == "task_update_guidance" {
+                    // Always pass through — this is system guidance for Smith.
+                } else {
+                    let c = message.content
+                    guard c.hasPrefix("Agent ") || c.hasPrefix("Rate limit:") else { return false }
+                }
             }
             return true
         }

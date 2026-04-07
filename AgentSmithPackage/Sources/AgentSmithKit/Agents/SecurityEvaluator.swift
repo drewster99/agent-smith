@@ -55,9 +55,15 @@ public actor SecurityEvaluator {
     private var recentToolRequestSummaries: [String] = []
     private static let maxRecentToolRequests = 10
 
-    /// WARN retry tracking — an identical retry as the very next tool call is auto-approved.
-    private var lastWarnedToolName: String?
-    private var lastWarnedToolParams: [String: AnyCodable]?
+    /// WARN retry tracking — an identical retry of a WARN'd request is auto-approved.
+    /// Uses an array of pending retries instead of a single "last warned" slot so
+    /// concurrent evaluations don't clear each other's state.
+    private struct WarnedRequest {
+        let toolName: String
+        let toolParams: [String: AnyCodable]?
+    }
+    private var pendingWarnRetries: [WarnedRequest] = []
+    private static let maxPendingWarnRetries = 10
 
     /// Consecutive evaluation-level failures (each evaluation exhausted its retries).
     /// Triggers abort at threshold. Only incremented when a full evaluation fails,
@@ -136,17 +142,13 @@ public actor SecurityEvaluator {
         let parsedParams = Self.parseToolParams(toolParams)
 
         // Auto-approve identical retry of a WARN'd request.
-        if let warnedTool = lastWarnedToolName,
-           let warnedParams = lastWarnedToolParams,
-           warnedTool == toolName,
-           parsedParams == warnedParams {
-            lastWarnedToolName = nil
-            lastWarnedToolParams = nil
+        if let matchIndex = pendingWarnRetries.firstIndex(where: {
+            $0.toolName == toolName && $0.toolParams == parsedParams
+        }) {
+            pendingWarnRetries.remove(at: matchIndex)
             appendSummary("\(toolName) \(toolParams)", verdict: "SAFE (auto-approved retry of prior WARN)")
             return SecurityDisposition(approved: true, isAutoApproval: true)
         }
-        lastWarnedToolName = nil
-        lastWarnedToolParams = nil
 
         let evalPrompt = buildEvalPrompt(
             toolName: toolName,
@@ -469,8 +471,11 @@ public actor SecurityEvaluator {
         case "SAFE":
             return SecurityDisposition(approved: true, message: explanatoryText)
         case "WARN":
-            lastWarnedToolName = toolName
-            lastWarnedToolParams = parsedParams
+            pendingWarnRetries.append(WarnedRequest(toolName: toolName, toolParams: parsedParams))
+            // Cap the pending retries to prevent unbounded growth.
+            if pendingWarnRetries.count > Self.maxPendingWarnRetries {
+                pendingWarnRetries.removeFirst()
+            }
             let warnText = (explanatoryText ?? "") + "\nYour tool was not allowed to execute. Carefully consider the security response text above, in the context of the user's original intent (as given in the task description) and other actions taken and interactions and decide if you really want to call this tool. If you do, send *exactly* the same request again as your *very next* tool call, and it will be approved."
             return SecurityDisposition(approved: false, message: warnText, isWarning: true)
         case "UNSAFE":

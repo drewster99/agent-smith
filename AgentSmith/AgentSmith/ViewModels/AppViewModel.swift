@@ -603,7 +603,7 @@ final class AppViewModel {
         guard let taskStore else { return }
         let succeeded = await taskStore.updateDescription(id: id, description: description)
         if !succeeded {
-            taskActionError = "Only pending or paused tasks can be edited."
+            taskActionError = "Only pending, paused, or interrupted tasks can be edited."
         }
     }
 
