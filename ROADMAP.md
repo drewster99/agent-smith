@@ -289,6 +289,9 @@ A `SkillStore` (similar to `TaskStore`) manages in-memory state and persistence:
 
 **2. Skill execution as agent tools.** Expose skills as tools available to Smith or Brown, so agents can invoke skills programmatically. This would allow meta-workflows where one skill's output feeds into another, or where Smith can decide which skill to run based on the user's request. Design TBD — needs careful thought about recursion depth, argument resolution, and whether tool-invoked skills skip the run dialog.
 
+### Reject unavailable tool calls at execution time
+Tool availability is currently enforced only at the definition level — tools excluded by `isAvailable` are omitted from the tool list sent to the LLM, but if the LLM hallucinates a call to an unavailable tool, `AgentActor` still executes it (line ~606, lookup is against the full `tools` array, not the filtered `toolDefinitions`). Add an execution-level guard: before running a tool call, re-check `isAvailable` and return an error result (e.g. "Tool '\(name)' is not currently available") instead of executing. This is defense-in-depth — the LLM shouldn't call tools it wasn't offered, but when it does, the system should refuse rather than silently comply.
+
 ### Harden `isRetryableError` in TaskSummarizer
 `TaskSummarizer.isRetryableError` currently matches on `error.localizedDescription` strings (e.g. `hasPrefix("HTTP 429")`, regex for `^HTTP 5\d\d`). This works because `LLMProviderError.httpError` formats its description as `"HTTP \(code): \(body)"`, but it's fragile — if error wrapping or formatting changes, retries silently stop working. Replace with direct pattern matching on `LLMProviderError.httpError(statusCode:body:url:)` to check the status code as an integer.
 
