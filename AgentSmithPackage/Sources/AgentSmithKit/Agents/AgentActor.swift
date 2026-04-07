@@ -20,6 +20,9 @@ public actor AgentActor {
     private var usageStore: UsageStore?
     /// Captured before context pruning, emitted on the next UsageRecord.
     private var pendingPreResetTokens: Int?
+    /// Set after context pruning to prevent re-using stale token counts from `llmTurns`.
+    /// Cleared on the next successful LLM response.
+    private var lastUsageStale = false
 
     /// How long the idle loop waits between checks. Mutable so the user can adjust at runtime.
     private var pollInterval: TimeInterval
@@ -348,6 +351,7 @@ public actor AgentActor {
 
                 consecutiveErrors = 0
                 consecutiveContextOverflows = 0
+                lastUsageStale = false
                 let inputDelta = Array(conversationHistory[lastTurnMessageCount...])
                 lastTurnMessageCount = conversationHistory.count
                 let turnRecord = LLMTurnRecord(
@@ -1437,12 +1441,35 @@ public actor AgentActor {
     ///
     /// **Non-Brown agents** use a sliding-window prune that keeps ~35% of recent messages.
     private func pruneHistoryIfNeeded() async {
-        // ~3 characters per token as a conservative estimate.
-        // Include tool definitions and per-turn suffix overhead (not stored in history
-        // but sent with every API call and counted against the context window).
-        let estimatedTokens = (conversationHistory.reduce(0) {
-            $0 + $1.estimatedCharacterCount
-        } + apiOverheadChars) / 3
+        // Use actual token count from the last LLM response when available, plus a
+        // character-based estimate for messages added since that response. This is far
+        // more accurate than estimating the entire history at ~3 chars/token.
+        // Skip cached usage when stale (set after pruning, before the next LLM call).
+        let estimatedTokens: Int
+        if !lastUsageStale, let lastUsage = llmTurns.last?.usage {
+            // The provider told us exactly how many input tokens the last request used.
+            // We only need to estimate tokens for messages appended since that response
+            // (new tool results, user messages, etc.) plus the output tokens from that
+            // response (which become part of the conversation history going forward).
+            let messagesSinceLast = conversationHistory.count - lastTurnMessageCount
+            let deltaChars: Int
+            if messagesSinceLast > 0 {
+                deltaChars = conversationHistory.suffix(messagesSinceLast).reduce(0) {
+                    $0 + $1.estimatedCharacterCount
+                }
+            } else {
+                deltaChars = 0
+            }
+            estimatedTokens = lastUsage.inputTokens + lastUsage.outputTokens + deltaChars / 3
+        } else {
+            // No prior LLM response — fall back to pure character estimate.
+            // ~3 characters per token as a conservative estimate.
+            // Include tool definitions and per-turn suffix overhead (not stored in history
+            // but sent with every API call and counted against the context window).
+            estimatedTokens = (conversationHistory.reduce(0) {
+                $0 + $1.estimatedCharacterCount
+            } + apiOverheadChars) / 3
+        }
 
         // The input budget is the context window minus the output token reservation.
         // Without this subtraction, pruning triggers far too late for models where
@@ -1521,6 +1548,7 @@ public actor AgentActor {
         newHistory.append(contentsOf: conversationHistory[keepFromIndex...])
         conversationHistory = newHistory
         lastTurnMessageCount = conversationHistory.count
+        lastUsageStale = true
         pushLiveContext()
 
         let roleName = configuration.role.displayName
@@ -1585,6 +1613,7 @@ public actor AgentActor {
         newHistory.append(contentsOf: conversationHistory[keepFromIndex...])
         conversationHistory = newHistory
         lastTurnMessageCount = conversationHistory.count
+        lastUsageStale = true
         pushLiveContext()
 
         let roleName = configuration.role.displayName
@@ -1691,6 +1720,7 @@ public actor AgentActor {
 
         lastTurnMessageCount = conversationHistory.count
         llmTurns.removeAll()
+        lastUsageStale = true
         hasUnprocessedInput = true
         pushLiveContext()
 

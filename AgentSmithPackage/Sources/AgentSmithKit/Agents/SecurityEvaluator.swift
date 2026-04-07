@@ -142,13 +142,11 @@ public actor SecurityEvaluator {
            parsedParams == warnedParams {
             lastWarnedToolName = nil
             lastWarnedToolParams = nil
-            appendSummary("\(toolName) \(toolParams)")
+            appendSummary("\(toolName) \(toolParams)", verdict: "SAFE (auto-approved retry of prior WARN)")
             return SecurityDisposition(approved: true, isAutoApproval: true)
         }
         lastWarnedToolName = nil
         lastWarnedToolParams = nil
-
-        appendSummary("\(toolName) \(toolParams)")
 
         let evalPrompt = buildEvalPrompt(
             toolName: toolName,
@@ -244,6 +242,9 @@ public actor SecurityEvaluator {
             consecutiveEvaluationFailures = 0
             recordEvaluation(toolName: toolName, toolParams: toolParams, taskTitle: taskTitle, prompt: evalPrompt, response: responseText, disposition: disposition, startTime: startTime)
 
+            // Record the summary with the verdict (after evaluation, so we have the result).
+            appendSummary("\(toolName) \(toolParams)", verdict: Self.verdictSummary(from: responseText))
+
             // Handle ABORT — trigger system-wide shutdown.
             if !disposition.approved, let msg = disposition.message,
                responseText.trimmingCharacters(in: .whitespacesAndNewlines).uppercased().hasPrefix("ABORT") {
@@ -291,6 +292,7 @@ public actor SecurityEvaluator {
         )
         let recordedResponse = lastErrorDescription ?? "(parse failure)"
         recordEvaluation(toolName: toolName, toolParams: toolParams, taskTitle: taskTitle, prompt: evalPrompt, response: recordedResponse, disposition: fallback, startTime: startTime)
+        appendSummary("\(toolName) \(toolParams)", verdict: "UNSAFE (evaluation failed)")
         return fallback
     }
 
@@ -303,11 +305,22 @@ public actor SecurityEvaluator {
 
     // MARK: - Private
 
-    private func appendSummary(_ summary: String) {
-        recentToolRequestSummaries.append(summary)
+    private func appendSummary(_ summary: String, verdict: String) {
+        recentToolRequestSummaries.append("\(summary) → \(verdict)")
         if recentToolRequestSummaries.count > Self.maxRecentToolRequests {
             recentToolRequestSummaries.removeFirst()
         }
+    }
+
+    /// Extracts the verdict keyword and reasoning from Jones's raw response text,
+    /// stripping the WARN retry boilerplate that is only relevant to Brown.
+    private static func verdictSummary(from responseText: String) -> String {
+        let trimmed = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "(no response)" }
+        // Return the full first line (e.g. "SAFE reasonable file read for task context").
+        // Multi-line responses are truncated — the first line has the verdict + reasoning.
+        let firstLineEnd = trimmed.firstIndex(where: { $0 == "\n" || $0 == "\r" }) ?? trimmed.endIndex
+        return String(trimmed[trimmed.startIndex..<firstLineEnd])
     }
 
     private func recordEvaluation(toolName: String, toolParams: String, taskTitle: String?, prompt: String, response: String, disposition: SecurityDisposition, startTime: Date) {

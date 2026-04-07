@@ -127,7 +127,31 @@ public actor TaskSummarizer {
             If the memories contain conflicting information, prefer the newer memory. \
             Output ONLY the merged memory text — no headings, bullet points, or commentary.
             """
-        let userPrompt = "Existing memory:\n\(existing)\n\nNew memory:\n\(new)"
+
+        // Cap combined memory texts to 80% of the context window (same logic as
+        // resultCharBudget) so oversized inputs don't exceed the model's limit.
+        let budget = resultCharBudget
+        let cappedExisting: String
+        let cappedNew: String
+        if existing.count + new.count > budget {
+            // Give each half the budget, but let the shorter one use less.
+            let halfBudget = budget / 2
+            if existing.count <= halfBudget {
+                cappedExisting = existing
+                cappedNew = String(new.prefix(budget - existing.count))
+            } else if new.count <= halfBudget {
+                cappedNew = new
+                cappedExisting = String(existing.prefix(budget - new.count))
+            } else {
+                cappedExisting = String(existing.prefix(halfBudget))
+                cappedNew = String(new.prefix(halfBudget))
+            }
+        } else {
+            cappedExisting = existing
+            cappedNew = new
+        }
+
+        let userPrompt = "Existing memory:\n\(cappedExisting)\n\nNew memory:\n\(cappedNew)"
 
         let messages = [
             LLMMessage(role: .system, text: systemPrompt),
@@ -214,11 +238,12 @@ public actor TaskSummarizer {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Computes the maximum character budget for the result field based on the
-    /// summarizer model's context window, leaving room for output tokens and
-    /// the other prompt sections (system prompt, title, description, updates, etc.).
+    /// Computes the maximum character budget for the result field.
+    /// Uses 80% of the context window (in tokens, converted to chars) minus overhead
+    /// for the system prompt and other prompt sections. This gives the summarizer as
+    /// much detail as the model can handle.
     private var resultCharBudget: Int {
-        let inputTokenBudget = contextWindowSize - maxOutputTokens
+        let inputTokenBudget = contextWindowSize * 4 / 5  // 80% of full context window
         // Conservative estimate: ~3 characters per token
         let totalInputChars = inputTokenBudget * 3
         // Reserve space for system prompt (~300 chars) + other fields (~2000 chars generous)
