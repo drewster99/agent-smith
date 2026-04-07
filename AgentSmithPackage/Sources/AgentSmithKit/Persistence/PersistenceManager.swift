@@ -1,5 +1,6 @@
 import Foundation
 import os
+import SwiftLLMKit
 
 private let logger = Logger(subsystem: "com.agentsmith", category: "Persistence")
 
@@ -124,6 +125,24 @@ public actor PersistenceManager {
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
         let data = try Data(contentsOf: url)
         return try JSONDecoder().decode([UsageRecord].self, from: data)
+    }
+
+    // MARK: - User Model Overrides
+
+    /// Saves user-provided model metadata overrides to disk.
+    public func saveUserModelOverrides(_ overrides: [String: ModelMetadataOverride]) throws {
+        try ensureDirectories()
+        let data = try JSONEncoder().encode(overrides)
+        let url = baseDirectory.appendingPathComponent("model_overrides.json")
+        try data.write(to: url, options: .atomic)
+    }
+
+    /// Loads user-provided model metadata overrides from disk.
+    public func loadUserModelOverrides() throws -> [String: ModelMetadataOverride] {
+        let url = baseDirectory.appendingPathComponent("model_overrides.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode([String: ModelMetadataOverride].self, from: data)
     }
 
     // MARK: - Attachments

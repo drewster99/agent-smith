@@ -182,20 +182,20 @@ public actor SecurityEvaluator {
                 let callLatencyMs = Int(Date().timeIntervalSince(callStart) * 1000)
 
                 // Capture Jones's token usage for analytics.
-                if let usage = response.usage, let usageStore {
+                if let usageStore {
                     let taskUUID = taskID.flatMap { UUID(uuidString: $0) }
-                    await usageStore.append(UsageRecord(
-                        agentRole: .jones,
-                        taskID: taskUUID,
-                        modelID: modelID,
-                        providerType: providerType,
-                        configurationID: configurationID,
-                        inputTokens: usage.inputTokens,
-                        outputTokens: usage.outputTokens,
-                        cacheReadTokens: usage.cacheReadTokens,
-                        cacheWriteTokens: usage.cacheWriteTokens,
-                        latencyMs: callLatencyMs
-                    ))
+                    await UsageRecorder.record(
+                        response: response,
+                        context: LLMCallContext(
+                            agentRole: .jones,
+                            taskID: taskUUID,
+                            modelID: modelID,
+                            providerType: providerType,
+                            configurationID: configurationID
+                        ),
+                        latencyMs: callLatencyMs,
+                        to: usageStore
+                    )
                 }
             } catch {
                 if Task.isCancelled {

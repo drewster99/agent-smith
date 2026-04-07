@@ -368,21 +368,21 @@ public actor AgentActor {
                 onTurnRecorded?(turnRecord)
 
                 // Persist usage record for analytics.
-                if let usage = response.usage, let usageStore {
+                if let usageStore {
                     let currentTask = await toolContext.taskStore.taskForAgent(agentID: id)
-                    await usageStore.append(UsageRecord(
-                        agentRole: configuration.role,
-                        taskID: currentTask?.id,
-                        modelID: configuration.llmConfig.model,
-                        providerType: configuration.providerAPIType.rawValue,
-                        configurationID: configuration.llmConfig.id,
-                        inputTokens: usage.inputTokens,
-                        outputTokens: usage.outputTokens,
-                        cacheReadTokens: usage.cacheReadTokens,
-                        cacheWriteTokens: usage.cacheWriteTokens,
+                    await UsageRecorder.record(
+                        response: response,
+                        context: LLMCallContext(
+                            agentRole: configuration.role,
+                            taskID: currentTask?.id,
+                            modelID: configuration.llmConfig.model,
+                            providerType: configuration.providerAPIType.rawValue,
+                            configurationID: configuration.llmConfig.id,
+                            preResetInputTokens: pendingPreResetTokens
+                        ),
                         latencyMs: llmLatencyMs,
-                        preResetInputTokens: pendingPreResetTokens
-                    ))
+                        to: usageStore
+                    )
                     pendingPreResetTokens = nil
                 }
 

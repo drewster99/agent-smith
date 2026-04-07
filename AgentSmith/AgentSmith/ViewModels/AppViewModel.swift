@@ -260,6 +260,16 @@ final class AppViewModel {
         // Load persisted usage records.
         await usageStore.load()
 
+        // Load user model metadata overrides and inject into LLMKitManager.
+        do {
+            let overrides = try await persistenceManager.loadUserModelOverrides()
+            if !overrides.isEmpty {
+                llmKit.setUserOverrides(overrides)
+            }
+        } catch {
+            logger.error("Failed to load user model overrides: \(error.localizedDescription)")
+        }
+
         // Refresh model catalog (YYYYMMDD-gated)
         await llmKit.refreshIfNeeded()
         llmKit.validateConfigurations()

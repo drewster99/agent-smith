@@ -200,7 +200,11 @@ public actor OrchestrationRuntime {
                 memoryStore: memoryStore,
                 channel: channel,
                 contextWindowSize: summarizerConfig.contextWindowSize,
-                maxOutputTokens: summarizerConfig.maxTokens
+                maxOutputTokens: summarizerConfig.maxTokens,
+                usageStore: usageStore,
+                modelID: summarizerConfig.model,
+                providerType: providerAPITypes[.summarizer]?.rawValue ?? "",
+                configurationID: summarizerConfig.id
             )
         } else {
             taskSummarizer = nil

@@ -11,6 +11,10 @@ public actor TaskSummarizer {
     private let channel: MessageChannel
     private let contextWindowSize: Int
     private let maxOutputTokens: Int
+    private let usageStore: UsageStore?
+    private let modelID: String
+    private let providerType: String
+    private let configurationID: UUID?
 
     private static let systemPrompt = """
         You are a task summarizer for an AI agent system. Given a completed or failed task's \
@@ -32,13 +36,21 @@ public actor TaskSummarizer {
         memoryStore: MemoryStore,
         channel: MessageChannel,
         contextWindowSize: Int,
-        maxOutputTokens: Int
+        maxOutputTokens: Int,
+        usageStore: UsageStore? = nil,
+        modelID: String = "",
+        providerType: String = "",
+        configurationID: UUID? = nil
     ) {
         self.provider = provider
         self.memoryStore = memoryStore
         self.channel = channel
         self.contextWindowSize = contextWindowSize
         self.maxOutputTokens = maxOutputTokens
+        self.usageStore = usageStore
+        self.modelID = modelID
+        self.providerType = providerType
+        self.configurationID = configurationID
     }
 
     private static let maxRetries = 3
@@ -130,7 +142,25 @@ public actor TaskSummarizer {
             }
 
             do {
+                let callStart = Date()
                 let response = try await provider.send(messages: messages, tools: [])
+                let callLatencyMs = Int(Date().timeIntervalSince(callStart) * 1000)
+
+                if let usageStore {
+                    await UsageRecorder.record(
+                        response: response,
+                        context: LLMCallContext(
+                            agentRole: .summarizer,
+                            taskID: nil,
+                            modelID: modelID,
+                            providerType: providerType,
+                            configurationID: configurationID
+                        ),
+                        latencyMs: callLatencyMs,
+                        to: usageStore
+                    )
+                }
+
                 guard let text = response.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     return nil
                 }
@@ -159,7 +189,25 @@ public actor TaskSummarizer {
             LLMMessage(role: .user, text: userPrompt)
         ]
 
+        let callStart = Date()
         let response = try await provider.send(messages: messages, tools: [])
+        let callLatencyMs = Int(Date().timeIntervalSince(callStart) * 1000)
+
+        if let usageStore {
+            await UsageRecorder.record(
+                response: response,
+                context: LLMCallContext(
+                    agentRole: .summarizer,
+                    taskID: task.id,
+                    modelID: modelID,
+                    providerType: providerType,
+                    configurationID: configurationID
+                ),
+                latencyMs: callLatencyMs,
+                to: usageStore
+            )
+        }
+
         guard let text = response.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw SummarizerError.emptyResponse
         }
