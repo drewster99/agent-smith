@@ -39,7 +39,10 @@ final class AppViewModel {
         if UserDefaults.standard.object(forKey: "autoRunNextTask") == nil { return true }
         return UserDefaults.standard.bool(forKey: "autoRunNextTask")
     }() {
-        didSet { UserDefaults.standard.set(autoRunNextTask, forKey: "autoRunNextTask") }
+        didSet {
+            UserDefaults.standard.set(autoRunNextTask, forKey: "autoRunNextTask")
+            Task { await runtime?.setAutoAdvance(autoRunNextTask) }
+        }
     }
     /// Whether interrupted tasks are automatically resumed on launch.
     var autoRunInterruptedTasks: Bool = {
@@ -211,22 +214,13 @@ final class AppViewModel {
         do {
             var savedTasks = try await persistenceManager.loadTasks()
             // Mark any tasks that were running when the app last exited as interrupted.
+            // The runtime handles auto-resuming interrupted tasks if that setting is enabled.
             var anyStatusChanged = false
             for i in savedTasks.indices {
                 if savedTasks[i].status == .running {
                     savedTasks[i].status = .interrupted
                     savedTasks[i].updatedAt = Date()
                     anyStatusChanged = true
-                }
-            }
-            // If auto-run interrupted tasks is enabled, promote them to pending so Smith picks them up.
-            if autoRunInterruptedTasks {
-                for i in savedTasks.indices {
-                    if savedTasks[i].status == .interrupted {
-                        savedTasks[i].status = .pending
-                        savedTasks[i].updatedAt = Date()
-                        anyStatusChanged = true
-                    }
                 }
             }
             // Archive any completed tasks that have been sitting for more than 4 hours.
@@ -332,7 +326,8 @@ final class AppViewModel {
             agentTuning: tuning,
             embeddingService: embeddingService,
             usageStore: usageStore,
-            autoAdvanceEnabled: autoRunNextTask
+            autoAdvanceEnabled: autoRunNextTask,
+            autoRunInterruptedTasks: autoRunInterruptedTasks
         )
         runtime = newRuntime
         isRunning = true
@@ -663,12 +658,12 @@ final class AppViewModel {
         channelStreamTask = nil
         self.runtime = nil
 
-        // Reset any tasks that were mid-flight back to pending.
+        // Mark any tasks that were mid-flight as interrupted.
         // Read from the store directly to get the most current state after agents have stopped.
         if let store = taskStore {
             let liveTasks = await store.allTasks()
             for task in liveTasks where task.status == .running {
-                await store.updateStatus(id: task.id, status: .pending)
+                await store.updateStatus(id: task.id, status: .interrupted)
             }
         }
 

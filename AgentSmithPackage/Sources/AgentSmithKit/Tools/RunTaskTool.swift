@@ -64,8 +64,8 @@ public struct RunTaskTool: AgentTool {
         // don't restart again — just tell Smith to spawn Brown directly.
         if context.currentResumingTaskID == taskID {
             return """
-                The system has already restarted for this task. Do NOT call run_task again. \
-                Call `spawn_brown` now to start a Brown agent, then use `message_brown` to give it the task instructions.
+                The system has already restarted for this task and Brown has been auto-spawned. \
+                Do NOT call run_task again. Monitor Brown's progress via `schedule_followup`.
                 """
         }
 

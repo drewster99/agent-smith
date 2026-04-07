@@ -83,7 +83,7 @@ public actor PowerAssertionManager {
     }
 
     private func handleInactivityTimeout() async {
-        let activeStatuses: Set<AgentTask.Status> = [.pending, .running, .paused, .awaitingReview]
+        let activeStatuses: Set<AgentTask.Status> = [.pending, .running, .paused, .awaitingReview, .interrupted]
         let tasks = await taskStore.allTasks()
         let hasActive = tasks.contains { $0.disposition == .active && activeStatuses.contains($0.status) }
 

@@ -111,7 +111,7 @@ public struct ReviewWorkTool: AgentTool {
             // Trigger background summarization and embedding of the completed task.
             await context.summarizeCompletedTask(taskID)
 
-            let advanceGuidance = context.autoAdvanceEnabled
+            let advanceGuidance = await context.autoAdvanceEnabled()
                 ? " Check `list_tasks` for pending tasks and `run_task` the next one."
                 : ""
             return "Task '\(completedTask.title)' accepted and marked COMPLETE. Agents terminated. Result ALREADY delivered to user (do not deliver it again yourself, Agent Smith).\(advanceGuidance)"
@@ -127,25 +127,57 @@ public struct ReviewWorkTool: AgentTool {
             await context.taskStore.updateStatus(id: taskID, status: .running)
             await context.taskStore.clearResult(id: taskID)
 
-            var sent = false
+            // Find an existing Brown, or auto-spawn one if needed (e.g. after app restart)
+            var brownID: UUID?
+            var brownWasSpawned = false
             for agentID in task.assigneeIDs {
                 if let role = await context.agentRoleForID(agentID), role == .brown {
-                    await context.channel.post(ChannelMessage(
-                        sender: .agent(context.agentRole),
-                        recipientID: agentID,
-                        recipient: .agent(.brown),
-                        content: "Results rejected - changes required on task '\(task.title)': \(feedback)"
-                    ))
-                    sent = true
+                    brownID = agentID
                     break
                 }
             }
 
-            if !sent {
-                return "Task returned to running, but no active Brown agent found to notify. Use `spawn_brown` to re-spawn an Agent Brown"
+            if brownID == nil {
+                if let newBrownID = await context.spawnBrown() {
+                    await context.taskStore.assignAgent(taskID: taskID, agentID: newBrownID)
+                    brownID = newBrownID
+                    brownWasSpawned = true
+                }
             }
 
-            return "Changes requested. Feedback sent to Brown."
+            guard let brownID else {
+                return "Task returned to running, but failed to spawn a Brown agent. Check provider configuration."
+            }
+
+            let content: String
+            if brownWasSpawned {
+                // New Brown needs full context — it has no prior conversation history
+                var messageParts: [String] = []
+                let currentTask = await context.taskStore.task(id: taskID) ?? task
+                messageParts.append("## Task: \(currentTask.title)\n\n\(currentTask.description)")
+
+                if !currentTask.updates.isEmpty {
+                    let history = currentTask.updates.map { "- \($0.message)" }.joined(separator: "\n")
+                    messageParts.append("## Prior Progress\n\(history)")
+                }
+
+                messageParts.append("## Changes Required\n\(feedback)")
+                content = messageParts.joined(separator: "\n\n")
+            } else {
+                // Existing Brown already has context — just send the rejection feedback
+                content = "Results rejected - changes required on task '\(task.title)': \(feedback)"
+            }
+
+            await context.channel.post(ChannelMessage(
+                sender: .agent(context.agentRole),
+                recipientID: brownID,
+                recipient: .agent(.brown),
+                content: content
+            ))
+
+            return brownWasSpawned
+                ? "Changes requested. A new Brown has been spawned and briefed with the full task context and your feedback."
+                : "Changes requested. Feedback sent to Brown."
         }
     }
 

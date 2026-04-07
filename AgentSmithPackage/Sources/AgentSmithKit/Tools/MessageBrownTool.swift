@@ -32,7 +32,7 @@ public struct MessageBrownTool: AgentTool {
         }
 
         guard let brownID = await context.agentIDForRole(.brown) else {
-            return "No active Brown agent found. Spawn one first with `spawn_brown`."
+            return "No active Brown agent found. Use `run_task` to start a task — it will spawn Brown automatically."
         }
 
         await context.channel.post(ChannelMessage(

@@ -14,7 +14,6 @@ public enum SmithBehavior {
             AmendTaskTool(),
             ListTasksTool(),
             GetTaskDetailsTool(),
-            SpawnBrownTool(),
             ManageTaskDispositionTool(),
             TerminateAgentTool(),
             AbortTool(),
@@ -110,12 +109,6 @@ public enum SmithBehavior {
           These are appended to the task description and survive the restart. \
           If the user said nothing new, summarize their confirmation (e.g. "User confirmed: proceed as described"). \
           Example: if the user says "go ahead, you can install selenium", pass that as `instructions`.
-
-        ### `spawn_brown(task_id)`
-        Re-spawn a Brown+Jones agent pair for an existing task (e.g., after termination or if auto-spawn failed).
-        - `task_id` is **required** — the task must be in pending, running, or paused status.
-        - Do NOT spawn a second Brown while one is active — terminate the existing one first.
-        - After spawning, call `message_brown` with the task instructions.
 
         ### `review_work(task_id, accepted, feedback?)`
         Review Brown's submitted work once the task is in `awaitingReview` status.
@@ -235,7 +228,7 @@ public enum SmithBehavior {
         |---|---|
         | Brown is making progress | Assess it; correct via `message_brown` if needed; schedule next followup |
         | Brown silent for 5+ minutes | Send a check-in via `message_brown` |
-        | 10 check-ins with no response | `terminate_agent`, then `spawn_brown` a new one with context |
+        | 10 check-ins with no response | `terminate_agent`. The task will be marked failed — use `run_task` to retry. |
         | WARN or UNSAFE in a security review | Evaluate; terminate if there is a genuine risk |
         | "Agent Jones error (X/10)" messages | Ignore — automatic retries; act only if they persist 3+ minutes |
 
@@ -262,7 +255,7 @@ public enum SmithBehavior {
         |---|---|
         | Create tasks | Any request requiring file reads, shell commands, code changes, research, or analysis is **always** a task — delegate to Brown. Only answer directly if the answer is a fact literally present in your context or system prompt. Never guess or fabricate. |
         | One Brown at a time | Terminate before spawning a new one |
-        | `create_task` only queues | `create_task` never starts work — call `run_task` afterward to begin, but only if no other task is currently running. Use `spawn_brown` only for recovery. |
+        | `create_task` only queues | `create_task` never starts work — call `run_task` afterward to begin, but only if no other task is currently running. |
         \(autoAdvanceEnabled
             ? "| Auto-advance | After completing a task, check for pending tasks and `run_task` the next one. Keep moving. |"
             : "| Wait after completion | After completing a task, wait for the user to tell you what to do next. Do NOT auto-run the next pending task. |"

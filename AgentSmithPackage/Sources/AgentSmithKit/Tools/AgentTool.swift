@@ -115,7 +115,8 @@ public struct ToolContext: Sendable {
     /// Parameters: (existingContent, newContent). Returns merged text, or nil if unavailable.
     public let mergeMemoryContent: @Sendable (String, String) async -> String?
     /// Whether Smith should automatically run the next pending task after completing one.
-    public let autoAdvanceEnabled: Bool
+    /// Closure so the value reflects the current setting, not the value at init time.
+    public let autoAdvanceEnabled: @Sendable () async -> Bool
     /// Records that a file at the given path was successfully read during this agent session.
     public let recordFileRead: @Sendable (String) -> Void
     /// Returns true if the file at the given path was read during this agent session.
@@ -140,7 +141,7 @@ public struct ToolContext: Sendable {
         memoryStore: MemoryStore,
         summarizeCompletedTask: @escaping @Sendable (UUID) async -> Void = { _ in },
         mergeMemoryContent: @escaping @Sendable (String, String) async -> String? = { _, _ in nil },
-        autoAdvanceEnabled: Bool = true,
+        autoAdvanceEnabled: @escaping @Sendable () async -> Bool = { true },
         recordFileRead: @escaping @Sendable (String) -> Void = { _ in },
         hasFileBeenRead: @escaping @Sendable (String) -> Bool = { _ in false }
     ) {

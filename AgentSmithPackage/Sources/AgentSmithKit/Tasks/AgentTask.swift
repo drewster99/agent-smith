@@ -56,7 +56,7 @@ public struct AgentTask: Identifiable, Codable, Sendable {
             self == .running || self == .paused || self == .awaitingReview
         }
 
-        /// Whether this status allows `run_task` / `spawn_brown` to start execution.
+        /// Whether this status allows `run_task` to start execution.
         public var isRunnable: Bool {
             self == .pending || self == .paused || self == .interrupted
         }

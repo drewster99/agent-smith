@@ -83,7 +83,7 @@ public actor TaskStore {
     /// Tasks are sorted by `createdAt` ascending so the result is deterministic
     /// regardless of dictionary iteration order.
     public func taskForAgent(agentID: UUID) -> AgentTask? {
-        let actionableStatuses: Set<AgentTask.Status> = [.pending, .running, .paused, .awaitingReview]
+        let actionableStatuses: Set<AgentTask.Status> = [.pending, .running, .paused, .awaitingReview, .interrupted]
         return tasks.values
             .filter { $0.assigneeIDs.contains(agentID) && actionableStatuses.contains($0.status) }
             .sorted { $0.createdAt < $1.createdAt }
@@ -223,9 +223,9 @@ public actor TaskStore {
         updateStatus(id: id, status: .paused)
     }
 
-    /// Resets a task back to pending so it can be re-queued.
+    /// Marks a running task as interrupted so it can be resumed later.
     public func stop(id: UUID) {
-        updateStatus(id: id, status: .pending)
+        updateStatus(id: id, status: .interrupted)
     }
 
     // MARK: - Bulk operations

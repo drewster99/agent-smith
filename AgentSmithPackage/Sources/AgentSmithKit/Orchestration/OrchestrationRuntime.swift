@@ -53,7 +53,10 @@ public actor OrchestrationRuntime {
     private var providerAPITypes: [AgentRole: ProviderAPIType]
     private var agentTuning: [AgentRole: AgentTuningConfig]
     /// Whether Smith should automatically run the next pending task after completing one.
-    private let autoAdvanceEnabled: Bool
+    /// Mutable so the user can toggle it at runtime and have it take effect immediately.
+    public var autoAdvanceEnabled: Bool
+    /// Whether interrupted tasks should be auto-resumed on launch.
+    private let autoRunInterruptedTasks: Bool
     /// Persistent token usage tracking across all agents.
     public let usageStore: UsageStore
     private var monitoringTimer: MonitoringTimer?
@@ -83,7 +86,8 @@ public actor OrchestrationRuntime {
         agentTuning: [AgentRole: AgentTuningConfig] = [:],
         embeddingService: EmbeddingService,
         usageStore: UsageStore,
-        autoAdvanceEnabled: Bool = true
+        autoAdvanceEnabled: Bool = true,
+        autoRunInterruptedTasks: Bool = false
     ) {
         self.channel = MessageChannel()
         self.taskStore = TaskStore()
@@ -93,7 +97,13 @@ public actor OrchestrationRuntime {
         self.providerAPITypes = providerAPITypes
         self.agentTuning = agentTuning
         self.autoAdvanceEnabled = autoAdvanceEnabled
+        self.autoRunInterruptedTasks = autoRunInterruptedTasks
         self.usageStore = usageStore
+    }
+
+    /// Updates the auto-advance setting at runtime so it takes effect immediately.
+    public func setAutoAdvance(_ enabled: Bool) {
+        autoAdvanceEnabled = enabled
     }
 
     /// Registers a callback fired when Jones triggers an abort.
@@ -280,60 +290,87 @@ public actor OrchestrationRuntime {
         }
         agentSubscriptions[id] = [subID]
 
-        // Reset stalled tasks from prior sessions — no Brown is running them anymore
+        // Mark any leftover running tasks as interrupted — no Brown is running them anymore.
+        // (Clean shutdowns mark these interrupted via AppViewModel; this catches crashes/force-quits.)
+        // Skip the resuming task if present — it will be set to running momentarily.
         let allTasks = await taskStore.allTasks()
         let activeTasks = allTasks.filter { $0.disposition == .active }
-        let stalledTasks = activeTasks.filter { $0.status == .running }
-        for task in stalledTasks {
-            await taskStore.updateStatus(id: task.id, status: .pending)
+        let leftoverRunningTasks = activeTasks.filter { $0.status == .running && $0.id != resumingTaskID }
+        for task in leftoverRunningTasks {
+            await taskStore.updateStatus(id: task.id, status: .interrupted)
         }
 
         let initialInstruction: String
 
-        // Fast path: restarting for a specific task — skip the "ask user" preamble
-        // and instruct Smith to spawn Brown and begin work immediately.
+        // Fast path: restarting for a specific task (triggered by run_task).
+        // Auto-spawn Brown, deliver task briefing, and tell Smith to monitor.
         if let resumingTaskID {
-            if let resumingTask = await taskStore.task(id: resumingTaskID) {
-                var parts: [String] = []
+            if var resumingTask = await taskStore.task(id: resumingTaskID) {
+                // Auto-spawn Brown and deliver the task briefing
+                let brownSpawned: Bool
+                if let brownID = await spawnBrown() {
+                    await taskStore.updateStatus(id: resumingTaskID, status: .running)
+                    await taskStore.assignAgent(taskID: resumingTaskID, agentID: brownID)
+                    // Re-read to get the latest state (includes any amendments from run_task)
+                    resumingTask = await taskStore.task(id: resumingTaskID) ?? resumingTask
 
-                // Semantic context first — so Smith sees known facts before the action instructions.
+                    // Compose and deliver task briefing directly to Brown
+                    var briefingParts: [String] = []
+                    briefingParts.append("## Task: \(resumingTask.title)\n\n\(resumingTask.description)")
+
+                    if !resumingTask.updates.isEmpty {
+                        let history = resumingTask.updates.map { "- \($0.message)" }.joined(separator: "\n")
+                        briefingParts.append("## Prior Progress\n\(history)")
+                    }
+                    if let brownContext = resumingTask.lastBrownContext {
+                        briefingParts.append("## Last Working State\n\(brownContext)")
+                    }
+
+                    await channel.post(ChannelMessage(
+                        sender: .agent(.smith),
+                        recipientID: brownID,
+                        recipient: .agent(.brown),
+                        content: briefingParts.joined(separator: "\n\n")
+                    ))
+                    brownSpawned = true
+                } else {
+                    brownSpawned = false
+                }
+
+                // Build Smith's initial instruction
+                var smithParts: [String] = []
+
                 if let memories = resumingTask.relevantMemories, !memories.isEmpty {
                     let memoryLines = memories.map { "- \($0.content) (similarity: \(String(format: "%.2f", $0.similarity)))" }
-                    parts.append("Relevant memories:\n\(memoryLines.joined(separator: "\n"))")
+                    smithParts.append("Relevant memories:\n\(memoryLines.joined(separator: "\n"))")
                 }
                 if let priorTasks = resumingTask.relevantPriorTasks, !priorTasks.isEmpty {
                     let taskLines = priorTasks.map { task in
-                        "- \(task.title): \(task.summary) (similarity: \(String(format: "%.2f", task.similarity))) — full details: `get_task_details(task_id: \"\(task.taskID.uuidString)\")`"
+                        "- \(task.title): \(task.summary) (similarity: \(String(format: "%.2f", task.similarity)))"
                     }
-                    parts.append("Relevant prior task summaries:\n\(taskLines.joined(separator: "\n"))")
+                    smithParts.append("Relevant prior task summaries:\n\(taskLines.joined(separator: "\n"))")
                 }
 
-                parts.append("""
-                    A new task has been created: "\(resumingTask.title)"
-
-                    \(resumingTask.description)
-
-                    Spawn Brown and begin work on this task immediately (task ID: \(resumingTaskID.uuidString)). \
-                    Do not ask the user for confirmation — they just requested this task. \
-                    Do NOT call `run_task` or `create_task` — the system has already restarted for this task. \
-                    Call `spawn_brown` directly and give Brown the task instructions via `message_brown`. \
-                    If relevant memories or prior task summaries are provided above, use those facts directly \
-                    in your instructions to Brown — do not ask Brown to re-discover or re-verify them.
-                    """)
-
-                // Include prior progress context for resumed tasks
-                if !resumingTask.updates.isEmpty {
-                    let history = resumingTask.updates.map { "- \($0.message)" }.joined(separator: "\n")
-                    parts.append("Prior progress updates from a previous attempt:\n\(history)\n\nPass this context to Brown so it can resume where the previous agent left off.")
+                if brownSpawned {
+                    smithParts.append("""
+                        Brown is already working on task "\(resumingTask.title)" (ID: \(resumingTaskID.uuidString)). \
+                        The task description and any prior progress have been delivered to Brown automatically. \
+                        Do NOT call `run_task`, `create_task`, or `message_brown` — Brown is already briefed and working. \
+                        Call `schedule_followup(delay_seconds: 120)` and wait for Brown to submit results.
+                        """)
+                } else {
+                    smithParts.append("""
+                        Failed to spawn Brown for task "\(resumingTask.title)" (ID: \(resumingTaskID.uuidString)). \
+                        Check that a Brown LLM provider is configured. \
+                        Send the user a message explaining that Brown could not be started.
+                        """)
                 }
-                if let brownContext = resumingTask.lastBrownContext {
-                    parts.append("Last known Brown working state:\n\(brownContext)\n\nInclude this context when instructing Brown.")
-                }
+
                 if let userMsg = lastUserMessage, !userMsg.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    parts.append("The user's most recent message (before this restart):\n\"\(userMsg)\"\n\nThis is authoritative — honor any permissions, scope changes, or instructions the user gave. Pass relevant parts to Brown.")
+                    smithParts.append("The user's most recent message (before this restart): \"\(userMsg)\"")
                 }
 
-                initialInstruction = parts.joined(separator: "\n\n")
+                initialInstruction = smithParts.joined(separator: "\n\n")
             } else {
                 initialInstruction = """
                     The system restarted for task \(resumingTaskID.uuidString) but the task was not found in the store. \
@@ -341,31 +378,54 @@ public actor OrchestrationRuntime {
                     """
             }
         } else {
+            // Cold launch — gather all active tasks by status and surface everything to Smith.
+            let awaitingReviewTasks = activeTasks.filter { $0.status == .awaitingReview }
+            let interruptedTasks = activeTasks.filter { $0.status == .interrupted }
+            let pendingTasks = activeTasks.filter { $0.status == .pending }
+            let pausedTasks = activeTasks.filter { $0.status == .paused }
+            let recentFailed = Array(
+                activeTasks
+                    .filter { $0.status == .failed }
+                    .sorted { $0.updatedAt > $1.updatedAt }
+                    .prefix(5)
+            )
 
-        // Gather awaitingReview tasks — these survive restart and need Smith's attention
-        let awaitingReviewTasks = activeTasks.filter { $0.status == .awaitingReview }
+            // If autoRunInterruptedTasks is enabled and no awaitingReview task needs attention first,
+            // auto-start the first interrupted task by spawning Brown and delivering the briefing.
+            var autoResumedTask: AgentTask?
+            if autoRunInterruptedTasks, awaitingReviewTasks.isEmpty, let task = interruptedTasks.first {
+                if let brownID = await spawnBrown() {
+                    await taskStore.updateStatus(id: task.id, status: .running)
+                    await taskStore.assignAgent(taskID: task.id, agentID: brownID)
 
-        if !stalledTasks.isEmpty || !awaitingReviewTasks.isEmpty {
+                    var briefingParts: [String] = []
+                    briefingParts.append("## Task: \(task.title)\n\n\(task.description)")
+                    if !task.updates.isEmpty {
+                        let history = task.updates.map { "- \($0.message)" }.joined(separator: "\n")
+                        briefingParts.append("## Prior Progress\n\(history)")
+                    }
+                    if let brownContext = task.lastBrownContext {
+                        briefingParts.append("## Last Working State\n\(brownContext)")
+                    }
+                    await channel.post(ChannelMessage(
+                        sender: .agent(.smith),
+                        recipientID: brownID,
+                        recipient: .agent(.brown),
+                        content: briefingParts.joined(separator: "\n\n")
+                    ))
+                    autoResumedTask = task
+                }
+            }
+
+            // Build Smith's initial instruction with ALL task categories
             var parts: [String] = []
 
-            if !stalledTasks.isEmpty {
-                let taskList = stalledTasks
-                    .map { task in
-                        var entry = "- \(task.title) (id: \(task.id.uuidString))"
-                        if !task.description.isEmpty {
-                            entry += "\n  Description: \(task.description)"
-                        }
-                        if !task.updates.isEmpty {
-                            let history = task.updates.map { "    - \($0.message)" }.joined(separator: "\n")
-                            entry += "\n  Prior progress:\n\(history)"
-                        }
-                        if let brownContext = task.lastBrownContext {
-                            entry += "\n  Last Brown state: \(String(brownContext.prefix(500)))"
-                        }
-                        return entry
-                    }
-                    .joined(separator: "\n")
-                parts.append("\(stalledTasks.count) task(s) were in progress when the system last stopped and have been reset to pending:\n\(taskList)")
+            if let resumed = autoResumedTask {
+                parts.append("""
+                    Brown has automatically resumed the interrupted task "\(resumed.title)" (ID: \(resumed.id.uuidString)). \
+                    Do NOT call `message_brown` for this task — Brown is already briefed and working. \
+                    Call `schedule_followup(delay_seconds: 120)` to monitor progress.
+                    """)
             }
 
             if !awaitingReviewTasks.isEmpty {
@@ -382,91 +442,76 @@ public actor OrchestrationRuntime {
                 parts.append("\(awaitingReviewTasks.count) task(s) are awaiting your review:\n\(taskList)\nReview each and call `review_work`.")
             }
 
-            initialInstruction = """
-                \(parts.joined(separator: "\n\n"))
-                Send the user a single private message (recipient_id: "user") summarizing the situation \
-                and asking how they would like to proceed. \
-                Then wait for the user to reply before taking action on any tasks. \
-                When the user asks you to continue or run a task, use `list_tasks` to get the full task \
-                details (including the description) before proceeding — do not ask the user for information \
-                that is already in the task.
-                """
-        } else {
-            // No tasks were running — surface any pending, paused, interrupted, or recently failed tasks.
-            let pendingTasks = activeTasks.filter { $0.status == .pending }
-            let pausedTasks = activeTasks.filter { $0.status == .paused }
-            let interruptedTasks = activeTasks.filter { $0.status == .interrupted }
-            let recentFailed = Array(
-                activeTasks
-                    .filter { $0.status == .failed }
-                    .sorted { $0.updatedAt > $1.updatedAt }
-                    .prefix(5)
-            )
+            // Show interrupted tasks that were NOT auto-resumed
+            let remainingInterrupted = interruptedTasks.filter { $0.id != autoResumedTask?.id }
+            if !remainingInterrupted.isEmpty {
+                let list = remainingInterrupted
+                    .map { task in
+                        var entry = "- \(task.title) (id: \(task.id.uuidString)) — interrupted"
+                        if !task.description.isEmpty {
+                            entry += "\n  Description: \(task.description)"
+                        }
+                        if let lastUpdate = task.updates.last {
+                            entry += "\n  Last update: \(lastUpdate.message)"
+                        }
+                        return entry
+                    }
+                    .joined(separator: "\n")
+                parts.append("The following task(s) were interrupted and can be resumed with `run_task`:\n\(list)")
+            }
 
-            if pendingTasks.isEmpty && pausedTasks.isEmpty && interruptedTasks.isEmpty && recentFailed.isEmpty {
+            if !pendingTasks.isEmpty {
+                let list = pendingTasks
+                    .map { task in
+                        var entry = "- \(task.title) (id: \(task.id.uuidString))"
+                        if !task.description.isEmpty {
+                            entry += "\n  Description: \(task.description)"
+                        }
+                        return entry
+                    }
+                    .joined(separator: "\n")
+                parts.append("The following task(s) are pending and waiting to be started:\n\(list)")
+            }
+
+            if !pausedTasks.isEmpty {
+                let list = pausedTasks
+                    .map { task in
+                        var entry = "- \(task.title) (id: \(task.id.uuidString)) — paused"
+                        if !task.description.isEmpty {
+                            entry += "\n  Description: \(task.description)"
+                        }
+                        if let lastUpdate = task.updates.last {
+                            entry += "\n  Last update: \(lastUpdate.message)"
+                        }
+                        return entry
+                    }
+                    .joined(separator: "\n")
+                parts.append("The following task(s) are paused:\n\(list)")
+            }
+
+            if !recentFailed.isEmpty {
+                let list = recentFailed
+                    .map { task in
+                        var entry = "- \(task.title) (id: \(task.id.uuidString))"
+                        if !task.description.isEmpty {
+                            entry += "\n  Description: \(task.description)"
+                        }
+                        return entry
+                    }
+                    .joined(separator: "\n")
+                parts.append("The following task(s) previously failed (most recent first):\n\(list)")
+            }
+
+            if parts.isEmpty {
                 initialInstruction = """
                     No tasks are pending. Introduce yourself with "Hello <user's nickname>, how can I help?" - and nothing more.
                     """
             } else {
-                var parts: [String] = []
-                if !pendingTasks.isEmpty {
-                    let list = pendingTasks
-                        .map { task in
-                            var entry = "- \(task.title) (id: \(task.id.uuidString))"
-                            if !task.description.isEmpty {
-                                entry += "\n  Description: \(task.description)"
-                            }
-                            return entry
-                        }
-                        .joined(separator: "\n")
-                    parts.append("The following task(s) are pending and waiting to be started:\n\(list)")
-                }
-                if !pausedTasks.isEmpty {
-                    let list = pausedTasks
-                        .map { task in
-                            var entry = "- \(task.title) (id: \(task.id.uuidString)) — paused"
-                            if !task.description.isEmpty {
-                                entry += "\n  Description: \(task.description)"
-                            }
-                            if let lastUpdate = task.updates.last {
-                                entry += "\n  Last update: \(lastUpdate.message)"
-                            }
-                            return entry
-                        }
-                        .joined(separator: "\n")
-                    parts.append("The following task(s) are paused:\n\(list)")
-                }
-                if !interruptedTasks.isEmpty {
-                    let list = interruptedTasks
-                        .map { task in
-                            var entry = "- \(task.title) (id: \(task.id.uuidString)) — interrupted"
-                            if !task.description.isEmpty {
-                                entry += "\n  Description: \(task.description)"
-                            }
-                            if let lastUpdate = task.updates.last {
-                                entry += "\n  Last update: \(lastUpdate.message)"
-                            }
-                            return entry
-                        }
-                        .joined(separator: "\n")
-                    parts.append("The following task(s) were interrupted by app shutdown and can be resumed with `run_task`:\n\(list)")
-                }
-                if !recentFailed.isEmpty {
-                    let list = recentFailed
-                        .map { task in
-                            var entry = "- \(task.title) (id: \(task.id.uuidString))"
-                            if !task.description.isEmpty {
-                                entry += "\n  Description: \(task.description)"
-                            }
-                            return entry
-                        }
-                        .joined(separator: "\n")
-                    parts.append("The following task(s) previously failed (most recent first):\n\(list)")
-                }
                 initialInstruction = """
                     \(parts.joined(separator: "\n\n"))
-                    Send the user a single private message (recipient_id: "user") listing these tasks \
-                    and asking what they would like to do. \
+
+                    Send the user a single private message (recipient_id: "user") summarizing the situation \
+                    and asking how they would like to proceed. \
                     Then wait for the user to reply before taking action on any tasks. \
                     When the user asks you to continue or run a task, use `list_tasks` to get the full task \
                     details (including the description) before proceeding — do not ask the user for information \
@@ -474,7 +519,6 @@ public actor OrchestrationRuntime {
                     """
             }
         }
-        } // end else (no resumingTaskID)
 
         await smithAgent.start(initialInstruction: initialInstruction)
         onAgentStarted?(.smith, smithAgent.toolNames)
@@ -881,7 +925,7 @@ public actor OrchestrationRuntime {
                 guard let self else { return nil }
                 return await self.taskSummarizer?.mergeMemoryTexts(existing: existing, new: new)
             },
-            autoAdvanceEnabled: autoAdvanceEnabled,
+            autoAdvanceEnabled: { [weak self] in await self?.autoAdvanceEnabled ?? false },
             recordFileRead: { path in
                 filesReadInSession?.record(path)
             },

@@ -322,12 +322,12 @@ public actor AgentActor {
 
             do {
                 let activeTasks = await toolContext.taskStore.allTasks().filter { $0.disposition == .active }
-                let hasPendingOrPaused = activeTasks.contains { $0.status.isRunnable }
+                let hasRunnableTasks = activeTasks.contains { $0.status.isRunnable }
                 let hasAwaitingReview = activeTasks.contains { $0.status == .awaitingReview }
                 let availabilityContext = ToolAvailabilityContext(
                     lastDirectUserMessageAt: lastDirectUserMessageAt,
                     agentRole: configuration.role,
-                    hasPendingOrPausedTasks: hasPendingOrPaused,
+                    hasPendingOrPausedTasks: hasRunnableTasks,
                     hasAwaitingReviewTasks: hasAwaitingReview
                 )
                 let toolDefinitions = tools
