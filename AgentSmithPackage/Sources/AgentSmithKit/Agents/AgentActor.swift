@@ -508,7 +508,8 @@ public actor AgentActor {
             consecutiveIdenticalToolCalls = 0
 
             // Text-only response — record and wait for new input
-            if let text = response.text, !text.isEmpty {
+            let hasText = response.text.map { !$0.isEmpty } ?? false
+            if hasText, let text = response.text {
                 conversationHistory.append(LLMMessage(role: .assistant, text: text))
                 pushLiveContext()
 
@@ -532,12 +533,11 @@ public actor AgentActor {
             }
 
             // For orchestrator agents (Smith), a text-only response means "nothing to do" —
-            // go idle until new messages arrive. For worker agents (Brown), text-only means
-            // the model is thinking aloud and should continue working on its task. Inject a
-            // continuation prompt so the conversation doesn't end on an assistant message
-            // (which most LLM APIs reject). The degenerate loop detector (limit 6 for Brown)
-            // prevents infinite text loops.
-            if configuration.role == .brown {
+            // go idle until new messages arrive. For worker agents (Brown), text with no
+            // tool calls means the model is thinking aloud — inject a continuation prompt
+            // so it keeps working. Only do this when there was actual text; an empty
+            // response (no text, no tool calls) is a model error, not thinking aloud.
+            if configuration.role == .brown && hasText {
                 conversationHistory.append(LLMMessage(role: .user, text: "Continue. Use your tools to make progress on the task."))
             } else {
                 hasUnprocessedInput = false
