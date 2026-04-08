@@ -531,9 +531,17 @@ public actor AgentActor {
                 return
             }
 
-            // Mark that we've processed the current input; don't re-query until
-            // new messages arrive via the channel.
-            hasUnprocessedInput = false
+            // For orchestrator agents (Smith), a text-only response means "nothing to do" —
+            // go idle until new messages arrive. For worker agents (Brown), text-only means
+            // the model is thinking aloud and should continue working on its task. Inject a
+            // continuation prompt so the conversation doesn't end on an assistant message
+            // (which most LLM APIs reject). The degenerate loop detector (limit 6 for Brown)
+            // prevents infinite text loops.
+            if configuration.role == .brown {
+                conversationHistory.append(LLMMessage(role: .user, text: "Continue. Use your tools to make progress on the task."))
+            } else {
+                hasUnprocessedInput = false
+            }
             return
         }
 
