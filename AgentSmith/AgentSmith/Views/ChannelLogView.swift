@@ -697,6 +697,25 @@ private struct MessageRow: View {
         return !content.hasPrefix("Successfully")
     }
 
+    /// Handles a tap on a tool call's file path. If the path exists, opens files via
+    /// the default app and reveals directories in Finder. If the path doesn't exist
+    /// (e.g., already deleted, or a path the tool couldn't resolve), falls through to
+    /// toggling the row's expand state so the tap still does something useful.
+    private func openFileOrFallback(path: String) {
+        let expanded = (path as NSString).expandingTildeInPath
+        let url = URL(fileURLWithPath: expanded)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir) else {
+            isExpanded.toggle()
+            return
+        }
+        if isDir.boolValue {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     @ViewBuilder
     private var genericToolRequestBody: some View {
         // Line 1: "[bash] pwd (more) ✅" — tool name as chip, rest in secondary
@@ -705,8 +724,13 @@ private struct MessageRow: View {
             let toolName = message.stringMetadata("tool") ?? displayText.prefix(while: { $0 != ":" }).description
             ToolNameChip(name: toolName)
             if let path = toolFilePath {
-                // Show path with highlighted filename, then remaining args
+                // Show path with highlighted filename, then remaining args.
+                // Tap on the path opens the file (or reveals a directory) in Finder /
+                // the default app — the inner gesture wins over the row's expand-toggle,
+                // so clicking the filename doesn't accidentally collapse the row. If the
+                // path doesn't exist, fall through to the expand-toggle behavior.
                 ToolPathText(path: path)
+                    .onTapGesture { openFileOrFallback(path: path) }
                 let extra = remainderWithoutPath(displayText, path: path)
                 if !extra.isEmpty {
                     Text(extra)
