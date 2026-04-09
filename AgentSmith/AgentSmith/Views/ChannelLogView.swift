@@ -101,6 +101,8 @@ struct ChannelLogView: View, Equatable {
                                 // Folded into a tool_request row — don't render standalone
                             } else if case .string(let kind) = message.metadata?["messageKind"], kind == "agent_online" {
                                 // Agent online announcements are internal coordination messages
+                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_update_guidance" {
+                                // System guidance to Smith about reviewing Brown's task update — internal only
                             } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_acknowledged" {
                                 TaskAcknowledgedBanner(
                                     title: message.content,
@@ -672,8 +674,27 @@ private struct MessageRow: View {
     /// Whether the tool output has more content than the first line.
     private var toolOutputHasMore: Bool {
         guard let output = toolOutputMessage else { return false }
+        // file_read always hides its content by default, so any non-empty output
+        // means there is "more" to reveal.
+        if isFileRead { return !output.content.isEmpty }
         return output.content.contains(where: \.isNewline)
             || output.content.count > Self.outputTruncationLimit
+    }
+
+    /// Whether this tool call is `file_read` — its output is raw file content that
+    /// should stay collapsed by default.
+    private var isFileRead: Bool {
+        message.stringMetadata("tool") == "file_read"
+    }
+
+    /// Whether a `file_edit` tool call failed. A successful edit always returns a
+    /// "Successfully replaced …" message; anything else (Error:, BLOCKED:, Tool error:,
+    /// etc.) is a failure. Pending calls (no output yet) return false so the optimistic
+    /// diff is still shown while the call is in flight.
+    private var fileEditFailed: Bool {
+        guard let output = toolOutputMessage else { return false }
+        let content = output.content.trimmingCharacters(in: .whitespaces)
+        return !content.hasPrefix("Successfully")
     }
 
     @ViewBuilder
@@ -738,12 +759,18 @@ private struct MessageRow: View {
         }
 
         // file_edit inline diff — parse old_string / new_string from params.
+        // Suppress the diff if the edit failed (e.g., `old_string` not found) so the
+        // UI doesn't imply a change was applied when it wasn't. The error line from the
+        // tool output is still shown below.
         if message.stringMetadata("tool") == "file_edit",
+           !fileEditFailed,
            let (oldString, newString) = Self.fileEditStrings(from: message) {
             DiffView(oldContent: oldString, newContent: newString)
         }
 
-        // Tool output: first line always shown (selectable); full content when expanded
+        // Tool output: first line always shown (selectable); full content when expanded.
+        // Exception: file_read hides its output entirely when collapsed, since the "first line"
+        // is raw file data (typically "     1  ...") that clutters the channel.
         if let output = toolOutputMessage {
             if isExpanded {
                 let fullText: String = {
@@ -758,7 +785,7 @@ private struct MessageRow: View {
                     .padding(.leading, 12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
-            } else {
+            } else if !isFileRead {
                 let firstLine = output.content.components(separatedBy: .newlines).first ?? output.content
                 Text(firstLine)
                     .font(AppFonts.channelBody.monospaced())
@@ -1239,9 +1266,28 @@ private struct TaskReadyForReviewBanner: View {
     let recipientName: String?
     let timestamp: Date
 
+    @State private var isExpanded = false
+
     private let accentColor = AppColors.taskReadyForReviewAccent
 
+    /// Splits the banner's `content` into (header, body). The header is everything
+    /// before the first line that starts with "Result:"; the body is that line and
+    /// everything after it. If no "Result:" marker is present, the full content is
+    /// treated as the header and the body is nil.
+    private var splitContent: (header: String, body: String?) {
+        let lines = content.components(separatedBy: "\n")
+        guard let resultIndex = lines.firstIndex(where: { $0.hasPrefix("Result:") }) else {
+            return (content, nil)
+        }
+        let headerLines = lines[..<resultIndex]
+        let bodyLines = lines[resultIndex...]
+        let header = headerLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = bodyLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return (header, body.isEmpty ? nil : body)
+    }
+
     var body: some View {
+        let parts = splitContent
         VStack(spacing: 0) {
             accentColor.frame(height: 1).opacity(0.4)
 
@@ -1279,11 +1325,33 @@ private struct TaskReadyForReviewBanner: View {
                     .padding(.bottom, 2)
             }
 
-            MarkdownText(content: content, baseFont: AppFonts.channelBody)
-                .foregroundStyle(.primary)
+            if !parts.header.isEmpty {
+                MarkdownText(content: parts.header, baseFont: AppFonts.channelBody)
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, parts.body == nil ? 6 : 2)
+            }
+
+            if let body = parts.body {
+                Button(action: { isExpanded.toggle() }) {
+                    Text(isExpanded ? "(hide result)" : "(show result)")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                }
+                .buttonStyle(.plain)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 10)
-                .padding(.bottom, 6)
+                .padding(.bottom, isExpanded ? 2 : 6)
+
+                if isExpanded {
+                    MarkdownText(content: body, baseFont: AppFonts.channelBody)
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, 6)
+                }
+            }
 
             accentColor.frame(height: 1).opacity(0.4)
         }

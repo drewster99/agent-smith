@@ -179,12 +179,8 @@ struct DiffView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 6) {
-                    Text("+\(addedCount)")
-                        .font(AppFonts.channelTimestamp)
-                        .foregroundStyle(.green)
-                    Text("-\(removedCount)")
-                        .font(AppFonts.channelTimestamp)
-                        .foregroundStyle(.red)
+                    Text("\(Text("+\(addedCount)").foregroundColor(.green))  \(Text("-\(removedCount)").foregroundColor(.red))")
+                        .font(AppFonts.channelTimestamp.monospacedDigit())
                     if needsTruncation {
                         Text(isExpanded ? "(show less)" : "(show more)")
                             .font(.caption)

@@ -26,6 +26,21 @@ struct MarkdownText: View, Equatable {
             }
         }
         .textSelection(.enabled)
+        .environment(\.openURL, OpenURLAction { url in
+            guard url.isFileURL else { return .systemAction }
+            let path = url.path
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir) else {
+                // Path disappeared between linkification and tap — silently drop.
+                return .handled
+            }
+            if isDir.boolValue {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } else {
+                NSWorkspace.shared.open(url)
+            }
+            return .handled
+        })
     }
 
     // MARK: - Block model
@@ -299,7 +314,7 @@ struct MarkdownText: View, Equatable {
         let segments = parseInlineCode(raw)
 
         guard segments.contains(where: { $0.isCode }) else {
-            return Text(LocalizedStringKey(linkifyBareURLs(raw))).font(font)
+            return Text(LocalizedStringKey(linkify(raw))).font(font)
         }
 
         var combined = Text("")
@@ -310,7 +325,7 @@ struct MarkdownText: View, Equatable {
                     .foregroundColor(.cyan)
                 combined = Text("\(combined)\(part)")
             } else {
-                let part = Text(LocalizedStringKey(linkifyBareURLs(segment.text)))
+                let part = Text(LocalizedStringKey(linkify(segment.text)))
                     .font(font)
                 combined = Text("\(combined)\(part)")
             }
@@ -318,10 +333,70 @@ struct MarkdownText: View, Equatable {
         return combined
     }
 
+    /// Runs all inline linkification passes in the order that avoids collisions:
+    /// path wrapping first (emits `file://` markdown links), then bare URL wrapping.
+    private func linkify(_ text: String) -> String {
+        linkifyBareURLs(linkifyPaths(text))
+    }
+
     /// Compiled once and reused across all MarkdownText instances.
     private static let bareURLRegex = try? NSRegularExpression(
         pattern: #"(?<![(\[])https?://[^\s)\]*]+"#
     )
+
+    /// Matches absolute POSIX paths starting with `/` or `~/`.
+    /// Negative lookbehind excludes: existing markdown link syntax (`[` / `(`),
+    /// URL scheme tails (`:` / `/`), and word-adjacent slashes like `a/b` which
+    /// aren't filesystem paths.
+    private static let pathRegex = try? NSRegularExpression(
+        pattern: #"(?<![\w/:\[(])(?:~/|/)[A-Za-z0-9._/~\-]+"#
+    )
+
+    /// Wraps absolute file paths that exist on disk with `[path](file:///...)` markdown,
+    /// so that `Text(LocalizedStringKey(_:))` renders them as tappable links. Non-existent
+    /// paths are left untouched. Trailing sentence punctuation (`.,;:)]`) is preserved
+    /// outside the link so "see /foo/bar." doesn't try to open `/foo/bar.`
+    private func linkifyPaths(_ text: String) -> String {
+        guard let regex = Self.pathRegex else { return text }
+
+        let fullRange = NSRange(location: 0, length: (text as NSString).length)
+        let matches = regex.matches(in: text, range: fullRange)
+        guard !matches.isEmpty else { return text }
+
+        var result = ""
+        var lastEnd = text.startIndex
+        let fm = FileManager.default
+
+        for match in matches {
+            guard let range = Range(match.range, in: text) else { continue }
+            result += text[lastEnd..<range.lowerBound]
+            lastEnd = range.upperBound
+
+            var candidate = String(text[range])
+            var trailing = ""
+            while let last = candidate.last, ".,;:)]".contains(last) {
+                trailing = String(last) + trailing
+                candidate.removeLast()
+            }
+
+            guard !candidate.isEmpty else {
+                result += String(text[range])
+                continue
+            }
+
+            let expanded = (candidate as NSString).expandingTildeInPath
+            guard fm.fileExists(atPath: expanded) else {
+                result += String(text[range])
+                continue
+            }
+
+            // `URL(fileURLWithPath:)` handles percent-encoding of spaces, unicode, etc.
+            let urlString = URL(fileURLWithPath: expanded).absoluteString
+            result += "[\(candidate)](\(urlString))\(trailing)"
+        }
+        result += text[lastEnd...]
+        return result
+    }
 
     /// Wraps bare `https?://` URLs (not already in markdown link syntax) with `[url](url)`,
     /// so that `Text(LocalizedStringKey(_:))` renders them as tappable links.

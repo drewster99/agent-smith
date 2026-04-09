@@ -122,9 +122,7 @@ struct TaskDetailWindow: View {
                                 Text(update.date.formatted(date: .omitted, time: .standard))
                                     .font(.caption.monospaced())
                                     .foregroundStyle(.tertiary)
-                                Text(update.message)
-                                    .font(.callout)
-                                    .textSelection(.enabled)
+                                MarkdownText(content: update.message, baseFont: .callout)
                             }
                         }
                     }
