@@ -581,7 +581,7 @@ private struct MessageRow: View {
 
     @ViewBuilder
     private var fileWriteRequestBody: some View {
-        // Line 1: "file_write /dir/path/filename ⚡1/3 (show content) (show more) ✅"
+        // Line 1: "file_write /dir/path/filename ⚡1/3 (show more) ✅"
         HStack(alignment: .firstTextBaseline, spacing: 4) {
             FileWritePathView(path: message.stringMetadata("fileWritePath") ?? "")
             if let badge = parallelBadge {
@@ -592,11 +592,6 @@ private struct MessageRow: View {
                     .padding(.vertical, 1)
                     .background(.cyan.opacity(0.15))
                     .clipShape(Capsule())
-            }
-            if let content = message.stringMetadata("fileWriteContent"), !content.isEmpty {
-                Text(isExpanded ? "(hide content)" : "(show content)")
-                    .font(.caption)
-                    .foregroundStyle(.blue)
             }
             if isExpanded {
                 Text("(show less)")
@@ -625,20 +620,12 @@ private struct MessageRow: View {
                 .padding(.leading, 12)
         }
 
-        // Inline diff: old file content → new file content.
-        if let newContent = message.stringMetadata("fileWriteContent") {
-            let oldContent = message.stringMetadata("fileWriteOldContent") ?? ""
-            DiffView(oldContent: oldContent, newContent: newContent)
-        }
-
-        // Expanded content (raw new content, shown when user clicks "(show content)")
-        if isExpanded, let content = message.stringMetadata("fileWriteContent") {
-            Text(content)
-                .font(AppFonts.channelBody.monospaced())
-                .foregroundStyle(.secondary)
-                .padding(.leading, 12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
+        // Inline diff: rendered from precomputed [DiffLine] that AgentActor
+        // stashed into `fileWriteDiff` metadata at post time. Storing only
+        // the diff lines (not the raw old+new file contents) keeps
+        // channel_log.json bounded regardless of file size.
+        if let diffLines = precomputedDiffLines {
+            DiffView(lines: diffLines)
         }
 
         // Tool output: first line always shown (selectable); full content when expanded
@@ -833,6 +820,22 @@ private struct MessageRow: View {
             return nil
         }
         return (oldString, newString)
+    }
+
+    /// Decodes the precomputed diff that `AgentActor` stashed into
+    /// `fileWriteDiff` metadata at tool_request post time. Returns nil if no
+    /// diff was stored (large file, read failure) or if the metadata can't be
+    /// parsed — in both cases the UI falls through to "no diff shown".
+    private var precomputedDiffLines: [DiffLine]? {
+        guard let json = message.stringMetadata("fileWriteDiff"),
+              let data = json.data(using: .utf8) else {
+            return nil
+        }
+        do {
+            return try JSONDecoder().decode([DiffLine].self, from: data)
+        } catch {
+            return nil
+        }
     }
 
     @ViewBuilder

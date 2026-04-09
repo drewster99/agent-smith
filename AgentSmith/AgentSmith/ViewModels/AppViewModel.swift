@@ -144,11 +144,13 @@ final class AppViewModel {
             }
             speechController.applyBundledDefaults(bundled.speech)
 
-            // Apply bundled provider/config/assignment defaults if no persisted state exists.
-            // Built-in providers are seeded by SwiftLLMKit on every load(), so the legacy
-            // "providers.isEmpty" check no longer works as a fresh-install signal — use the
-            // configurations list instead.
-            if llmKit.configurations.isEmpty {
+            // Apply bundled provider/config/assignment defaults exactly once on a fresh
+            // install. We can't use `llmKit.providers.isEmpty` (built-in providers are
+            // seeded on every load) or `llmKit.configurations.isEmpty` (the user might
+            // have intentionally deleted all their configs and we'd silently re-create
+            // them on next launch). A UserDefaults sentinel is the canonical pattern.
+            let didBootstrapKey = "didBootstrapBundledDefaults"
+            if !UserDefaults.standard.bool(forKey: didBootstrapKey) {
                 for provider in bundled.providers {
                     let apiKey = bundled.providerAPIKeys[provider.id] ?? ""
                     try llmKit.addProvider(provider, apiKey: apiKey)
@@ -157,6 +159,7 @@ final class AppViewModel {
                     llmKit.addConfiguration(config)
                 }
                 agentAssignments = bundled.agentAssignments
+                UserDefaults.standard.set(true, forKey: didBootstrapKey)
             }
         } catch {
             let msg = "No bundled defaults (using hardcoded): \(error)"
@@ -837,29 +840,22 @@ final class AppViewModel {
     /// 3. Otherwise returns the existing assigned configuration unchanged.
     ///
     /// The agent-centric Model section in `AgentConfigSheet` calls this on appear so that
-    /// any edits go to a config owned exclusively by this role.
+    /// any edits go to a config owned exclusively by this role. Always returns a config —
+    /// the starter path falls through unconditionally if no assignment exists.
     @discardableResult
-    func ensureDedicatedConfig(for role: AgentRole) -> ModelConfiguration? {
+    func ensureDedicatedConfig(for role: AgentRole) -> ModelConfiguration {
         if let existingID = agentAssignments[role],
            let existing = llmKit.configurations.first(where: { $0.id == existingID }) {
             let sharedWith = agentAssignments.filter { $0.value == existingID && $0.key != role }
             if sharedWith.isEmpty {
                 return existing
             }
-            // Shared — clone and reassign so this role owns its own config.
-            let clone = ModelConfiguration(
-                id: UUID(),
-                name: "\(role.displayName) — \(existing.modelID)",
-                providerID: existing.providerID,
-                modelID: existing.modelID,
-                temperature: existing.temperature,
-                maxOutputTokens: existing.maxOutputTokens,
-                maxContextTokens: existing.maxContextTokens,
-                thinkingBudget: existing.thinkingBudget,
-                extendedCacheTTL: existing.extendedCacheTTL,
-                useDefaultTemperature: existing.useDefaultTemperature,
-                streaming: existing.streaming
-            )
+            // Shared — clone and reassign so this role owns its own config. Copy-and-mutate
+            // off the existing struct so any new fields added to ModelConfiguration are
+            // automatically picked up here.
+            var clone = existing
+            clone.id = UUID()
+            clone.name = "\(role.displayName) — \(existing.modelID)"
             llmKit.addConfiguration(clone)
             agentAssignments[role] = clone.id
             persistAgentAssignments()

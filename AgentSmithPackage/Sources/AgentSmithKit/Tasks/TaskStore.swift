@@ -145,6 +145,21 @@ public actor TaskStore {
         onChange?()
     }
 
+    /// Increments the task's acknowledgment counter and returns the new value. Called
+    /// by `TaskAcknowledgedTool` on every ack so a respawned Brown can distinguish
+    /// a first-time ack (count == 1) from a continuation (count > 1) without relying
+    /// on the fragile `updates.isEmpty` heuristic.
+    @discardableResult
+    public func incrementAcknowledgmentCount(id: UUID) -> Int {
+        guard var task = tasks[id] else { return 0 }
+        task.acknowledgmentCount += 1
+        task.updatedAt = Date()
+        let newCount = task.acknowledgmentCount
+        tasks[id] = task
+        onChange?()
+        return newCount
+    }
+
     /// Stores an LLM-generated summary on a completed or failed task.
     public func setSummary(id: UUID, summary: String) {
         guard var task = tasks[id] else { return }

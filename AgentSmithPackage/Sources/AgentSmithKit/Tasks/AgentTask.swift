@@ -18,6 +18,11 @@ public struct AgentTask: Identifiable, Codable, Sendable {
     public var completedAt: Date?
     /// Progress updates from Brown, persisted so a restarted Brown has context.
     public var updates: [TaskUpdate]
+    /// Number of times `task_acknowledged` has been called for this task. Starts at 0;
+    /// incremented each time Brown acknowledges. A value > 1 means Brown is picking up
+    /// after a prior run (rejection-revision or respawn), not a fresh assignment.
+    /// Persisted so the signal survives app restart and new-Brown spawns.
+    public var acknowledgmentCount: Int
     /// Compressed summary of Brown's last working state, saved on termination for resumability.
     public var lastBrownContext: String?
     /// LLM-generated summary of the task (populated after completion/failure).
@@ -85,6 +90,7 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         startedAt: Date? = nil,
         completedAt: Date? = nil,
         updates: [TaskUpdate] = [],
+        acknowledgmentCount: Int = 0,
         lastBrownContext: String? = nil,
         summary: String? = nil,
         relevantMemories: [RelevantMemory]? = nil,
@@ -103,6 +109,7 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         self.startedAt = startedAt
         self.completedAt = completedAt
         self.updates = updates
+        self.acknowledgmentCount = acknowledgmentCount
         self.lastBrownContext = lastBrownContext
         self.summary = summary
         self.relevantMemories = relevantMemories
@@ -112,7 +119,7 @@ public struct AgentTask: Identifiable, Codable, Sendable {
     // MARK: - Codable (backward-compatible with persisted data lacking `disposition`)
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt, startedAt, completedAt, updates, lastBrownContext, summary, relevantMemories, relevantPriorTasks
+        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt, startedAt, completedAt, updates, acknowledgmentCount, lastBrownContext, summary, relevantMemories, relevantPriorTasks
     }
 
     public init(from decoder: Decoder) throws {
@@ -130,6 +137,7 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt)
         completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
         updates = try c.decodeIfPresent([TaskUpdate].self, forKey: .updates) ?? []
+        acknowledgmentCount = try c.decodeIfPresent(Int.self, forKey: .acknowledgmentCount) ?? 0
         lastBrownContext = try c.decodeIfPresent(String.self, forKey: .lastBrownContext)
         summary = try c.decodeIfPresent(String.self, forKey: .summary)
         relevantMemories = try c.decodeIfPresent([RelevantMemory].self, forKey: .relevantMemories)
@@ -152,6 +160,9 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         try c.encodeIfPresent(completedAt, forKey: .completedAt)
         if !updates.isEmpty {
             try c.encode(updates, forKey: .updates)
+        }
+        if acknowledgmentCount > 0 {
+            try c.encode(acknowledgmentCount, forKey: .acknowledgmentCount)
         }
         try c.encodeIfPresent(lastBrownContext, forKey: .lastBrownContext)
         try c.encodeIfPresent(summary, forKey: .summary)

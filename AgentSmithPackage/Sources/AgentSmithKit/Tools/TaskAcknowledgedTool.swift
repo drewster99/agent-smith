@@ -26,12 +26,13 @@ public struct TaskAcknowledgedTool: AgentTool {
             return "Task '\(task.title)' cannot be acknowledged in its current state (\(task.status.rawValue))."
         }
 
-        // Detect re-acknowledgement after a prior run (e.g. after a rejection or
-        // a new Brown spawning into an already-started task). Progress updates are
-        // only written by Brown's actual work, so their presence means this task
-        // has been worked on before. (`startedAt` can't be used because the
-        // orchestrator may have already set it to `.running` before this tool runs.)
-        let isContinuation = !task.updates.isEmpty
+        // Bump the explicit ack counter and use its post-increment value to decide
+        // whether this is a fresh ack (count == 1) or a continuation (count > 1).
+        // This is reliable across respawns, rejections, and crash-recovery paths;
+        // the previous `!task.updates.isEmpty` heuristic wrongly classified any
+        // respawn where Brown never called `task_update` as a fresh ack.
+        let newAckCount = await context.taskStore.incrementAcknowledgmentCount(id: task.id)
+        let isContinuation = newAckCount > 1
 
         await context.taskStore.updateStatus(id: task.id, status: .running)
 

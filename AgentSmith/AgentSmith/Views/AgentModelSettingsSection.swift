@@ -261,28 +261,37 @@ struct AgentModelSettingsSection: View {
                         .frame(width: 120)
                         .onSubmit { commit() }
                         .onChange(of: thinkingBudget) { _, newValue in
-                            if newValue > 0 {
-                                thinkingBudget = max(1024, newValue)
-                                if selectedAPIType == .anthropic {
-                                    temperature = 1.0
-                                }
-                            } else if newValue < 0 {
+                            // Two-phase clamp: if the typed value is below the 1024 floor
+                            // (or negative), we rewrite it to the corrected value and bail
+                            // out — the resulting state change re-fires this handler with
+                            // the clamped value, which falls through to commit() once.
+                            // No double-commit because the buttons no longer call commit()
+                            // directly; they set state and let this handler do the work.
+                            if newValue > 0 && newValue < 1024 {
+                                thinkingBudget = 1024
+                                return
+                            }
+                            if newValue < 0 {
                                 thinkingBudget = 0
+                                return
+                            }
+                            if newValue > 0 && selectedAPIType == .anthropic {
+                                temperature = 1.0
                             }
                             guard !isSyncingFromExternal else { return }
                             commit()
                         }
 
-                    Button("1K") { thinkingBudget = 1_024; commit() }
+                    Button("1K") { thinkingBudget = 1_024 }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
-                    Button("4K") { thinkingBudget = 4_096; commit() }
+                    Button("4K") { thinkingBudget = 4_096 }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
-                    Button("16K") { thinkingBudget = 16_384; commit() }
+                    Button("16K") { thinkingBudget = 16_384 }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
-                    Button("Off") { thinkingBudget = 0; commit() }
+                    Button("Off") { thinkingBudget = 0 }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                 }
@@ -357,7 +366,7 @@ struct AgentModelSettingsSection: View {
     // MARK: - Load / save
 
     private func loadFromViewModel() {
-        guard let config = viewModel.ensureDedicatedConfig(for: role) else { return }
+        let config = viewModel.ensureDedicatedConfig(for: role)
         configID = config.id
         syncDraftsFromConfig(config)
     }

@@ -189,16 +189,25 @@ struct ProviderManagementView: View {
 ///   for agents populates without the user needing to visit the Configurations tab.
 /// - Registers an undo action that restores the previous key (and re-refreshes).
 private struct BuiltInProviderRow: View {
-    let llmKit: LLMKitManager
+    @Bindable var llmKit: LLMKitManager
     let preset: BuiltInProviderPreset
 
     @Environment(\.undoManager) private var undoManager
 
     @State private var draftKey: String = ""
-    @State private var savedKey: String = ""
     @State private var saveError: String?
     @State private var justSaved = false
     @State private var isRefreshing = false
+    @State private var hasLoaded = false
+
+    /// The currently-persisted API key, read reactively from `llmKit`. Observation
+    /// of `llmKit.apiKeyChangeCounter` re-renders the body whenever any key is
+    /// written through the manager (add/update/remove/built-in/undo), so
+    /// external mutations are reflected immediately.
+    private var savedKey: String {
+        _ = llmKit.apiKeyChangeCounter  // register observation dependency
+        return llmKit.apiKey(for: preset.id) ?? ""
+    }
 
     private var hasUnsavedChanges: Bool {
         draftKey != savedKey
@@ -265,9 +274,21 @@ private struct BuiltInProviderRow: View {
             .padding(4)
         }
         .onAppear {
-            let current = llmKit.apiKey(for: preset.id) ?? ""
-            savedKey = current
-            draftKey = current
+            // Seed draftKey once from the currently-persisted value. Subsequent
+            // external changes are picked up via the onChange below so we don't
+            // clobber in-flight user edits.
+            if !hasLoaded {
+                draftKey = savedKey
+                hasLoaded = true
+            }
+        }
+        .onChange(of: llmKit.apiKeyChangeCounter) { _, _ in
+            // Re-sync the draft to the new saved value only when the user isn't
+            // mid-edit. This catches undo/redo from another window or any other
+            // external mutation without dropping what the user is currently typing.
+            if !hasUnsavedChanges {
+                draftKey = savedKey
+            }
         }
     }
 
@@ -283,7 +304,10 @@ private struct BuiltInProviderRow: View {
     private func applyKey(_ newKey: String, registerUndoForOldKey oldKey: String) {
         do {
             try llmKit.setBuiltInProviderAPIKey(id: preset.id, apiKey: newKey)
-            savedKey = newKey
+            // savedKey is computed from llmKit.apiKeyChangeCounter and will update
+            // automatically on the next render. Sync draftKey so the SecureField
+            // reflects the persisted value (and onChange doesn't treat the just-
+            // persisted value as "unsaved changes" on its counter notification).
             draftKey = newKey
             saveError = nil
             withAnimation { justSaved = true }

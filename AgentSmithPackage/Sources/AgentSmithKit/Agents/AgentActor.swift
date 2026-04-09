@@ -110,6 +110,21 @@ public actor AgentActor {
     /// have the snapshot stripped to avoid O(n^2) memory growth across long sessions.
     private static let recentSnapshotWindow = 10
 
+    /// Hard cap on the size of the old file we'll read from disk to compute
+    /// a file_write diff. Files larger than this skip the diff entirely (the
+    /// row renders the path + output without an inline diff). Only the
+    /// resulting `[DiffLine]` is persisted, not the raw content — this cap
+    /// exists to bound the disk I/O on the actor thread, not the stored size.
+    /// DiffGenerator has its own independent 1000-line cap that kicks in for
+    /// small-byte, many-line inputs.
+    private static let maxDiffCaptureBytes = 1_000_000
+
+    /// Character set used to generate synthetic tool-call IDs. Precomputed so we
+    /// can pull random elements without force-unwrapping a substring on every char.
+    private static let toolCallIDCharset: [Character] = Array(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    )
+
     /// Fires after each LLM turn is recorded, pushing the turn to the UI layer.
     private var onTurnRecorded: (@Sendable (LLMTurnRecord) -> Void)?
 
@@ -346,9 +361,11 @@ public actor AgentActor {
             if let toolName = syntheticFirstToolCall {
                 syntheticFirstToolCall = nil
                 if let tool = tools.first(where: { $0.name == toolName }) {
+                    // Charset is non-empty so randomElement() never returns nil; the
+                    // "0" coalesce keeps us off force-unwrap and gives a known fallback
+                    // if the constant is ever emptied during refactoring.
                     let callID = String((0..<9).map { _ in
-                        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-                            .randomElement()!
+                        Self.toolCallIDCharset.randomElement() ?? "0"
                     })
                     let syntheticCall = LLMToolCall(
                         id: callID,
@@ -1025,18 +1042,34 @@ public actor AgentActor {
         if call.name == "file_write", let args = Self.parseToolParams(call.arguments) {
             if case .string(let path) = args["path"] {
                 metadata["fileWritePath"] = .string(path)
-                // Capture the current file contents (if any) for the diff view.
-                // A missing file or unreadable content is shown as "all additions".
-                let expanded = (path as NSString).expandingTildeInPath
-                let oldContent: String
-                do {
-                    oldContent = try String(contentsOfFile: expanded, encoding: .utf8)
-                } catch {
-                    oldContent = ""
-                }
-                metadata["fileWriteOldContent"] = .string(oldContent)
             }
-            if case .string(let content) = args["content"] { metadata["fileWriteContent"] = .string(content) }
+            // Precompute the diff at post time and store ONLY the diff lines.
+            // Storing the raw pre-edit file content here (as we used to) bloated
+            // channel_log.json without bound: a single multi-MB file_write would
+            // copy the full file into metadata, persisted forever. The diff is
+            // proportional to the *change*, not the file size — a 1-line edit to
+            // a 10,000-line file is only a few lines of output.
+            //
+            // We still have to read the old file off disk to compute the diff,
+            // but the raw content is dropped immediately afterward.
+            if case .string(let path) = args["path"],
+               case .string(let newContent) = args["content"] {
+                let oldContent = Self.readOldContentForDiff(path: path)
+                if let oldContent {
+                    let diffLines = DiffGenerator.generate(old: oldContent, new: newContent)
+                    if !diffLines.isEmpty {
+                        do {
+                            let data = try JSONEncoder().encode(diffLines)
+                            if let jsonString = String(data: data, encoding: .utf8) {
+                                metadata["fileWriteDiff"] = .string(jsonString)
+                            }
+                        } catch {
+                            // Encoding a trivially-Codable [DiffLine] should never fail;
+                            // if it does, just omit the diff metadata.
+                        }
+                    }
+                }
+            }
         }
 
         await toolContext.channel.post(ChannelMessage(
@@ -1496,7 +1529,7 @@ public actor AgentActor {
     /// Formats a tool call as a concise one-liner for channel display, e.g. `"bash: ls -la ~/"`.
     /// Produces a short human-readable description for a tool call.
     /// For `file_write`, returns just `file_write <path>` — the view layer renders rich formatting
-    /// using the structured metadata fields (`fileWritePath`, `fileWriteContent`).
+    /// using the structured metadata fields (`fileWritePath`, `fileWriteDiff`).
     private static func conciseToolCallSummary(name: String, arguments: String) -> String {
         guard let data = arguments.data(using: .utf8) else {
             return "\(name): \(arguments)"
@@ -1649,6 +1682,36 @@ public actor AgentActor {
             return try JSONDecoder().decode([String: AnyCodable].self, from: data)
         } catch {
             // Malformed JSON — return nil so comparison falls through to normal evaluation.
+            return nil
+        }
+    }
+
+    /// Reads the current contents of `path` for diff computation in
+    /// `postToolRequestToChannel`. Returns `nil` when the file can't be diffed:
+    /// - Path doesn't exist → `""` (treat as new-file creation, all-added diff)
+    /// - File is larger than `maxDiffCaptureBytes` → `nil` (skip diff entirely)
+    /// - File exists but the read fails → `nil` (skip diff entirely)
+    ///
+    /// The raw content returned here is consumed once to compute the diff and
+    /// then thrown away — only the resulting `[DiffLine]` is persisted into
+    /// channel metadata.
+    private static func readOldContentForDiff(path: String) -> String? {
+        let expanded = (path as NSString).expandingTildeInPath
+        let fileSize: Int
+        do {
+            let attrs = try FileManager.default.attributesOfItem(atPath: expanded)
+            fileSize = (attrs[.size] as? NSNumber)?.intValue ?? 0
+        } catch {
+            // File doesn't exist — treat as a new-file write. The diff will
+            // then be all-added lines from the new content.
+            return ""
+        }
+        guard fileSize <= Self.maxDiffCaptureBytes else {
+            return nil
+        }
+        do {
+            return try String(contentsOfFile: expanded, encoding: .utf8)
+        } catch {
             return nil
         }
     }
