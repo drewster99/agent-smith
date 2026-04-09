@@ -367,15 +367,27 @@ public actor OrchestrationRuntime {
                 // Build Smith's initial instruction
                 var smithParts: [String] = []
 
+                smithParts.append("""
+                    ## Other information
+                    
+                    The information below is NOT part of this task and does NOT reflect the user's intent for this task.
+                    It is provided only because it MIGHT be a source of relevant context - but it also might be completely
+                    useless and unrelated.
+                    
+                    Use it with caution.
+                    
+                    DO NOT ASSUME that any part of it might also apply to the current task. Rather, if there are things that
+                    MIGHT apply, ASK the user for clarification right away.
+                    """)
                 if let memories = resumingTask.relevantMemories, !memories.isEmpty {
                     let memoryLines = memories.map { "- \($0.content) (similarity: \(String(format: "%.2f", $0.similarity)))" }
-                    smithParts.append("Relevant memories:\n\(memoryLines.joined(separator: "\n"))")
+                    smithParts.append("### Relevant memories:\n\(memoryLines.joined(separator: "\n"))")
                 }
                 if let priorTasks = resumingTask.relevantPriorTasks, !priorTasks.isEmpty {
                     let taskLines = priorTasks.map { task in
                         "- \(task.title): \(task.summary) (similarity: \(String(format: "%.2f", task.similarity)))"
                     }
-                    smithParts.append("Relevant prior task summaries:\n\(taskLines.joined(separator: "\n"))")
+                    smithParts.append("### Relevant prior task summaries:\n\(taskLines.joined(separator: "\n"))")
                 }
 
                 if brownSpawned {
