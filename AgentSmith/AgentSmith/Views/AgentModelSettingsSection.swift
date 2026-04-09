@@ -49,14 +49,14 @@ struct AgentModelSettingsSection: View {
         llmKit.modelInfo(providerID: providerID, modelID: modelID)
     }
 
-    /// All providers that have at least one model in the catalog (so the dropdown isn't
-    /// cluttered with empty providers). Built-in providers without API keys may show up
-    /// here if model fetch has been run; otherwise they're absent until refresh.
-    private var providersWithModels: [ModelProvider] {
-        let providerIDsWithModels = Set(llmKit.models.map(\.providerID))
-        return llmKit.providers
-            .filter { providerIDsWithModels.contains($0.id) }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    /// All configured providers, sorted alphabetically. Previously this filtered to
+    /// providers with at least one cached model, but that silently hid providers whose
+    /// model fetch hadn't run (e.g. keys entered before per-provider refresh wiring,
+    /// or days-old cached state that `refreshIfNeeded`'s YYYYMMDD gate skipped).
+    /// We now show every provider and mark empty ones with a refresh affordance so
+    /// the user can recover without leaving the sheet.
+    private var sortedProviders: [ModelProvider] {
+        llmKit.providers.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     private var thinkingSupported: Bool {
@@ -127,19 +127,11 @@ struct AgentModelSettingsSection: View {
 
     private var modelDropdown: some View {
         Menu(content: {
-            if providersWithModels.isEmpty {
-                Text("No models loaded. Paste an API key on a built-in provider, or refresh in Settings → Configurations.")
+            if sortedProviders.isEmpty {
+                Text("No providers configured. Add one in Settings → Providers.")
             } else {
-                ForEach(providersWithModels) { provider in
-                    Menu(provider.name) {
-                        let providerModels = llmKit.models(for: provider.id)
-                            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
-                        ForEach(providerModels) { model in
-                            Button(action: { selectModel(provider: provider, model: model) }) {
-                                modelMenuLabel(for: model)
-                            }
-                        }
-                    }
+                ForEach(sortedProviders) { provider in
+                    providerSubmenu(for: provider)
                 }
             }
         }, label: {
@@ -166,6 +158,66 @@ struct AgentModelSettingsSection: View {
             .clipShape(RoundedRectangle(cornerRadius: 6))
         })
         .menuStyle(.borderlessButton)
+    }
+
+    /// One provider's submenu in the model dropdown. Providers with a populated
+    /// catalog get their model list. Providers with an empty catalog get a single
+    /// "Refresh" action and a warning label so the user can pull models without
+    /// leaving the sheet. A prior refresh error (from `llmKit.refreshErrors`) is
+    /// shown inline so the failure mode is visible.
+    @ViewBuilder
+    private func providerSubmenu(for provider: ModelProvider) -> some View {
+        let providerModels = llmKit.models(for: provider.id)
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        let refreshError = llmKit.refreshErrors[provider.name]
+        let isEmpty = providerModels.isEmpty
+
+        Menu(
+            content: {
+                if isEmpty {
+                    if let refreshError {
+                        Text("Last refresh failed: \(refreshError)")
+                    } else {
+                        Text("No models cached.")
+                    }
+                    Button("Refresh \(provider.name)") {
+                        refreshProvider(provider)
+                    }
+                    .disabled(llmKit.isRefreshing)
+                } else {
+                    ForEach(providerModels) { model in
+                        Button(
+                            action: { selectModel(provider: provider, model: model) },
+                            label: { modelMenuLabel(for: model) }
+                        )
+                    }
+                    Divider()
+                    Button("Refresh \(provider.name)") {
+                        refreshProvider(provider)
+                    }
+                    .disabled(llmKit.isRefreshing)
+                }
+            },
+            label: {
+                HStack(spacing: 4) {
+                    Text(provider.name)
+                    if isEmpty || refreshError != nil {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+        )
+    }
+
+    /// Kicks off a per-provider model refresh. `refreshModels(forProviderID:)` sets
+    /// `llmKit.isRefreshing = true` for the duration, which the Refresh buttons
+    /// key off via `.disabled(llmKit.isRefreshing)` so double-taps are prevented.
+    private func refreshProvider(_ provider: ModelProvider) {
+        let providerID = provider.id
+        Task { @MainActor in
+            await llmKit.refreshModels(forProviderID: providerID)
+        }
     }
 
     private func modelMenuLabel(for model: ModelInfo) -> some View {

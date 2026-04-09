@@ -208,9 +208,40 @@ final class AppViewModel {
         }
 
         do {
-            let savedMessages = try await persistenceManager.loadChannelLog()
+            var savedMessages = try await persistenceManager.loadChannelLog()
+            // One-time migration: strip `fileWriteOldContent` and `fileWriteContent`
+            // metadata from historical tool_request rows. Prior versions of
+            // AgentActor.postToolRequestToChannel captured the full pre- and
+            // post-write file contents into channel metadata for the inline diff
+            // view. We now precompute the diff and store only the resulting
+            // `[DiffLine]` array in `fileWriteDiff` — so the old raw content is
+            // dead weight inflating channel_log.json. Strip it here so the file
+            // shrinks on the next save. Idempotent: if no stale keys are found,
+            // nothing is re-saved.
+            var strippedCount = 0
+            for i in savedMessages.indices {
+                guard var md = savedMessages[i].metadata else { continue }
+                var changed = false
+                if md.removeValue(forKey: "fileWriteOldContent") != nil { changed = true }
+                if md.removeValue(forKey: "fileWriteContent") != nil { changed = true }
+                if changed {
+                    savedMessages[i].metadata = md
+                    strippedCount += 1
+                }
+            }
             allPersistedMessages = savedMessages
             persistedHistoryCount = savedMessages.count
+            if strippedCount > 0 {
+                print("[AgentSmith] Stripped stale file_write diff metadata from \(strippedCount) message(s); re-saving channel log.")
+                let snapshot = savedMessages
+                Task.detached { [persistenceManager, logger] in
+                    do {
+                        try await persistenceManager.saveChannelLog(snapshot)
+                    } catch {
+                        logger.error("Failed to re-save channel log after migration: \(error)")
+                    }
+                }
+            }
         } catch {
             let msg = "Failed to load channel log: \(error)"
             print("[AgentSmith] \(msg)")
