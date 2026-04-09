@@ -623,7 +623,13 @@ private struct MessageRow: View {
                 .padding(.leading, 12)
         }
 
-        // Expanded content
+        // Inline diff: old file content → new file content.
+        if let newContent = message.stringMetadata("fileWriteContent") {
+            let oldContent = message.stringMetadata("fileWriteOldContent") ?? ""
+            DiffView(oldContent: oldContent, newContent: newContent)
+        }
+
+        // Expanded content (raw new content, shown when user clicks "(show content)")
         if isExpanded, let content = message.stringMetadata("fileWriteContent") {
             Text(content)
                 .font(AppFonts.channelBody.monospaced())
@@ -731,6 +737,12 @@ private struct MessageRow: View {
                 .padding(.leading, 12)
         }
 
+        // file_edit inline diff — parse old_string / new_string from params.
+        if message.stringMetadata("tool") == "file_edit",
+           let (oldString, newString) = Self.fileEditStrings(from: message) {
+            DiffView(oldContent: oldString, newContent: newString)
+        }
+
         // Tool output: first line always shown (selectable); full content when expanded
         if let output = toolOutputMessage {
             if isExpanded {
@@ -756,6 +768,20 @@ private struct MessageRow: View {
                     .textSelection(.enabled)
             }
         }
+    }
+
+    /// Extracts (old_string, new_string) from a `file_edit` tool_request's params metadata.
+    private static func fileEditStrings(from message: ChannelMessage) -> (String, String)? {
+        guard let paramsJSON = message.stringMetadata("params"),
+              let data = paramsJSON.data(using: .utf8),
+              let dict = try? JSONDecoder().decode([String: AnyCodable].self, from: data) else {
+            return nil
+        }
+        guard case .string(let oldString) = dict["old_string"],
+              case .string(let newString) = dict["new_string"] else {
+            return nil
+        }
+        return (oldString, newString)
     }
 
     @ViewBuilder

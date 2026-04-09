@@ -1023,7 +1023,19 @@ public actor AgentActor {
             }
         }
         if call.name == "file_write", let args = Self.parseToolParams(call.arguments) {
-            if case .string(let path) = args["path"] { metadata["fileWritePath"] = .string(path) }
+            if case .string(let path) = args["path"] {
+                metadata["fileWritePath"] = .string(path)
+                // Capture the current file contents (if any) for the diff view.
+                // A missing file or unreadable content is shown as "all additions".
+                let expanded = (path as NSString).expandingTildeInPath
+                let oldContent: String
+                do {
+                    oldContent = try String(contentsOfFile: expanded, encoding: .utf8)
+                } catch {
+                    oldContent = ""
+                }
+                metadata["fileWriteOldContent"] = .string(oldContent)
+            }
             if case .string(let content) = args["content"] { metadata["fileWriteContent"] = .string(content) }
         }
 
