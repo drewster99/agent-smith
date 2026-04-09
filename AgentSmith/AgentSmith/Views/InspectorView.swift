@@ -37,6 +37,7 @@ struct InspectorView: View {
                         let currentSystemPrompt = store.systemPrompt(for: role)
 
                         AgentCard(
+                            viewModel: viewModel,
                             role: role,
                             isProcessing: viewModel.processingRoles.contains(role),
                             hasActivity: !roleMessages.isEmpty,
@@ -78,6 +79,7 @@ struct InspectorView: View {
 }
 
 private struct AgentCard: View {
+    @Bindable var viewModel: AppViewModel
     let role: AgentRole
     let isProcessing: Bool
     let hasActivity: Bool
@@ -351,6 +353,7 @@ private struct AgentCard: View {
         }
         .sheet(isPresented: $showingConfig) {
             AgentConfigSheet(
+                viewModel: viewModel,
                 role: role,
                 roleColor: roleColor,
                 initialSystemPrompt: currentSystemPrompt,
@@ -1026,6 +1029,7 @@ struct DirectMessageInputRow: View {
 // MARK: - Config Sheet
 
 private struct AgentConfigSheet: View {
+    @Bindable var viewModel: AppViewModel
     let role: AgentRole
     let roleColor: Color
     let speechController: SpeechController
@@ -1038,6 +1042,7 @@ private struct AgentConfigSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     init(
+        viewModel: AppViewModel,
         role: AgentRole,
         roleColor: Color,
         initialSystemPrompt: String,
@@ -1046,6 +1051,7 @@ private struct AgentConfigSheet: View {
         speechController: SpeechController,
         onSave: @escaping (String, TimeInterval, Int) -> Void
     ) {
+        self.viewModel = viewModel
         self.role = role
         self.roleColor = roleColor
         self.speechController = speechController
@@ -1074,6 +1080,12 @@ private struct AgentConfigSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    // Model — agent-centric provider/model/tuning controls. Reads & writes
+                    // the dedicated configuration for this role via viewModel helpers.
+                    AgentModelSettingsSection(viewModel: viewModel, role: role)
+
+                    Divider()
+
                     // Speech
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Speech")

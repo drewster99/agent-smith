@@ -25,46 +25,39 @@
     {
       "id" : "B0000001-0000-0000-0000-000000000001",
       "isValid" : true,
-      "maxContextTokens" : 128000,
-      "maxOutputTokens" : 32768,
-      "modelID" : "nemotron-3-nano:30b",
+      "maxContextTokens" : 200000,
+      "maxOutputTokens" : 8192,
+      "modelID" : "claude-sonnet-4-5",
       "name" : "Smith Default",
-      "providerID" : "ollama-cloud",
+      "providerID" : "builtin.anthropic",
       "streaming" : true,
       "temperature" : 0.1
     },
     {
       "id" : "B0000002-0000-0000-0000-000000000002",
       "isValid" : true,
-      "maxContextTokens" : 128000,
-      "maxOutputTokens" : 32768,
-      "modelID" : "deepseek-v3.2",
+      "maxContextTokens" : 200000,
+      "maxOutputTokens" : 8192,
+      "modelID" : "claude-sonnet-4-5",
       "name" : "Brown Default",
-      "providerID" : "ollama-cloud",
+      "providerID" : "builtin.anthropic",
       "streaming" : true,
       "temperature" : 0.3
     },
     {
       "id" : "B0000003-0000-0000-0000-000000000003",
       "isValid" : true,
-      "maxContextTokens" : 128000,
-      "maxOutputTokens" : 32768,
-      "modelID" : "gpt-oss:20b",
+      "maxContextTokens" : 200000,
+      "maxOutputTokens" : 8192,
+      "modelID" : "claude-haiku-4-5",
       "name" : "Jones Default",
-      "providerID" : "ollama-cloud",
+      "providerID" : "builtin.anthropic",
       "streaming" : true,
       "temperature" : 0.1
     }
   ],
   "providerAPIKeys" : {},
-  "providers" : [
-    {
-      "apiType" : "ollama",
-      "endpoint" : "https://ollama.com/api",
-      "id" : "ollama-cloud",
-      "name" : "Ollama (cloud)"
-    }
-  ],
+  "providers" : [],
   "speech" : {
     "agents" : {
       "brown" : {

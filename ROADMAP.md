@@ -118,7 +118,20 @@ Currently all tools (except `file_read`) require absolute paths. Relative paths 
 Add a "Start" or "Run" button to pending tasks, accessible from both the task list (e.g., a play icon on the task row) and the task detail window. Clicking it should call `run_task` via the orchestration runtime, equivalent to Smith picking up the task. This lets the user manually kick off queued work without waiting for Smith or typing a command — especially useful when `autoRunNextTask` is disabled.
 
 ### Streamline model configuration UI
-The current Settings flow requires managing configurations as separate objects, then assigning them to agent roles across two different tabs. Redesign the UI to feel agent-centric — each agent/role has its own settings panel showing provider, model, temperature, max tokens, etc. directly. The underlying `ModelConfiguration` concept stays in the data model for reuse and persistence, but the UI abstracts it away so it feels like "adjusting Smith's settings" rather than "creating a configuration and assigning it."
+The current Settings flow requires managing configurations as separate objects, then assigning them to agent roles across two different tabs. Redesign the UI to feel agent-centric — each agent/role has its own settings panel showing provider, model, temperature, max tokens, etc. directly. The underlying `ModelConfiguration` concept stays in the data model for reuse and persistence, but the UI abstracts it away so it feels like "adjusting Smith's settings" rather than "creating a configuration and assigning it." Goal: the user should essentially never have to manually create a model configuration.
+
+### Built-in providers list with fixed identifiers
+The Providers tab currently treats every provider — including well-known ones like OpenAI, Anthropic, Gemini, and Ollama — as user-created records that can be renamed, edited, or deleted. This is fragile: a provider's identity (e.g. "OpenAI" → OpenAI's API) should be a constant, not something the user can rename or accidentally delete.
+
+**Redesign:** Show all known/built-in providers as a fixed, scrollable list at the top of the Providers screen. Each built-in row:
+- Has a stable, hardcoded identifier (so "OpenAI" always means OpenAI regardless of user actions)
+- Has a fixed, non-editable display name and provider type
+- Exposes only an API key/token field and a Save button
+- Cannot be removed
+
+Below the built-in list, keep a manual "Add provider" affordance for custom OpenAI-compatible endpoints, self-hosted models, etc. Custom providers retain the existing edit/delete behavior.
+
+This pairs with the agent-centric config rework above: with stable provider identities, agent role assignments can reference providers by their fixed ID rather than by user-created configuration objects.
 
 ### list_tasks search and semantic search
 Add search capabilities to the `list_tasks` tool so Brown can find relevant tasks without retrieving the entire list. Support a `query` parameter for keyword matching against task titles and descriptions, and optionally a semantic search mode that uses the embedding service to find tasks by meaning rather than exact text. This would reduce token usage (no need to dump all tasks) and improve Brown's ability to find related prior work.

@@ -144,8 +144,11 @@ final class AppViewModel {
             }
             speechController.applyBundledDefaults(bundled.speech)
 
-            // Apply bundled provider/config/assignment defaults if no persisted state exists
-            if llmKit.providers.isEmpty {
+            // Apply bundled provider/config/assignment defaults if no persisted state exists.
+            // Built-in providers are seeded by SwiftLLMKit on every load(), so the legacy
+            // "providers.isEmpty" check no longer works as a fresh-install signal — use the
+            // configurations list instead.
+            if llmKit.configurations.isEmpty {
                 for provider in bundled.providers {
                     let apiKey = bundled.providerAPIKeys[provider.id] ?? ""
                     try llmKit.addProvider(provider, apiKey: apiKey)
@@ -821,6 +824,89 @@ final class AppViewModel {
             agentAssignments[role] = nil
         }
         llmKit.deleteConfiguration(id: id)
+    }
+
+    /// Returns the `ModelConfiguration` dedicated to the given agent role, creating or
+    /// cloning one as needed so that edits to it never affect another role's settings.
+    ///
+    /// Behavior:
+    /// 1. If the role has no assignment, creates a new empty configuration, assigns it,
+    ///    and returns it.
+    /// 2. If the assigned configuration is also assigned to a different role, clones it
+    ///    (with a fresh ID), reassigns the current role to the clone, and returns the clone.
+    /// 3. Otherwise returns the existing assigned configuration unchanged.
+    ///
+    /// The agent-centric Model section in `AgentConfigSheet` calls this on appear so that
+    /// any edits go to a config owned exclusively by this role.
+    @discardableResult
+    func ensureDedicatedConfig(for role: AgentRole) -> ModelConfiguration? {
+        if let existingID = agentAssignments[role],
+           let existing = llmKit.configurations.first(where: { $0.id == existingID }) {
+            let sharedWith = agentAssignments.filter { $0.value == existingID && $0.key != role }
+            if sharedWith.isEmpty {
+                return existing
+            }
+            // Shared — clone and reassign so this role owns its own config.
+            let clone = ModelConfiguration(
+                id: UUID(),
+                name: "\(role.displayName) — \(existing.modelID)",
+                providerID: existing.providerID,
+                modelID: existing.modelID,
+                temperature: existing.temperature,
+                maxOutputTokens: existing.maxOutputTokens,
+                maxContextTokens: existing.maxContextTokens,
+                thinkingBudget: existing.thinkingBudget,
+                extendedCacheTTL: existing.extendedCacheTTL,
+                useDefaultTemperature: existing.useDefaultTemperature,
+                streaming: existing.streaming
+            )
+            llmKit.addConfiguration(clone)
+            agentAssignments[role] = clone.id
+            persistAgentAssignments()
+            return clone
+        }
+
+        // No assignment yet — pick a sensible starter config (any existing one) or build
+        // an empty placeholder so the user can fill it in.
+        let starter: ModelConfiguration
+        if let firstProvider = llmKit.providers.first {
+            starter = ModelConfiguration(
+                id: UUID(),
+                name: "\(role.displayName) — \(firstProvider.name)",
+                providerID: firstProvider.id,
+                modelID: "",
+                temperature: 0.7,
+                maxOutputTokens: 4096,
+                maxContextTokens: 128_000
+            )
+        } else {
+            starter = ModelConfiguration(
+                id: UUID(),
+                name: "\(role.displayName)",
+                providerID: "",
+                modelID: ""
+            )
+        }
+        llmKit.addConfiguration(starter)
+        agentAssignments[role] = starter.id
+        persistAgentAssignments()
+        return starter
+    }
+
+    /// Updates the agent's dedicated configuration in place.
+    ///
+    /// If an `undoManager` is supplied, registers an inverse action that restores the
+    /// previous configuration. The inverse handler also re-calls this method, which
+    /// re-registers the *forward* inverse — giving us free redo support via the
+    /// standard UndoManager ping-pong pattern.
+    func updateAgentConfig(_ config: ModelConfiguration, undoManager: UndoManager? = nil) {
+        let previous = llmKit.configurations.first { $0.id == config.id }
+        llmKit.updateConfiguration(config)
+        guard let previous, let undoManager, previous != config else { return }
+        undoManager.registerUndo(withTarget: self) { target in
+            target.updateAgentConfig(previous, undoManager: undoManager)
+        }
+        undoManager.setActionName("Change \(config.name)")
     }
 
     /// Saves the nickname to UserDefaults and syncs it to the static used by system prompts.

@@ -11,7 +11,9 @@ let package = Package(
         .library(name: "AgentSmithKit", targets: ["AgentSmithKit"])
     ],
     dependencies: [
-        .package(url: "https://github.com/drewster99/swift-llm-kit.git", from: "0.0.13")
+        // Local path dependency during development of the built-in providers / agent-centric
+        // settings work. Revert to a versioned git dependency before release.
+        .package(path: "../../swift-llm-kit")
     ],
     targets: [
         .target(
