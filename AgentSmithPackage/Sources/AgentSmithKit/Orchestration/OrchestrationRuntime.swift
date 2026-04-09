@@ -169,13 +169,24 @@ public actor OrchestrationRuntime {
         }
     }
 
-    /// Returns the content of the most recent user message from the channel, if any.
+    /// Returns the content of the most recent user message that Smith has not yet
+    /// acknowledged, if any. A user message is considered acknowledged once Smith
+    /// has posted any Smith→user message after it, so we avoid re-forwarding
+    /// already-answered requests across a restart.
     private func captureLastUserMessage() async -> String? {
         let messages = await channel.allMessages()
-        return messages.last(where: { message in
-            if case .user = message.sender { return true }
-            return false
-        })?.content
+        for message in messages.reversed() {
+            if case .agent(.smith) = message.sender,
+               case .user = message.recipient {
+                // Hit Smith's most recent reply to the user without finding a
+                // newer user message — nothing unhandled to forward.
+                return nil
+            }
+            if case .user = message.sender {
+                return message.content
+            }
+        }
+        return nil
     }
 
     /// Starts the Smith agent and the monitoring timer.
