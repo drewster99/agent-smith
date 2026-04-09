@@ -1172,7 +1172,18 @@ public actor AgentActor {
         scheduledWakeAt = nil
         conversationHistory.append(LLMMessage(
             role: .user,
-            text: "[System: Your scheduled follow-up timer has elapsed. Review the current state and continue as appropriate.]"
+            text: """
+                [System: Your scheduled follow-up timer has elapsed.
+
+                Brown is likely still working on the active task. Your job here is NOT to report status to the user. Your job is to verify Brown is still making progress and intervene ONLY if Brown appears stuck or off-track.
+
+                REQUIRED steps, in order:
+                1. Call get_task_details on the running task to read Brown's latest task_updates.
+                2. If task_updates is empty or hasn't grown since your last check, Brown has not reported in — that is NOT evidence of completion. It usually means Brown is mid-tool-loop. Schedule another follow-up and STOP.
+                3. If the latest update indicates Brown is stuck, blocked, or going in circles, send a private message to Brown with concrete guidance — do NOT message the user.
+                4. NEVER call message_user from this wake-up. Brown will signal completion via task_complete, which will route through review_work. The user does NOT need nor WANT a status report from you.
+                5. If you have nothing actionable, schedule another follow-up and STOP.]
+                """
         ))
         hasUnprocessedInput = true
         pushLiveContext()

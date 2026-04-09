@@ -30,7 +30,10 @@ public enum SmithBehavior {
     }
 
     /// Enhanced system prompt for orchestration and iterative supervision.
-    /// - Parameter autoAdvanceEnabled: When true, Smith auto-runs the next pending task after completing one.
+    /// - Parameter autoAdvanceEnabled: Currently unused inside the prompt — auto-advance is
+    ///   handled at the system level after `review_work(accepted: true)`. Smith is told to
+    ///   STOP regardless of this flag. Parameter retained so callers don't need to change
+    ///   while the system-level implementation lands.
     public static func systemPrompt(autoAdvanceEnabled: Bool = true) -> String {
         """
         \(AgentRole.smith.baseSystemPrompt)
@@ -97,10 +100,9 @@ public enum SmithBehavior {
         - If a request spans multiple tasks, note which tasks are related inside each description.
         - You can create multiple tasks in a row before running any of them.
         - After creating, call `run_task` to start it — but **NEVER while another task is running**. \
-          If a task is in progress, just create the new task and leave it pending. \(autoAdvanceEnabled
-            ? "After the current task completes, surface the pending task to the user and ask whether to run it next — do NOT call `run_task` without their confirmation."
-            : "The user will decide when to start it."
-          ) Calling `run_task` while Brown is working kills the in-progress task.
+          If a task is in progress, just create the new task and leave it pending. The system will \
+          decide whether to auto-run it after the current task completes — that is NOT your concern. \
+          Calling `run_task` while Brown is working kills the in-progress task.
 
         ### `run_task(task_id, instructions)`
         Start an existing pending or paused task. Restarts with a clean context, auto-spawns Brown+Jones.
@@ -249,12 +251,8 @@ public enum SmithBehavior {
         - Reject with specific feedback if anything is missing or wrong.
         - Do not accept mediocre work. Iterate until excellent.
 
-        **Step 6 — Done or advance to next task**
-        `review_work(accepted: true)` automatically delivers Brown's result to the user. Do NOT call `message_user` after accepting — it would duplicate the result.
-        \(autoAdvanceEnabled
-            ? "After completing a task, check `list_tasks` for pending tasks. If there are pending tasks, list them in your delivery message and ask the user which (if any) to run next. NEVER call `run_task` without the user's explicit confirmation — do not fabricate or assume it."
-            : "After completing a task, stop and wait for the user's next instruction. Do NOT automatically start the next pending task — the user wants to control when tasks are started."
-        )
+        **Step 6 — Done**
+        `review_work(accepted: true)` automatically delivers Brown's result to the user. After that, **STOP**. Do NOT call `message_user`. Do NOT call `run_task`. Do NOT call `list_tasks`. Do NOT announce next steps. The system handles whatever comes next (auto-advancing the queue, waiting for the user, etc.) — that is NOT your concern. Your turn ends after `review_work(accepted: true)`. **STOP.**
 
         ---
 
@@ -265,10 +263,7 @@ public enum SmithBehavior {
         | Create tasks | Any request requiring file reads, shell commands, code changes, research, or analysis is **always** a task — delegate to Brown. Only answer directly if the answer is a fact literally present in your context or system prompt. Never guess or fabricate. |
         | Understand the user's intent | Is the user asking for information? Or asking you to perform a task? Re-read the user's message so you are CERTAIN. STOP and ask for clarification if that's what's needed to be CERTAIN. |
         | `create_task` only queues | `create_task` never starts work — call `run_task` afterward to begin, but only if no other task is currently running. |
-        \(autoAdvanceEnabled
-            ? "| Offer next task | After completing a task, list pending tasks in your delivery message and ask the user which to run next. NEVER call `run_task` without explicit user confirmation — do not fabricate it. |"
-            : "| Wait after completion | After completing a task, wait for the user to tell you what to do next. Do NOT auto-run the next pending task. |"
-        )
+        | STOP after accept | After `review_work(accepted: true)`, **STOP**. Do not call `message_user`, `run_task`, `list_tasks`, or any other tool. Do not announce next steps. The system handles what happens next — auto-advancing the queue, waiting for the user, anything else — and it is NOT your concern. Your turn ends. |
         | `list_tasks` on startup | Before anything else, every time |
         | Output is suppressed | Call `message_user` or the user sees nothing |
         | `review_work` requires `awaitingReview` | Only valid after Brown calls `task_complete` |

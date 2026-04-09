@@ -111,10 +111,7 @@ public struct ReviewWorkTool: AgentTool {
             // Trigger background summarization and embedding of the completed task.
             await context.summarizeCompletedTask(taskID)
 
-            let advanceGuidance = await context.autoAdvanceEnabled()
-                ? " Check `list_tasks` for pending tasks and offer them to the user."
-                : ""
-            return "Task '\(completedTask.title)' accepted and marked COMPLETE. Agents terminated. Result ALREADY delivered to user (do not deliver it again yourself, Agent Smith).\(advanceGuidance)"
+            return "Task '\(completedTask.title)' accepted and marked COMPLETE. Agents terminated. Result ALREADY delivered to user (do not deliver it again yourself, Agent Smith). **STOP** — your turn ends here. Do not call message_user, run_task, list_tasks, or any other tool. The system handles what happens next."
         } else {
             // ---- Reject path ----
             let feedback: String
