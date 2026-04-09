@@ -229,19 +229,25 @@ final class AppViewModel {
                     strippedCount += 1
                 }
             }
-            allPersistedMessages = savedMessages
-            persistedHistoryCount = savedMessages.count
+            // Re-save inline (not via a detached task) BEFORE assigning the loaded
+            // array to `allPersistedMessages`. The alternative — firing the save
+            // via Task.detached — races with any subsequent `persistMessages()`
+            // that might append a new message after load: PersistenceManager is
+            // an actor so both saves serialize, but actor enqueue order isn't
+            // guaranteed to match the caller-side scheduling order, so the
+            // migration write could clobber a newer write. Awaiting here means
+            // anything posted after load is guaranteed to see the migrated
+            // baseline and save on top of it.
             if strippedCount > 0 {
                 print("[AgentSmith] Stripped stale file_write diff metadata from \(strippedCount) message(s); re-saving channel log.")
-                let snapshot = savedMessages
-                Task.detached { [persistenceManager, logger] in
-                    do {
-                        try await persistenceManager.saveChannelLog(snapshot)
-                    } catch {
-                        logger.error("Failed to re-save channel log after migration: \(error)")
-                    }
+                do {
+                    try await persistenceManager.saveChannelLog(savedMessages)
+                } catch {
+                    logger.error("Failed to re-save channel log after migration: \(error)")
                 }
             }
+            allPersistedMessages = savedMessages
+            persistedHistoryCount = savedMessages.count
         } catch {
             let msg = "Failed to load channel log: \(error)"
             print("[AgentSmith] \(msg)")
