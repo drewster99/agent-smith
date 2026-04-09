@@ -52,7 +52,8 @@ public struct TaskUpdateTool: AgentTool {
         await context.channel.post(ChannelMessage(
             sender: .system,
             recipientID: smithID,
-            content: "Scrutinize Brown's task update above closely in the context of the user's intent and the task description. Make sure Brown is on track and hasn't veered off course. Offer assistance or helpful suggestions if you can, but do not reply if you have nothing meaningful to add.",
+            recipient: .agent(.smith),
+            content: "Scrutinize Brown's task update above CAREFULLY in the context of the user's intent AND the task description and details. Make sure Brown is on track and hasn't veered off course. Offer assistance or helpful suggestions if Brown appears to NEED it. DO NOT REPLY if do not have MEANINGFUL input to add.",
             metadata: ["messageKind": .string("task_update_guidance")]
         ))
 

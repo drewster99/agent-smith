@@ -92,6 +92,7 @@ public actor TaskSummarizer {
                     metadata: [
                         "messageKind": .string("task_summarized"),
                         "taskID": .string(task.id.uuidString),
+                        "taskTitle": .string(task.title),
                         "latencyMs": .int(latencyMs)
                     ]
                 ))

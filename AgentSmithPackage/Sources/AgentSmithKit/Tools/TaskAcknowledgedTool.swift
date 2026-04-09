@@ -26,20 +26,40 @@ public struct TaskAcknowledgedTool: AgentTool {
             return "Task '\(task.title)' cannot be acknowledged in its current state (\(task.status.rawValue))."
         }
 
+        // Detect re-acknowledgement after a prior run (e.g. after a rejection or
+        // a new Brown spawning into an already-started task). Progress updates are
+        // only written by Brown's actual work, so their presence means this task
+        // has been worked on before. (`startedAt` can't be used because the
+        // orchestrator may have already set it to `.running` before this tool runs.)
+        let isContinuation = !task.updates.isEmpty
+
         await context.taskStore.updateStatus(id: task.id, status: .running)
 
         // Notify Smith privately
         guard let smithID = await context.agentIDForRole(.smith) else {
             return "Task acknowledged: \(task.title)"
         }
+
+        let content: String
+        let messageKind: String
+        if isContinuation {
+            content = "Continuing task '\(task.title)' — working on revisions."
+            messageKind = "task_continuing"
+        } else {
+            content = "Task '\(task.title)' acknowledged. Beginning work."
+            messageKind = "task_acknowledged"
+        }
+
         await context.channel.post(ChannelMessage(
             sender: .agent(context.agentRole),
             recipientID: smithID,
             recipient: .agent(.smith),
-            content: "Task '\(task.title)' acknowledged. Beginning work.",
-            metadata: ["messageKind": .string("task_acknowledged")]
+            content: content,
+            metadata: ["messageKind": .string(messageKind)]
         ))
 
-        return "Task acknowledged: \(task.title)"
+        return isContinuation
+            ? "Task continuing: \(task.title)"
+            : "Task acknowledged: \(task.title)"
     }
 }

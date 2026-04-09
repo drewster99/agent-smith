@@ -24,6 +24,10 @@ enum AppColors {
     static let taskAcknowledgedAccent = Color.cyan
     /// Accent for task-update banners in the channel log.
     static let taskUpdateAccent = Color.orange
+    /// Accent for Brown's task_complete submission (awaiting Smith's review).
+    static let taskReadyForReviewAccent = Color.purple
+    /// Accent for Smith's rejection / changes-requested messages.
+    static let changesRequestedAccent = Color(red: 0.90, green: 0.35, blue: 0.35)
 
     /// Returns the color for a given channel message sender.
     static func color(for sender: ChannelMessage.Sender) -> Color {

@@ -346,6 +346,13 @@ public actor OrchestrationRuntime {
                         briefingParts.append("## Last Working State\n\(brownContext)")
                     }
 
+                    // Queue the synthetic ack BEFORE posting the briefing so it's
+                    // guaranteed to be set before Brown's run loop processes the
+                    // briefing message. Zero tokens, zero latency, no LLM call.
+                    if let brownAgent = agents[brownID] {
+                        await brownAgent.setSyntheticFirstToolCall("task_acknowledged")
+                    }
+
                     await channel.post(ChannelMessage(
                         sender: .agent(.smith),
                         recipientID: brownID,
@@ -376,7 +383,7 @@ public actor OrchestrationRuntime {
                         Brown is already working on task "\(resumingTask.title)" (ID: \(resumingTaskID.uuidString)). \
                         The task description and any prior progress have been delivered to Brown automatically. \
                         Do NOT call `run_task`, `create_task`, or `message_brown` — Brown is already briefed and working. \
-                        Call `schedule_followup(delay_seconds: 120)` and wait for Brown to submit results.
+                        Call `schedule_followup(delay_seconds: 240)` and wait for Brown to submit results.
                         """)
                 } else {
                     smithParts.append("""
@@ -427,6 +434,9 @@ public actor OrchestrationRuntime {
                     if let brownContext = task.lastBrownContext {
                         briefingParts.append("## Last Working State\n\(brownContext)")
                     }
+                    if let brownAgent = agents[brownID] {
+                        await brownAgent.setSyntheticFirstToolCall("task_acknowledged")
+                    }
                     await channel.post(ChannelMessage(
                         sender: .agent(.smith),
                         recipientID: brownID,
@@ -444,7 +454,7 @@ public actor OrchestrationRuntime {
                 parts.append("""
                     Brown has automatically resumed the interrupted task "\(resumed.title)" (ID: \(resumed.id.uuidString)). \
                     Do NOT call `message_brown` for this task — Brown is already briefed and working. \
-                    Call `schedule_followup(delay_seconds: 120)` to monitor progress.
+                    Call `schedule_followup(delay_seconds: 240)` to monitor progress.
                     """)
             }
 

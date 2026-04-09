@@ -107,6 +107,30 @@ struct ChannelLogView: View, Equatable {
                                     timestamp: message.timestamp
                                 )
                                     .id(message.id)
+                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_continuing" {
+                                TaskContinuingBanner(
+                                    title: message.content,
+                                    timestamp: message.timestamp
+                                )
+                                    .id(message.id)
+                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_complete" {
+                                TaskReadyForReviewBanner(
+                                    taskTitle: message.stringMetadata("taskTitle") ?? "",
+                                    content: message.content,
+                                    senderName: message.sender.displayName,
+                                    recipientName: message.recipient?.displayName,
+                                    timestamp: message.timestamp
+                                )
+                                    .id(message.id)
+                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "changes_requested" {
+                                ChangesRequestedBanner(
+                                    taskTitle: message.stringMetadata("taskTitle") ?? "",
+                                    content: message.content,
+                                    senderName: message.sender.displayName,
+                                    recipientName: message.recipient?.displayName,
+                                    timestamp: message.timestamp
+                                )
+                                    .id(message.id)
                             } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_created" {
                                 TaskCreatedBanner(
                                     title: message.content,
@@ -130,6 +154,14 @@ struct ChannelLogView: View, Equatable {
                                 TaskCompletedBanner(
                                     title: message.content,
                                     durationSeconds: message.doubleMetadata("durationSeconds"),
+                                    timestamp: message.timestamp
+                                )
+                                    .id(message.id)
+                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_summarized" {
+                                TaskSummarizedBanner(
+                                    taskTitle: message.stringMetadata("taskTitle") ?? "task",
+                                    latencyMs: message.intMetadata("latencyMs") ?? 0,
+                                    summary: message.content,
                                     timestamp: message.timestamp
                                 )
                                     .id(message.id)
@@ -1124,6 +1156,236 @@ private struct TaskAcknowledgedBanner: View {
         .background(accentColor.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .padding(.vertical, 4)
+    }
+}
+
+/// Banner for re-acknowledgement after a rejection (task status returns to running).
+/// Visually distinct from `TaskAcknowledgedBanner` so it's obvious this isn't a fresh task.
+private struct TaskContinuingBanner: View {
+    let title: String
+    let timestamp: Date
+
+    private let accentColor = AppColors.taskAcknowledgedAccent
+
+    var body: some View {
+        VStack(spacing: 0) {
+            accentColor.frame(height: 1).opacity(0.4)
+
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.counterclockwise.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(accentColor)
+
+                Text("Continuing Task")
+                    .font(AppFonts.channelSender)
+                    .foregroundStyle(accentColor)
+
+                Spacer()
+
+                Text(sharedTimestampFormatter.string(from: timestamp))
+                    .font(AppFonts.channelTimestamp)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+
+            Text(title)
+                .font(AppFonts.channelBody.bold())
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 6)
+
+            accentColor.frame(height: 1).opacity(0.4)
+        }
+        .background(accentColor.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .padding(.vertical, 4)
+    }
+}
+
+/// Banner for Brown's `task_complete` submission — the task is awaiting Smith's review.
+private struct TaskReadyForReviewBanner: View {
+    let taskTitle: String
+    let content: String
+    let senderName: String
+    let recipientName: String?
+    let timestamp: Date
+
+    private let accentColor = AppColors.taskReadyForReviewAccent
+
+    var body: some View {
+        VStack(spacing: 0) {
+            accentColor.frame(height: 1).opacity(0.4)
+
+            HStack(spacing: 8) {
+                Image(systemName: "tray.and.arrow.up.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(accentColor)
+
+                Text("Ready for Review")
+                    .font(AppFonts.channelSender)
+                    .foregroundStyle(accentColor)
+
+                if let recipientName {
+                    Text("\(senderName) \u{2192} \(recipientName)")
+                        .font(AppFonts.channelTimestamp)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(sharedTimestampFormatter.string(from: timestamp))
+                    .font(AppFonts.channelTimestamp)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+
+            if !taskTitle.isEmpty {
+                Text(taskTitle)
+                    .font(AppFonts.channelBody.bold())
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 2)
+            }
+
+            MarkdownText(content: content, baseFont: AppFonts.channelBody)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 6)
+
+            accentColor.frame(height: 1).opacity(0.4)
+        }
+        .background(accentColor.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .padding(.vertical, 4)
+    }
+}
+
+/// Banner for Smith's rejection — feedback sent to Brown with requested changes.
+private struct ChangesRequestedBanner: View {
+    let taskTitle: String
+    let content: String
+    let senderName: String
+    let recipientName: String?
+    let timestamp: Date
+
+    private let accentColor = AppColors.changesRequestedAccent
+
+    var body: some View {
+        VStack(spacing: 0) {
+            accentColor.frame(height: 1).opacity(0.4)
+
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.uturn.backward.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(accentColor)
+
+                Text("Changes Requested")
+                    .font(AppFonts.channelSender)
+                    .foregroundStyle(accentColor)
+
+                if let recipientName {
+                    Text("\(senderName) \u{2192} \(recipientName)")
+                        .font(AppFonts.channelTimestamp)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(sharedTimestampFormatter.string(from: timestamp))
+                    .font(AppFonts.channelTimestamp)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+
+            if !taskTitle.isEmpty {
+                Text(taskTitle)
+                    .font(AppFonts.channelBody.bold())
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 2)
+            }
+
+            MarkdownText(content: content, baseFont: AppFonts.channelBody)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 6)
+
+            accentColor.frame(height: 1).opacity(0.4)
+        }
+        .background(accentColor.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .padding(.vertical, 4)
+    }
+}
+
+/// Compact 1-liner for task summarization events.
+private struct TaskSummarizedBanner: View {
+    let taskTitle: String
+    let latencyMs: Int
+    let summary: String
+    let timestamp: Date
+
+    /// Truncate long task titles so the banner stays one line.
+    private static let maxTitleLength = 60
+
+    @State private var isExpanded = false
+
+    private var displayTitle: String {
+        if taskTitle.count <= Self.maxTitleLength { return taskTitle }
+        return String(taskTitle.prefix(Self.maxTitleLength)) + "…"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+
+                Text("Summarized task '\(displayTitle)' in \(latencyMs)ms")
+                    .font(AppFonts.channelTimestamp)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                if isExpanded {
+                    Text("(show less)")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                } else {
+                    Text("(show more)")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                }
+
+                Spacer()
+
+                Text(sharedTimestampFormatter.string(from: timestamp))
+                    .font(AppFonts.channelTimestamp)
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { isExpanded.toggle() }
+
+            if isExpanded {
+                MarkdownText(content: summary, baseFont: AppFonts.channelBody)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
     }
 }
 

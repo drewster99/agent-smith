@@ -73,7 +73,10 @@ public struct TaskCompleteTool: AgentTool {
             recipientID: smithID,
             recipient: .agent(.smith),
             content: message,
-            metadata: ["messageKind": .string("task_complete")]
+            metadata: [
+                "messageKind": .string("task_complete"),
+                "taskTitle": .string(task.title)
+            ]
         ))
 
         return "Task submitted for review: \(task.title)"

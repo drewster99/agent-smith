@@ -112,7 +112,7 @@ public struct ReviewWorkTool: AgentTool {
             await context.summarizeCompletedTask(taskID)
 
             let advanceGuidance = await context.autoAdvanceEnabled()
-                ? " Check `list_tasks` for pending tasks and `run_task` the next one."
+                ? " Check `list_tasks` for pending tasks and offer them to the user."
                 : ""
             return "Task '\(completedTask.title)' accepted and marked COMPLETE. Agents terminated. Result ALREADY delivered to user (do not deliver it again yourself, Agent Smith).\(advanceGuidance)"
         } else {
@@ -172,7 +172,11 @@ public struct ReviewWorkTool: AgentTool {
                 sender: .agent(context.agentRole),
                 recipientID: brownID,
                 recipient: .agent(.brown),
-                content: content
+                content: content,
+                metadata: [
+                    "messageKind": .string("changes_requested"),
+                    "taskTitle": .string(task.title)
+                ]
             ))
 
             return brownWasSpawned

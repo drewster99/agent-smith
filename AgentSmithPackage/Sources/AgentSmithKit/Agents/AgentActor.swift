@@ -93,6 +93,11 @@ public actor AgentActor {
     /// Used to ensure task_complete messages get their own focused LLM turn.
     private var deferredMessages: [ChannelMessage] = []
 
+    /// When set, the agent executes this tool on its first turn without calling the LLM.
+    /// Used for `task_acknowledged` on fresh task assignments — saves tokens and latency
+    /// since the tool takes no arguments.
+    private var syntheticFirstToolCall: String?
+
     /// Per-turn LLM call log for per-turn inspection.
     private var llmTurns: [LLMTurnRecord] = []
     /// Message count at the time of the previous LLM call — used to compute inputDelta.
@@ -184,6 +189,12 @@ public actor AgentActor {
     /// Updates the maximum number of tool calls executed per LLM response.
     public func updateMaxToolCalls(_ count: Int) {
         maxToolCallsPerIteration = count
+    }
+
+    /// Queues a synthetic tool call to execute on the agent's first turn, bypassing the LLM.
+    /// The tool must take no arguments. Cleared after execution.
+    public func setSyntheticFirstToolCall(_ toolName: String) {
+        syntheticFirstToolCall = toolName
     }
 
     /// Schedules a follow-up wake after the given delay, replacing any existing scheduled wake.
@@ -328,6 +339,34 @@ public actor AgentActor {
                     continue
                 }
                 debouncingForMessages = false
+            }
+
+            // Synthetic first-turn tool call: execute the tool directly without
+            // calling the LLM. Used for task_acknowledged on fresh task assignments.
+            if let toolName = syntheticFirstToolCall {
+                syntheticFirstToolCall = nil
+                if let tool = tools.first(where: { $0.name == toolName }) {
+                    let callID = String((0..<9).map { _ in
+                        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+                            .randomElement()!
+                    })
+                    let syntheticCall = LLMToolCall(
+                        id: callID,
+                        name: toolName,
+                        arguments: "{}"
+                    )
+                    conversationHistory.append(LLMMessage(
+                        role: .assistant,
+                        content: .toolCalls([syntheticCall])
+                    ))
+                    let result = await directExecute(syntheticCall, tool: tool)
+                    conversationHistory.append(LLMMessage(
+                        role: .tool,
+                        content: .toolResult(toolCallID: syntheticCall.id, content: Self.capToolResult(result))
+                    ))
+                    pushLiveContext()
+                }
+                continue
             }
 
             do {
@@ -1850,7 +1889,8 @@ public actor AgentActor {
         parts.append("""
             Your conversation history was cleared because it exceeded the model's context window. \
             The task progress above reflects your work so far. Continue working on this task from where you left off. \
-            Do not repeat work that the progress updates show is already done.
+            Do not repeat work that the progress updates show is already done. \
+            IMPORTANT: This task is already acknowledged and running — do NOT call `task_acknowledged` again.
             """)
 
         let instruction = parts.joined(separator: "\n\n")
