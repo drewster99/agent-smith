@@ -1,15 +1,29 @@
 import Foundation
 
-/// Search result pairing a memory with its similarity score.
+/// Search result pairing a memory with its scoring breakdown.
+///
+/// `similarity` is the raw cosine similarity from the sentence embeddings (kept under
+/// the historical name so existing display code that formats it as a percentage stays
+/// meaningful). `textScore` and `rrfScore` are additive: callers can ignore them, but
+/// the search ordering returned by `MemoryStore` is by `rrfScore` descending.
 public struct MemorySearchResult: Sendable {
     public let memory: MemoryEntry
+    /// Raw semantic similarity (max sentence-pair cosine), in [-1, 1] but typically [0, 1].
     public let similarity: Double
+    /// Fraction of distinct query keywords found as whole tokens in the memory content, [0, 1].
+    public let textScore: Double
+    /// Reciprocal Rank Fusion score combining the semantic and lexical rankings (k=60).
+    /// Used by `MemoryStore` to order results; higher means better combined match.
+    public let rrfScore: Double
 }
 
-/// Search result pairing a task summary with its similarity score.
+/// Search result pairing a task summary with its scoring breakdown. See
+/// `MemorySearchResult` for the meaning of each score field.
 public struct TaskSummarySearchResult: Sendable {
     public let summary: TaskSummaryEntry
     public let similarity: Double
+    public let textScore: Double
+    public let rrfScore: Double
 }
 
 /// Combined search results from both memory and task summary corpora.
@@ -104,11 +118,16 @@ public actor MemoryStore {
         return entry
     }
 
-    /// Updates an existing memory's content and/or tags.
-    ///
-    /// Re-embeds the content if it changed. Returns the updated entry, or nil if the ID wasn't found.
+    /// Updates an existing memory's content and/or tags. Records who performed the edit
+    /// in the entry's `lastUpdatedAt` / `lastUpdatedBy` fields. Re-embeds when the content
+    /// changed. Returns the updated entry, or nil if the ID wasn't found.
     @discardableResult
-    public func update(id: UUID, content: String? = nil, tags: [String]? = nil) throws -> MemoryEntry? {
+    public func update(
+        id: UUID,
+        content: String? = nil,
+        tags: [String]? = nil,
+        updatedBy: MemoryEntry.UpdateSource
+    ) throws -> MemoryEntry? {
         guard let existing = memories[id] else { return nil }
         let newContent = content ?? existing.content
         let newTags = tags ?? existing.tags
@@ -126,7 +145,10 @@ public actor MemoryStore {
             tags: newTags,
             sourceTaskID: existing.sourceTaskID,
             createdAt: existing.createdAt,
-            lastAccessedAt: existing.lastAccessedAt
+            lastRetrievedAt: existing.lastRetrievedAt,
+            retrievalCount: existing.retrievalCount,
+            lastUpdatedAt: Date(),
+            lastUpdatedBy: updatedBy
         )
         memories[id] = updated
         onChange?()
@@ -154,28 +176,30 @@ public actor MemoryStore {
     /// Composes the embedding source text from all available task fields.
     ///
     /// Includes title, description, summary, result, commentary, and progress updates
-    /// so the embedding captures the full topical signal of the task.
+    /// so the embedding captures the full topical signal of the task. No length caps —
+    /// long results and update logs are embedded in full so they remain searchable.
     public static func composeEmbeddingText(task: AgentTask, summary: String) -> String {
         var parts: [String] = []
         parts.append(task.title)
         parts.append(task.description)
         parts.append(summary)
         if let result = task.result, !result.isEmpty {
-            // Cap result to avoid excessive sentence count.
-            parts.append(String(result.prefix(2000)))
+            parts.append(result)
         }
         if let commentary = task.commentary, !commentary.isEmpty {
             parts.append(commentary)
         }
         if !task.updates.isEmpty {
             let updateText = task.updates.map(\.message).joined(separator: " ")
-            parts.append(String(updateText.prefix(1000)))
+            parts.append(updateText)
         }
         return parts.joined(separator: "\n")
     }
 
     /// Saves a task summary, splitting the rich composite text into sentences
-    /// and embedding each one for multi-vector search.
+    /// and embedding each one for multi-vector search. Captures the task's original
+    /// `createdAt` so the editor can show "when the task was asked for" rather than
+    /// "when the summary was generated."
     @discardableResult
     public func saveTaskSummary(
         task: AgentTask,
@@ -190,7 +214,8 @@ public actor MemoryStore {
             summary: summary,
             embeddingSourceText: embeddingText,
             embeddings: embeddings,
-            status: status
+            status: status,
+            taskCreatedAt: task.createdAt
         )
         taskSummaries[task.id] = entry
         onChange?()
@@ -205,12 +230,133 @@ public actor MemoryStore {
     /// Total number of stored task summaries.
     public var taskSummaryCount: Int { taskSummaries.count }
 
+    // MARK: - Search scoring
+
+    /// `k` constant for Reciprocal Rank Fusion. The standard literature value is 60 —
+    /// it dampens the influence of any single ranking source so high ranks dominate
+    /// without completely shutting out lower-ranked items.
+    private static let rrfK: Double = 60
+
+    /// Quality floor used by `searchAll` to drop pure-noise candidates before RRF ranking.
+    /// A document must score at least this much on EITHER signal (semantic OR text) to be
+    /// considered. Replaces the historical tier1/tier2 thresholds.
+    private static let searchAllNoiseFloor: Double = 0.55
+
+    /// Common English stopwords stripped from query tokens before text scoring.
+    /// Stopwords are too noisy to drive keyword matching — they appear in nearly every
+    /// document and would inflate text scores without indicating real relevance.
+    private static let englishStopwords: Set<String> = [
+        "the", "a", "an", "and", "or", "but", "is", "are", "was", "were", "be", "been", "being",
+        "of", "in", "on", "at", "to", "for", "with", "from", "by", "as", "into", "out", "up", "down",
+        "over", "under", "between", "through", "about",
+        "this", "that", "these", "those", "it", "its",
+        "what", "which", "who", "whom", "whose", "when", "where", "why", "how",
+        "do", "does", "did", "done", "doing",
+        "can", "could", "would", "should", "will", "may", "might", "must", "shall",
+        "i", "me", "my", "mine", "you", "your", "yours", "we", "us", "our", "ours",
+        "they", "them", "their", "theirs", "he", "she", "him", "her", "his", "hers",
+        "if", "then", "than", "so", "no", "not", "yes", "too", "very", "just",
+        "have", "has", "had", "having",
+        "any", "all", "some", "each", "every", "both", "few", "more", "most", "other", "such",
+        "only", "own", "same"
+    ]
+
+    /// Lowercases and tokenizes a string into alphanumeric runs of length ≥ 2.
+    /// Non-letters/digits act as delimiters; tokens shorter than 2 chars are dropped
+    /// to filter out incidental noise (single letters, punctuation residue).
+    private static func tokenize(_ text: String) -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        for scalar in text.lowercased().unicodeScalars {
+            if CharacterSet.alphanumerics.contains(scalar) {
+                current.unicodeScalars.append(scalar)
+            } else if !current.isEmpty {
+                if current.count >= 2 { tokens.append(current) }
+                current = ""
+            }
+        }
+        if current.count >= 2 { tokens.append(current) }
+        return tokens
+    }
+
+    /// Builds the de-duplicated, stopword-filtered token set for a query.
+    /// Returned set is empty when the query has no meaningful keywords (all stopwords or
+    /// pure punctuation), in which case `textScore` will return 0 for all documents.
+    private static func queryTokenSet(from query: String) -> Set<String> {
+        Set(tokenize(query).filter { !englishStopwords.contains($0) })
+    }
+
+    /// Computes the text-overlap score for a document against a pre-computed query token set.
+    ///
+    /// Score = (number of distinct query tokens that appear as whole tokens in the document) /
+    ///         (total distinct query tokens). Range: [0, 1].
+    ///
+    /// Whole-token matching (rather than substring) avoids false positives like "se" in
+    /// "selenium". Document tokens are computed once per call.
+    private static func textScore(queryTokens: Set<String>, document: String) -> Double {
+        guard !queryTokens.isEmpty else { return 0.0 }
+        let documentTokens = Set(tokenize(document))
+        let matched = queryTokens.intersection(documentTokens)
+        return Double(matched.count) / Double(queryTokens.count)
+    }
+
+    /// Computes Reciprocal Rank Fusion scores for a set of candidates that have already
+    /// been scored on two independent signals (semantic and text). Returns the RRF score
+    /// for each candidate index, in the original input order.
+    ///
+    /// RRF formula: `1 / (k + rank)` summed across both rankings, with `k = rrfK = 60`.
+    /// Ranks are 1-indexed and assigned by sorting each signal independently. Ties on a
+    /// signal share the lower rank (so 3-way tie at the top all get rank 1).
+    private static func reciprocalRankFusion(
+        semanticScores: [Double],
+        textScores: [Double]
+    ) -> [Double] {
+        precondition(semanticScores.count == textScores.count)
+        let count = semanticScores.count
+        guard count > 0 else { return [] }
+
+        let semanticRanks = ranksFromScores(semanticScores)
+        let textRanks = ranksFromScores(textScores)
+
+        var rrf = [Double](repeating: 0, count: count)
+        for i in 0..<count {
+            let sRank = Double(semanticRanks[i])
+            let lRank = Double(textRanks[i])
+            rrf[i] = 1.0 / (rrfK + sRank) + 1.0 / (rrfK + lRank)
+        }
+        return rrf
+    }
+
+    /// Assigns 1-indexed ranks based on score (higher score = better rank). Ties share
+    /// the lower rank — three documents tied at the top all get rank 1, the next gets
+    /// rank 4. This avoids penalizing ties under RRF.
+    private static func ranksFromScores(_ scores: [Double]) -> [Int] {
+        let count = scores.count
+        guard count > 0 else { return [] }
+        let sortedIndices = (0..<count).sorted { scores[$0] > scores[$1] }
+        var ranks = [Int](repeating: 0, count: count)
+        var lastScore: Double = .nan
+        var lastRank = 0
+        for (position, originalIdx) in sortedIndices.enumerated() {
+            let score = scores[originalIdx]
+            let rank: Int
+            if score == lastScore {
+                rank = lastRank
+            } else {
+                rank = position + 1
+                lastScore = score
+                lastRank = rank
+            }
+            ranks[originalIdx] = rank
+        }
+        return ranks
+    }
+
     // MARK: - Search
 
-    /// Searches memories by max sentence-pair cosine similarity to the query.
-    ///
-    /// The query is split into sentences and each is compared against each
-    /// sentence in each memory. The best pair determines the score.
+    /// Searches memories using Reciprocal Rank Fusion of semantic similarity and keyword
+    /// overlap. The `threshold` parameter is a noise floor on `MAX(semantic, text)` — a
+    /// candidate must score at least this much on EITHER signal to be considered.
     /// Updates `lastAccessedAt` on returned results.
     public func searchMemories(
         query: String,
@@ -219,44 +365,88 @@ public actor MemoryStore {
     ) throws -> [MemorySearchResult] {
         let start = Date()
         let queryEmbeddings = try embeddingService.splitAndEmbed(query)
-        let results = searchMemories(queryEmbeddings: queryEmbeddings, limit: limit, threshold: threshold)
+        let queryTokens = Self.queryTokenSet(from: query)
+        let results = searchMemories(
+            queryEmbeddings: queryEmbeddings,
+            queryTokens: queryTokens,
+            limit: limit,
+            threshold: threshold
+        )
         let ms = Int(Date().timeIntervalSince(start) * 1000)
-        print("[MemoryStore] searchMemories: \(results.count) results from \(memories.count) memories in \(ms)ms (query: \(query.prefix(60)))")
+        print("[MemoryStore] searchMemories: \(results.count) results from \(memories.count) memories in \(ms)ms (query: \(query.prefix(60))) [\(Self.formattedNilStats(embeddingService))]")
         return results
     }
 
-    /// Searches memories using pre-computed query sentence embeddings.
+    /// Searches memories using pre-computed query sentence embeddings and query tokens.
+    ///
+    /// Pipeline:
+    /// 1. Compute semantic + text scores for every memory.
+    /// 2. Filter by `MAX(semantic, text) >= threshold` so a strong signal in either
+    ///    channel is enough to keep a candidate (matches the intent of having both
+    ///    a semantic and a lexical retrieval channel).
+    /// 3. Rank survivors by semantic score and by text score independently.
+    /// 4. Compute RRF (k=60) per survivor.
+    /// 5. Sort by RRF descending, return the top `limit`.
+    ///
+    /// `similarity` on the result is the raw semantic score (for display continuity).
+    /// `rrfScore` is the value used to determine the order returned here.
     private func searchMemories(
         queryEmbeddings: [[Double]],
+        queryTokens: Set<String>,
         limit: Int,
         threshold: Double
     ) -> [MemorySearchResult] {
-        var results: [MemorySearchResult] = []
+        // Step 1: score every memory.
+        var entryRefs: [MemoryEntry] = []
+        var semanticScores: [Double] = []
+        var textScores: [Double] = []
         for entry in memories.values {
-            let similarity = EmbeddingService.maxSimilarity(
+            let semantic = EmbeddingService.maxSimilarity(
                 query: queryEmbeddings, document: entry.embeddings
             )
-            if similarity >= threshold {
-                results.append(MemorySearchResult(memory: entry, similarity: similarity))
+            let text = Self.textScore(queryTokens: queryTokens, document: entry.content)
+            // Step 2: noise filter — either signal can keep a candidate alive.
+            if max(semantic, text) >= threshold {
+                entryRefs.append(entry)
+                semanticScores.append(semantic)
+                textScores.append(text)
             }
         }
 
-        results.sort { $0.similarity > $1.similarity }
+        guard !entryRefs.isEmpty else { return [] }
+
+        // Steps 3 & 4: ranks and RRF, computed across the surviving candidate set.
+        let rrfScores = Self.reciprocalRankFusion(
+            semanticScores: semanticScores,
+            textScores: textScores
+        )
+
+        // Build results then sort by RRF descending.
+        var results: [MemorySearchResult] = []
+        results.reserveCapacity(entryRefs.count)
+        for i in 0..<entryRefs.count {
+            results.append(MemorySearchResult(
+                memory: entryRefs[i],
+                similarity: semanticScores[i],
+                textScore: textScores[i],
+                rrfScore: rrfScores[i]
+            ))
+        }
+        results.sort { $0.rrfScore > $1.rrfScore }
+
         let topResults = Array(results.prefix(limit))
 
-        // Update lastAccessedAt for returned memories.
-        let now = Date()
-        for result in topResults {
-            if var entry = memories[result.memory.id] {
-                entry.lastAccessedAt = now
-                memories[entry.id] = entry
-            }
-        }
+        // NOTE: Retrieval tracking (lastRetrievedAt + retrievalCount) is intentionally
+        // NOT updated here. This private method is the underlying primitive used by both
+        // editor browsing and agent-driven searches; we only count "real" retrievals,
+        // which `searchAll` records explicitly on the items it returns.
 
         return topResults
     }
 
-    /// Searches task summaries by max sentence-pair cosine similarity to the query.
+    /// Searches task summaries using Reciprocal Rank Fusion of semantic similarity and
+    /// keyword overlap. See `searchMemories(query:limit:threshold:)` for the threshold
+    /// semantics.
     public func searchTaskSummaries(
         query: String,
         limit: Int = 5,
@@ -264,40 +454,76 @@ public actor MemoryStore {
     ) throws -> [TaskSummarySearchResult] {
         let start = Date()
         let queryEmbeddings = try embeddingService.splitAndEmbed(query)
-        let results = searchTaskSummaries(queryEmbeddings: queryEmbeddings, limit: limit, threshold: threshold)
+        let queryTokens = Self.queryTokenSet(from: query)
+        let results = searchTaskSummaries(
+            queryEmbeddings: queryEmbeddings,
+            queryTokens: queryTokens,
+            limit: limit,
+            threshold: threshold
+        )
         let ms = Int(Date().timeIntervalSince(start) * 1000)
-        print("[MemoryStore] searchTaskSummaries: \(results.count) results from \(taskSummaries.count) summaries in \(ms)ms (query: \(query.prefix(60)))")
+        print("[MemoryStore] searchTaskSummaries: \(results.count) results from \(taskSummaries.count) summaries in \(ms)ms (query: \(query.prefix(60))) [\(Self.formattedNilStats(embeddingService))]")
         return results
     }
 
-    /// Searches task summaries using pre-computed query sentence embeddings.
+    /// Searches task summaries using pre-computed query sentence embeddings and query tokens.
+    /// Text matching is performed against `embeddingSourceText`, which is the same composite
+    /// text (title + description + summary + result + commentary + updates) that produced
+    /// the embeddings — keeping the two scoring channels symmetric.
     private func searchTaskSummaries(
         queryEmbeddings: [[Double]],
+        queryTokens: Set<String>,
         limit: Int,
         threshold: Double
     ) -> [TaskSummarySearchResult] {
-        var results: [TaskSummarySearchResult] = []
+        var entryRefs: [TaskSummaryEntry] = []
+        var semanticScores: [Double] = []
+        var textScores: [Double] = []
         for entry in taskSummaries.values {
-            let similarity = EmbeddingService.maxSimilarity(
+            let semantic = EmbeddingService.maxSimilarity(
                 query: queryEmbeddings, document: entry.embeddings
             )
-            if similarity >= threshold {
-                results.append(TaskSummarySearchResult(summary: entry, similarity: similarity))
+            let text = Self.textScore(queryTokens: queryTokens, document: entry.embeddingSourceText)
+            if max(semantic, text) >= threshold {
+                entryRefs.append(entry)
+                semanticScores.append(semantic)
+                textScores.append(text)
             }
         }
 
-        results.sort { $0.similarity > $1.similarity }
+        guard !entryRefs.isEmpty else { return [] }
+
+        let rrfScores = Self.reciprocalRankFusion(
+            semanticScores: semanticScores,
+            textScores: textScores
+        )
+
+        var results: [TaskSummarySearchResult] = []
+        results.reserveCapacity(entryRefs.count)
+        for i in 0..<entryRefs.count {
+            results.append(TaskSummarySearchResult(
+                summary: entryRefs[i],
+                similarity: semanticScores[i],
+                textScore: textScores[i],
+                rrfScore: rrfScores[i]
+            ))
+        }
+        results.sort { $0.rrfScore > $1.rrfScore }
         return Array(results.prefix(limit))
     }
 
-    /// Searches both memories and task summaries using tiered relevance thresholds.
+    /// Searches both memories and task summaries jointly using Reciprocal Rank Fusion.
     ///
-    /// With multi-vector sentence matching, scores are more discriminating than
-    /// single-vector — a genuine match between specific sentences scores high
-    /// while unrelated content scores lower.
-    /// - Tier 1 (>=0.65): up to 3 results — strong sentence-level matches
-    /// - Tier 2 (0.55–0.65): up to 2 results, only if tier 1 is empty
-    /// Maximum 4 results total across both memories and task summaries.
+    /// 1. Pool every memory and every task summary into a single candidate set, scoring
+    ///    each on semantic similarity AND keyword overlap.
+    /// 2. Drop pure-noise candidates whose better signal is below `searchAllNoiseFloor`.
+    /// 3. Compute joint semantic and lexical ranks across the pooled survivors.
+    /// 4. Compute RRF (k=60) per survivor.
+    /// 5. Return the top 4 by RRF, bucketed back into memories vs task summaries.
+    ///
+    /// `memoryLimit` and `taskLimit` are kept as caller-facing knobs but the function
+    /// caps the joint result at 4 (3+3 minus overlap). The blended `similarity` field
+    /// on each result is the raw semantic score (for display continuity).
     public func searchAll(
         query: String,
         memoryLimit: Int = 3,
@@ -305,46 +531,103 @@ public actor MemoryStore {
     ) throws -> SemanticSearchResults {
         let start = Date()
         let queryEmbeddings = try embeddingService.splitAndEmbed(query)
-        let allMemories = searchMemories(queryEmbeddings: queryEmbeddings, limit: memoryLimit, threshold: 0.55)
-        let allTasks = searchTaskSummaries(queryEmbeddings: queryEmbeddings, limit: taskLimit, threshold: 0.55)
+        let queryTokens = Self.queryTokenSet(from: query)
 
-        enum Candidate {
-            case memory(Int)
-            case task(Int)
+        // Step 1: pool all candidates with both signal scores.
+        enum CandidateRef {
+            case memory(MemoryEntry)
+            case task(TaskSummaryEntry)
         }
-        var candidates: [(similarity: Double, candidate: Candidate)] = []
-        for (i, m) in allMemories.enumerated() {
-            candidates.append((m.similarity, .memory(i)))
-        }
-        for (i, t) in allTasks.enumerated() {
-            candidates.append((t.similarity, .task(i)))
-        }
-        candidates.sort { $0.similarity > $1.similarity }
+        var refs: [CandidateRef] = []
+        var semanticScores: [Double] = []
+        var textScores: [Double] = []
 
-        let tier1 = candidates.filter { $0.similarity >= 0.65 }
-        let tier2 = candidates.filter { $0.similarity >= 0.55 && $0.similarity < 0.65 }
-
-        let selected: ArraySlice<(similarity: Double, candidate: Candidate)>
-        if !tier1.isEmpty {
-            selected = tier1.prefix(3)
-        } else if !tier2.isEmpty {
-            selected = tier2.prefix(2)
-        } else {
-            return SemanticSearchResults(memories: [], taskSummaries: [])
+        for entry in memories.values {
+            let semantic = EmbeddingService.maxSimilarity(
+                query: queryEmbeddings, document: entry.embeddings
+            )
+            let text = Self.textScore(queryTokens: queryTokens, document: entry.content)
+            // Step 2: noise floor (either signal can keep a candidate alive).
+            if max(semantic, text) >= Self.searchAllNoiseFloor {
+                refs.append(.memory(entry))
+                semanticScores.append(semantic)
+                textScores.append(text)
+            }
         }
-
-        var memoryResults: [MemorySearchResult] = []
-        var taskResults: [TaskSummarySearchResult] = []
-        for item in selected.prefix(4) {
-            switch item.candidate {
-            case .memory(let i): memoryResults.append(allMemories[i])
-            case .task(let i): taskResults.append(allTasks[i])
+        for entry in taskSummaries.values {
+            let semantic = EmbeddingService.maxSimilarity(
+                query: queryEmbeddings, document: entry.embeddings
+            )
+            let text = Self.textScore(queryTokens: queryTokens, document: entry.embeddingSourceText)
+            if max(semantic, text) >= Self.searchAllNoiseFloor {
+                refs.append(.task(entry))
+                semanticScores.append(semantic)
+                textScores.append(text)
             }
         }
 
+        guard !refs.isEmpty else {
+            let ms = Int(Date().timeIntervalSince(start) * 1000)
+            print("[MemoryStore] searchAll: 0 results in \(ms)ms (query: \(query.prefix(60))) [\(Self.formattedNilStats(embeddingService))]")
+            return SemanticSearchResults(memories: [], taskSummaries: [])
+        }
+
+        // Steps 3 & 4: joint ranks across the pooled set + RRF.
+        let rrfScores = Self.reciprocalRankFusion(
+            semanticScores: semanticScores,
+            textScores: textScores
+        )
+
+        // Pair indices with RRF and sort.
+        let order = (0..<refs.count).sorted { rrfScores[$0] > rrfScores[$1] }
+
+        // Step 5: bucket the top 4 back into typed results, preserving the joint order.
+        let cap = min(4, max(memoryLimit, taskLimit) + min(memoryLimit, taskLimit))
+        var memoryResults: [MemorySearchResult] = []
+        var taskResults: [TaskSummarySearchResult] = []
+        let retrievedAt = Date()
+        var trackedAnyRetrieval = false
+        for idx in order.prefix(cap) {
+            switch refs[idx] {
+            case .memory(let entry):
+                memoryResults.append(MemorySearchResult(
+                    memory: entry,
+                    similarity: semanticScores[idx],
+                    textScore: textScores[idx],
+                    rrfScore: rrfScores[idx]
+                ))
+                // Record the retrieval — this is an agent-driven search returning a memory
+                // for actual use, so it counts toward `lastRetrievedAt` and `retrievalCount`.
+                if var stored = memories[entry.id] {
+                    stored.lastRetrievedAt = retrievedAt
+                    stored.retrievalCount += 1
+                    memories[entry.id] = stored
+                    trackedAnyRetrieval = true
+                }
+            case .task(let entry):
+                taskResults.append(TaskSummarySearchResult(
+                    summary: entry,
+                    similarity: semanticScores[idx],
+                    textScore: textScores[idx],
+                    rrfScore: rrfScores[idx]
+                ))
+            }
+        }
+
+        // Persist the retrieval-counter changes via the standard onChange path so they
+        // survive a Smith restart. Only fired if at least one memory was actually
+        // retrieved this call — task-only result sets don't dirty the store.
+        if trackedAnyRetrieval { onChange?() }
+
         let ms = Int(Date().timeIntervalSince(start) * 1000)
-        print("[MemoryStore] searchAll: \(memoryResults.count) memories + \(taskResults.count) tasks in \(ms)ms (query: \(query.prefix(60)))")
+        print("[MemoryStore] searchAll: \(memoryResults.count) memories + \(taskResults.count) tasks in \(ms)ms (query: \(query.prefix(60))) [\(Self.formattedNilStats(embeddingService))]")
         return SemanticSearchResults(memories: memoryResults, taskSummaries: taskResults)
+    }
+
+    /// Compact "x/y nil (z%)" string for log lines, reading from the embedding service.
+    private static func formattedNilStats(_ service: EmbeddingService) -> String {
+        let stats = service.currentNilStats()
+        return String(format: "embed nils: %d/%d (%.1f%%)", stats.nilCount, stats.attempted, stats.nilPercentage)
     }
 
     // MARK: - Re-embedding
@@ -378,7 +661,10 @@ public actor MemoryStore {
                 tags: entry.tags,
                 sourceTaskID: entry.sourceTaskID,
                 createdAt: entry.createdAt,
-                lastAccessedAt: entry.lastAccessedAt
+                lastRetrievedAt: entry.lastRetrievedAt,
+                retrievalCount: entry.retrievalCount,
+                lastUpdatedAt: entry.lastUpdatedAt,
+                lastUpdatedBy: entry.lastUpdatedBy
             )
             count += 1
         }
@@ -410,6 +696,8 @@ public actor MemoryStore {
             guard let existing = taskSummaries[task.id] else { continue }
             let embeddingText = Self.composeEmbeddingText(task: task, summary: existing.summary)
             let newEmbeddings = try embeddingService.splitAndEmbed(embeddingText)
+            // Backfill `taskCreatedAt` from the live task on each reembed pass — legacy
+            // entries that lacked the field will pick up the real task creation date here.
             taskSummaries[task.id] = TaskSummaryEntry(
                 id: existing.id,
                 title: existing.title,
@@ -417,6 +705,7 @@ public actor MemoryStore {
                 embeddingSourceText: embeddingText,
                 embeddings: newEmbeddings,
                 status: existing.status,
+                taskCreatedAt: task.createdAt,
                 createdAt: existing.createdAt
             )
             count += 1

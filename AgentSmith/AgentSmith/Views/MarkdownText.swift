@@ -10,9 +10,14 @@ import SwiftUI
 /// - Inline code: `` `code` ``
 /// - Fenced code blocks: ```` ``` ```` with optional language label
 /// - Links: `[text](url)` and bare `https://` URLs
-struct MarkdownText: View {
+struct MarkdownText: View, Equatable {
     let content: String
     let baseFont: Font
+
+    /// Prevents body re-evaluation (and markdown re-parsing) when content is unchanged.
+    nonisolated static func == (lhs: MarkdownText, rhs: MarkdownText) -> Bool {
+        lhs.content == rhs.content
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
@@ -313,12 +318,15 @@ struct MarkdownText: View {
         return combined
     }
 
+    /// Compiled once and reused across all MarkdownText instances.
+    private static let bareURLRegex = try? NSRegularExpression(
+        pattern: #"(?<![(\[])https?://[^\s)\]*]+"#
+    )
+
     /// Wraps bare `https?://` URLs (not already in markdown link syntax) with `[url](url)`,
     /// so that `Text(LocalizedStringKey(_:))` renders them as tappable links.
     private func linkifyBareURLs(_ text: String) -> String {
-        guard let regex = try? NSRegularExpression(
-            pattern: #"(?<![(\[])https?://[^\s)\]*]+"#
-        ) else { return text }
+        guard let regex = Self.bareURLRegex else { return text }
 
         let fullRange = NSRange(location: 0, length: (text as NSString).length)
         let matches = regex.matches(in: text, range: fullRange)

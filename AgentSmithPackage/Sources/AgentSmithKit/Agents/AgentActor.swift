@@ -302,6 +302,13 @@ public actor AgentActor {
                 deferredMessages.removeAll()
             }
 
+            // Smith only: search semantic memory and prior tasks based on the latest pending
+            // user message and append the results to that message before it enters Smith's
+            // LLM context. Lets Smith consider relevant background before creating a task.
+            if configuration.role == .smith {
+                await injectAutoMemoryContextIfNeeded()
+            }
+
             drainPendingMessages()
             checkScheduledWake()
             await pruneHistoryIfNeeded()
@@ -1139,6 +1146,154 @@ public actor AgentActor {
         }
     }
 
+    // MARK: - Auto-memory context (Smith)
+
+    /// Marker embedded in Smith's user messages when auto-memory context has been attached.
+    /// Used to detect existing context in the current conversation history (post-pruning) so
+    /// we don't re-attach the same kind of background to consecutive user messages.
+    private static let autoMemoryContextMarker = "[AUTO_MEMORY_CONTEXT]"
+
+    private static let autoMemoryContextDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter
+    }()
+
+    /// Smith-only: searches semantic memory and prior tasks for the latest pending user message
+    /// and appends the results to that message before it enters Smith's LLM context.
+    ///
+    /// Skipped if there are no user messages in the pending queue, the latest user query is empty,
+    /// the conversation already contains the marker (background still in scope), or the search
+    /// returns nothing.
+    private func injectAutoMemoryContextIfNeeded() async {
+        // Find the most recent user-originated pending message — that's the one we react to.
+        // If multiple user messages arrived in a burst, we attach context only to the latest
+        // one (most recent intent) and rely on the marker to suppress further injections.
+        guard let userMessage = pendingChannelMessages.last(where: { msg in
+            if case .user = msg.sender { return true }
+            return false
+        }) else { return }
+
+        let query = userMessage.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+
+        // Skip if a prior auto-context is still present in the conversation history (post-pruning).
+        if conversationHasAutoMemoryContext() { return }
+
+        // Capture the target message ID before the await — we re-locate by ID afterward
+        // because the actor may process other isolated methods during the suspend, and a
+        // raw index could become stale if `pendingChannelMessages` is mutated.
+        let targetMessageID = userMessage.id
+
+        // Memory search failure is non-fatal — Smith just doesn't get the auto-context this time.
+        let results: SemanticSearchResults
+        do {
+            results = try await toolContext.memoryStore.searchAll(
+                query: query,
+                memoryLimit: 3,
+                taskLimit: 3
+            )
+        } catch {
+            return
+        }
+
+        guard !results.isEmpty else { return }
+
+        // Re-check the marker — another path on this actor may have added a marker-bearing
+        // user message into the conversation while we were awaiting the search.
+        if conversationHasAutoMemoryContext() { return }
+
+        // Re-locate the target message by ID. If it's no longer in the pending queue
+        // (e.g. drained by an interleaved code path), skip silently.
+        guard let currentIdx = pendingChannelMessages.firstIndex(where: { $0.id == targetMessageID }) else {
+            return
+        }
+
+        let block = formatAutoMemoryContextBlock(results: results)
+
+        // Mutate the agent's local copy of the pending message so the appended block ends up
+        // in the formatted text passed to the LLM. The original ChannelMessage in the channel
+        // log (and thus the UI transcript) is unaffected — only Smith's LLM view changes.
+        var mutated = pendingChannelMessages[currentIdx]
+        mutated.content = mutated.content + "\n\n" + block
+        pendingChannelMessages[currentIdx] = mutated
+
+        // Post a memory_searched banner so the auto-search appears in the UI transcript like
+        // a manually-invoked one. memory_searched is filtered out in `receiveChannelMessage`,
+        // so this banner won't loop back into Smith's pending queue. Result entries are
+        // formatted with the same `\u{1E}` separator used by `SearchMemoryTool` so the UI
+        // renders them with the standard expandable layout.
+        let memoryEntries = results.memories.map { result -> String in
+            let pct = String(format: "%.0f%%", result.similarity * 100)
+            let tagText = result.memory.tags.isEmpty ? "" : " [tags: \(result.memory.tags.joined(separator: ", "))]"
+            return "\(pct) — \(result.memory.content)\(tagText)"
+        }
+        let taskEntries = results.taskSummaries.map { result -> String in
+            let pct = String(format: "%.0f%%", result.similarity * 100)
+            return "\(pct) — \(result.summary.title) (id: \(result.summary.id.uuidString))\n\(result.summary.summary)"
+        }
+        var bannerMetadata: [String: AnyCodable] = [
+            "messageKind": .string("memory_searched"),
+            "searchQuery": .string(query),
+            "memoryCount": .int(results.memories.count),
+            "taskCount": .int(results.taskSummaries.count)
+        ]
+        if !memoryEntries.isEmpty {
+            bannerMetadata["memoryResults"] = .string(memoryEntries.joined(separator: "\u{1E}"))
+        }
+        if !taskEntries.isEmpty {
+            bannerMetadata["taskResults"] = .string(taskEntries.joined(separator: "\u{1E}"))
+        }
+        await toolContext.channel.post(ChannelMessage(
+            sender: .system,
+            content: query,
+            metadata: bannerMetadata
+        ))
+    }
+
+    /// Returns true if any user message in the current conversation history contains the
+    /// auto-memory marker, indicating context was already attached and is still in scope.
+    private func conversationHasAutoMemoryContext() -> Bool {
+        for msg in conversationHistory where msg.role == .user {
+            if case .text(let text) = msg.content,
+               text.contains(Self.autoMemoryContextMarker) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Formats the auto-attached memory + prior tasks block. Layout mirrors `SearchMemoryTool`'s
+    /// output so Smith sees a familiar shape, with an explicit framing note that the user did
+    /// not author this section.
+    private func formatAutoMemoryContextBlock(results: SemanticSearchResults) -> String {
+        var lines: [String] = []
+        lines.append(Self.autoMemoryContextMarker)
+        lines.append("*System note: relevant memories and prior tasks were auto-attached based on the user's message above. Consider this background before creating a task or answering. The user did not write any of the text inside this block.*")
+
+        if !results.memories.isEmpty {
+            lines.append("")
+            lines.append("## Relevant Memories")
+            for (index, result) in results.memories.enumerated() {
+                let tagText = result.memory.tags.isEmpty ? "" : " [tags: \(result.memory.tags.joined(separator: ", "))]"
+                lines.append("\(index + 1). (similarity: \(String(format: "%.2f", result.similarity))) \(result.memory.content)\(tagText)")
+            }
+        }
+
+        if !results.taskSummaries.isEmpty {
+            lines.append("")
+            lines.append("## Relevant Prior Tasks")
+            lines.append("*These are summaries only — use `get_task_details` with the `task_ids` parameter (max 10) to fetch full details if a prior task seems directly relevant.*")
+            for (index, result) in results.taskSummaries.enumerated() {
+                let dateStr = Self.autoMemoryContextDateFormatter.string(from: result.summary.createdAt)
+                lines.append("\(index + 1). (similarity: \(String(format: "%.2f", result.similarity)), status: \(result.summary.status.rawValue), date: \(dateStr), task_id: \(result.summary.id.uuidString)) **\(result.summary.title)**: \(result.summary.summary)")
+            }
+        }
+
+        lines.append("[/AUTO_MEMORY_CONTEXT]")
+        return lines.joined(separator: "\n")
+    }
+
     private func drainPendingMessages() {
         guard !pendingChannelMessages.isEmpty else { return }
 
@@ -1671,9 +1826,9 @@ public actor AgentActor {
         }
         if let priorTasks = task.relevantPriorTasks, !priorTasks.isEmpty {
             let taskLines = priorTasks.map { priorTask in
-                "- \(priorTask.title): \(priorTask.summary) (similarity: \(String(format: "%.2f", priorTask.similarity))) — full details: `get_task_details(task_id: \"\(priorTask.taskID.uuidString)\")`"
+                "- \(priorTask.title): \(priorTask.summary) (similarity: \(String(format: "%.2f", priorTask.similarity))) — task_id: \(priorTask.taskID.uuidString)"
             }
-            parts.append("Relevant prior task summaries:\n\(taskLines.joined(separator: "\n"))")
+            parts.append("Relevant prior task summaries (call `get_task_details(task_ids: [...])` with up to 10 IDs at once if you need full details):\n\(taskLines.joined(separator: "\n"))")
         }
 
         parts.append("""

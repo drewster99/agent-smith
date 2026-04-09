@@ -58,7 +58,7 @@ public struct SearchMemoryTool: AgentTool {
         if results.isEmpty {
             await context.channel.post(ChannelMessage(
                 sender: .system,
-                content: "No results",
+                content: query,
                 metadata: [
                     "messageKind": .string("memory_searched"),
                     "searchQuery": .string(query),
@@ -82,6 +82,7 @@ public struct SearchMemoryTool: AgentTool {
 
         if !results.taskSummaries.isEmpty {
             var lines = ["## Relevant Prior Tasks"]
+            lines.append("*The items below are short summaries only. Use `get_task_details` with the `task_ids` parameter (you can pass up to 10 IDs at once) to fetch full task descriptions, results, and commentary — but only when a summary clearly relates to what you actually need.*")
             for (index, result) in results.taskSummaries.enumerated() {
                 let dateStr = Self.dateFormatter.string(from: result.summary.createdAt)
                 lines.append("\(index + 1). (similarity: \(String(format: "%.2f", result.similarity)), status: \(result.summary.status.rawValue), date: \(dateStr), task_id: \(result.summary.id.uuidString)) **\(result.summary.title)**: \(result.summary.summary)")
@@ -89,16 +90,37 @@ public struct SearchMemoryTool: AgentTool {
             sections.append(lines.joined(separator: "\n"))
         }
 
+        // Build per-entry strings for the UI banner. Same shape as `CreateTaskTool`'s
+        // context metadata so the channel log renders memory/task search results with
+        // the same expandable layout used for task-creation context.
+        let memoryEntries = results.memories.map { result -> String in
+            let pct = String(format: "%.0f%%", result.similarity * 100)
+            let tagText = result.memory.tags.isEmpty ? "" : " [tags: \(result.memory.tags.joined(separator: ", "))]"
+            return "\(pct) — \(result.memory.content)\(tagText)"
+        }
+        let taskEntries = results.taskSummaries.map { result -> String in
+            let pct = String(format: "%.0f%%", result.similarity * 100)
+            return "\(pct) — \(result.summary.title) (id: \(result.summary.id.uuidString))\n\(result.summary.summary)"
+        }
+
+        var bannerMetadata: [String: AnyCodable] = [
+            "messageKind": .string("memory_searched"),
+            "searchQuery": .string(query),
+            "memoryCount": .int(results.memories.count),
+            "taskCount": .int(results.taskSummaries.count)
+        ]
+        if !memoryEntries.isEmpty {
+            bannerMetadata["memoryResults"] = .string(memoryEntries.joined(separator: "\u{1E}"))
+        }
+        if !taskEntries.isEmpty {
+            bannerMetadata["taskResults"] = .string(taskEntries.joined(separator: "\u{1E}"))
+        }
+
         // Post a channel banner so memory searches are visible in the transcript.
         await context.channel.post(ChannelMessage(
             sender: .system,
             content: query,
-            metadata: [
-                "messageKind": .string("memory_searched"),
-                "searchQuery": .string(query),
-                "memoryCount": .int(results.memories.count),
-                "taskCount": .int(results.taskSummaries.count)
-            ]
+            metadata: bannerMetadata
         ))
 
         return sections.joined(separator: "\n\n")

@@ -16,6 +16,29 @@ struct MemoryEditorView: View {
     @State private var taskSummarySimilarities: [UUID: Double] = [:]
     @State private var searchTask: Task<Void, Never>?
     @State private var isSearching = false
+    /// Set when the most recent search threw — surfaced as an inline empty-state.
+    /// Cleared on a successful search or when the query is cleared.
+    @State private var searchErrorMessage: String?
+    /// Stats from the most recent successful search, displayed in the footer.
+    @State private var searchStats: SearchStats?
+
+    /// Per-search performance breakdown for the editor footer.
+    private struct SearchStats: Equatable {
+        let memoryDocCount: Int
+        let memoryVectorCount: Int
+        let taskDocCount: Int
+        let taskVectorCount: Int
+        let elapsedSeconds: Double
+
+        var totalVectorCount: Int { memoryVectorCount + taskVectorCount }
+        var totalDocCount: Int { memoryDocCount + taskDocCount }
+
+        var elapsedMs: Double { elapsedSeconds * 1000 }
+
+        var avgMsPerVector: Double {
+            totalVectorCount == 0 ? 0 : elapsedMs / Double(totalVectorCount)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,6 +49,7 @@ struct MemoryEditorView: View {
             } else {
                 memoryList
             }
+            statsFooter
         }
         .frame(minWidth: 600, minHeight: 400)
         .task {
@@ -38,24 +62,53 @@ struct MemoryEditorView: View {
                 memorySimilarities.removeAll()
                 taskSummarySimilarities.removeAll()
                 isSearching = false
+                searchErrorMessage = nil
+                searchStats = nil
                 return
             }
             isSearching = true
+            searchErrorMessage = nil
             searchTask = Task {
                 try? await Task.sleep(for: .milliseconds(300))
                 guard !Task.isCancelled else { return }
 
-                let memResults = await viewModel.searchMemories(query: query)
-                let taskResults = await viewModel.searchTaskSummaries(query: query)
-                guard !Task.isCancelled else { return }
+                // Snapshot the corpus shape BEFORE the search so the stats reflect what
+                // was actually searched (the corpus could change between snapshot and
+                // display, e.g. if a memory is saved during the await).
+                let memDocs = viewModel.storedMemories.count
+                let memVectors = viewModel.storedMemories.reduce(0) { $0 + $1.embeddings.count }
+                let taskDocs = viewModel.storedTaskSummaries.count
+                let taskVectors = viewModel.storedTaskSummaries.reduce(0) { $0 + $1.embeddings.count }
 
-                var memScores: [UUID: Double] = [:]
-                for r in memResults { memScores[r.memory.id] = r.similarity }
-                memorySimilarities = memScores
+                let started = Date()
+                do {
+                    let memResults = try await viewModel.searchMemories(query: query)
+                    let taskResults = try await viewModel.searchTaskSummaries(query: query)
+                    let elapsed = Date().timeIntervalSince(started)
+                    guard !Task.isCancelled else { return }
 
-                var taskScores: [UUID: Double] = [:]
-                for r in taskResults { taskScores[r.summary.id] = r.similarity }
-                taskSummarySimilarities = taskScores
+                    var memScores: [UUID: Double] = [:]
+                    for r in memResults { memScores[r.memory.id] = r.similarity }
+                    memorySimilarities = memScores
+
+                    var taskScores: [UUID: Double] = [:]
+                    for r in taskResults { taskScores[r.summary.id] = r.similarity }
+                    taskSummarySimilarities = taskScores
+                    searchErrorMessage = nil
+                    searchStats = SearchStats(
+                        memoryDocCount: memDocs,
+                        memoryVectorCount: memVectors,
+                        taskDocCount: taskDocs,
+                        taskVectorCount: taskVectors,
+                        elapsedSeconds: elapsed
+                    )
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    memorySimilarities.removeAll()
+                    taskSummarySimilarities.removeAll()
+                    searchErrorMessage = error.localizedDescription
+                    searchStats = nil
+                }
                 isSearching = false
             }
         }
@@ -72,13 +125,97 @@ struct MemoryEditorView: View {
         }
     }
 
+    // MARK: - Footer
+
+    /// Compact status row at the bottom of the editor:
+    /// - shows "Searching…" with a spinner while a search is in flight (results above
+    ///   may be stale during this time)
+    /// - shows the most recent search's stats once it completes
+    /// - hides itself entirely when no search has been run
+    /// Always-visible status row at the bottom of the editor. Three states:
+    /// 1. `isSearching` → spinner + "Searching…" (with optional parenthetical when the
+    ///    list above is showing stale results from a previous query)
+    /// 2. `searchStats != nil` → most recent search's docs/vectors/time breakdown
+    /// 3. otherwise → corpus stats (memory + task summary counts and total vectors)
+    private var statsFooter: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 8) {
+                if isSearching {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(searchingFooterText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let stats = searchStats {
+                    Image(systemName: "stopwatch")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(formatStats(stats))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                } else {
+                    Image(systemName: "tray.full")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(formatCorpusStats())
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.quaternary.opacity(0.3))
+        }
+    }
+
+    /// Footer text shown next to the spinner. The wording differs depending on whether
+    /// the visible list is "previous results, slightly stale" or "the full list because
+    /// no search has run yet."
+    private var searchingFooterText: String {
+        let activeMap = showTaskSummaries ? taskSummarySimilarities : memorySimilarities
+        if activeMap.isEmpty {
+            return "Searching…"
+        } else {
+            return "Searching… (results below are from previous query)"
+        }
+    }
+
+    /// Idle-state footer text — describes the loaded corpus when no search is active.
+    private func formatCorpusStats() -> String {
+        let memCount = viewModel.storedMemories.count
+        let memVecs = viewModel.storedMemories.reduce(0) { $0 + $1.embeddings.count }
+        let taskCount = viewModel.storedTaskSummaries.count
+        let taskVecs = viewModel.storedTaskSummaries.reduce(0) { $0 + $1.embeddings.count }
+        let memLabel = memCount == 1 ? "memory" : "memories"
+        let taskLabel = taskCount == 1 ? "task summary" : "task summaries"
+        return "\(memCount) \(memLabel) (\(memVecs) vectors)  •  \(taskCount) \(taskLabel) (\(taskVecs) vectors)"
+    }
+
+    private func formatStats(_ stats: SearchStats) -> String {
+        // Example: "59 docs / 231 vectors • 32ms total • 0.14ms/vector"
+        let docsLabel = stats.totalDocCount == 1 ? "doc" : "docs"
+        let vecLabel = stats.totalVectorCount == 1 ? "vector" : "vectors"
+        let totalMs = String(format: "%.0f", stats.elapsedMs)
+        let avgMs: String
+        if stats.totalVectorCount == 0 {
+            avgMs = "—"
+        } else {
+            avgMs = String(format: "%.2f", stats.avgMsPerVector)
+        }
+        return "\(stats.totalDocCount) \(docsLabel) / \(stats.totalVectorCount) \(vecLabel)  •  \(totalMs)ms total  •  \(avgMs)ms/vector"
+    }
+
     // MARK: - Header
 
     private var headerBar: some View {
         HStack(spacing: 12) {
             Picker("", selection: $showTaskSummaries) {
                 Text("Memories (\(viewModel.storedMemories.count))").tag(false)
-                Text("Task Summaries (\(viewModel.storedTaskSummaries.count))").tag(true)
+                Text("Tasks (\(viewModel.storedTaskSummaries.count))").tag(true)
             }
             .pickerStyle(.segmented)
             .fixedSize()
@@ -110,24 +247,67 @@ struct MemoryEditorView: View {
             result = result.filter { $0.source == source }
         }
         if !searchText.isEmpty {
-            if isSearching { return [] }
+            if memorySimilarities.isEmpty {
+                // Empty similarities map has two meanings: "first search hasn't run yet"
+                // (show the full list as a placeholder so the UI doesn't blank out) vs.
+                // "search completed and matched nothing" (return empty so the 'no matches'
+                // empty-state can fire). `isSearching` distinguishes them.
+                return isSearching ? result : []
+            }
             let scored = result.filter { memorySimilarities[$0.id] != nil }
             return scored.sorted { (memorySimilarities[$0.id] ?? 0) > (memorySimilarities[$1.id] ?? 0) }
         }
         return result
     }
 
+    @ViewBuilder
     private var memoryList: some View {
-        List {
-            ForEach(filteredMemories) { memory in
-                if editingMemoryID == memory.id {
-                    editRow(memory: memory)
-                } else {
-                    memoryRow(memory: memory)
+        let filtered = filteredMemories
+        if let error = searchErrorMessage {
+            ContentUnavailableView(
+                "Search Failed",
+                systemImage: "exclamationmark.triangle",
+                description: Text(error)
+            )
+        } else if !searchText.isEmpty && !isSearching && filtered.isEmpty {
+            // Only show "no matches" when the search has actually completed. While typing,
+            // we keep showing stale results (or the full list on first search) so the UI
+            // doesn't blank out between keystrokes.
+            ContentUnavailableView(
+                "No matches",
+                systemImage: "magnifyingglass",
+                description: Text("No memories matched “\(searchText)”. Try different keywords or a longer phrase.")
+            )
+        } else if viewModel.storedMemories.isEmpty && !viewModel.isRunning {
+            ContentUnavailableView(
+                "Smith Not Running",
+                systemImage: "play.circle",
+                description: Text("Click Start in the main window's toolbar to load memories from disk.")
+            )
+        } else if viewModel.storedMemories.isEmpty {
+            ContentUnavailableView(
+                "No Memories Saved",
+                systemImage: "brain",
+                description: Text("Memories will appear here as they're saved by you or the agents.")
+            )
+        } else if filterSource != nil && searchText.isEmpty && filtered.isEmpty {
+            ContentUnavailableView(
+                "No Matching Memories",
+                systemImage: "line.3.horizontal.decrease.circle",
+                description: Text("No memories from this source. Change the Source filter to see other memories.")
+            )
+        } else {
+            List {
+                ForEach(filtered) { memory in
+                    if editingMemoryID == memory.id {
+                        editRow(memory: memory)
+                    } else {
+                        memoryRow(memory: memory)
+                    }
                 }
             }
+            .listStyle(.inset(alternatesRowBackgrounds: true))
         }
-        .listStyle(.inset(alternatesRowBackgrounds: true))
     }
 
     private func memoryRow(memory: MemoryEntry) -> some View {
@@ -148,8 +328,10 @@ struct MemoryEditorView: View {
                 sourceBadge(memory.source)
             }
 
-            HStack(spacing: 8) {
-                if !memory.tags.isEmpty {
+            // Tag row only renders when there's at least one tag — an empty HStack with
+            // just a Spacer leaves a thin gap that looks like a layout bug.
+            if !memory.tags.isEmpty {
+                HStack(spacing: 8) {
                     HStack(spacing: 4) {
                         ForEach(memory.tags, id: \.self) { tag in
                             Text(tag)
@@ -160,16 +342,41 @@ struct MemoryEditorView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 3))
                         }
                     }
+                    Spacer()
                 }
+            }
 
+            // Row 1: created + last update (if any)
+            HStack(spacing: 8) {
                 Spacer()
-
-                Text("Created \(memory.createdAt.formatted(.dateTime.month(.abbreviated).day().hour().minute()))")
+                Text("Created \(formatDateTime(memory.createdAt))")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+                if let updatedAt = memory.lastUpdatedAt, let updatedBy = memory.lastUpdatedBy {
+                    Text("•")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Text("Updated \(formatDateTime(updatedAt)) by \(updatedBy.displayLabel)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
 
-                if memory.lastAccessedAt != memory.createdAt {
-                    Text("Accessed \(memory.lastAccessedAt.formatted(.dateTime.month(.abbreviated).day().hour().minute()))")
+            // Row 2: retrieval stats (only when the memory has been retrieved at least once)
+            HStack(spacing: 8) {
+                Spacer()
+                if let retrievedAt = memory.lastRetrievedAt {
+                    Text("Last retrieved \(formatDateTime(retrievedAt))")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Text("•")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Text("\(memory.retrievalCount) retrieval\(memory.retrievalCount == 1 ? "" : "s")")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    Text("Never retrieved by an agent")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -192,6 +399,11 @@ struct MemoryEditorView: View {
             .padding(.top, 2)
         }
         .padding(.vertical, 4)
+    }
+
+    /// Compact "Apr 8, 14:32" date+time formatting used by the editor's stats rows.
+    private func formatDateTime(_ date: Date) -> String {
+        date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
     }
 
     private func editRow(memory: MemoryEntry) -> some View {
@@ -249,47 +461,89 @@ struct MemoryEditorView: View {
 
     private var filteredTaskSummaries: [TaskSummaryEntry] {
         if !searchText.isEmpty {
-            if isSearching { return [] }
+            if taskSummarySimilarities.isEmpty {
+                // Same logic as `filteredMemories`: distinguish "first search not yet
+                // complete" (show the full list as a placeholder) from "search completed
+                // with zero results" (return empty to surface the 'no matches' state).
+                return isSearching ? viewModel.storedTaskSummaries : []
+            }
             let scored = viewModel.storedTaskSummaries.filter { taskSummarySimilarities[$0.id] != nil }
             return scored.sorted { (taskSummarySimilarities[$0.id] ?? 0) > (taskSummarySimilarities[$1.id] ?? 0) }
         }
         return viewModel.storedTaskSummaries
     }
 
+    @ViewBuilder
     private var taskSummaryList: some View {
-        List {
-            ForEach(filteredTaskSummaries) { summary in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(summary.title)
-                            .font(.body.bold())
-                        Spacer()
-                        if let score = taskSummarySimilarities[summary.id] {
-                            Text(String(format: "%.0f%%", score * 100))
-                                .font(.caption.bold().monospaced())
-                                .foregroundStyle(similarityColor(score))
+        let filtered = filteredTaskSummaries
+        if let error = searchErrorMessage {
+            ContentUnavailableView(
+                "Search Failed",
+                systemImage: "exclamationmark.triangle",
+                description: Text(error)
+            )
+        } else if !searchText.isEmpty && !isSearching && filtered.isEmpty {
+            ContentUnavailableView(
+                "No matches",
+                systemImage: "magnifyingglass",
+                description: Text("No tasks matched “\(searchText)”. Try different keywords or a longer phrase.")
+            )
+        } else if viewModel.storedTaskSummaries.isEmpty && !viewModel.isRunning {
+            ContentUnavailableView(
+                "Smith Not Running",
+                systemImage: "play.circle",
+                description: Text("Click Start in the main window's toolbar to load tasks from disk.")
+            )
+        } else if viewModel.storedTaskSummaries.isEmpty {
+            ContentUnavailableView(
+                "No Tasks Indexed",
+                systemImage: "doc.text",
+                description: Text("Tasks become searchable after they complete or fail and a summary is generated.")
+            )
+        } else {
+            List {
+                ForEach(filtered) { summary in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(summary.title)
+                                .font(.body.bold())
+                            Spacer()
+                            if let score = taskSummarySimilarities[summary.id] {
+                                Text(String(format: "%.0f%%", score * 100))
+                                    .font(.caption.bold().monospaced())
+                                    .foregroundStyle(similarityColor(score))
+                            }
+                            Text(summary.status.rawValue)
+                                .font(.caption2)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(statusColor(summary.status).opacity(0.15))
+                                .foregroundStyle(statusColor(summary.status))
+                                .clipShape(RoundedRectangle(cornerRadius: 3))
                         }
-                        Text(summary.status.rawValue)
-                            .font(.caption2)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(statusColor(summary.status).opacity(0.15))
-                            .foregroundStyle(statusColor(summary.status))
-                            .clipShape(RoundedRectangle(cornerRadius: 3))
+
+                        MarkdownText(content: summary.summary, baseFont: .callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+
+                        // ID on the lower left (matching the Task Details window),
+                        // creation date of the actual task on the lower right.
+                        HStack(spacing: 8) {
+                            Text("ID: \(summary.id.uuidString)")
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.tertiary)
+                                .textSelection(.enabled)
+                            Spacer()
+                            Text("Created \(formatDateTime(summary.taskCreatedAt))")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
                     }
-
-                    MarkdownText(content: summary.summary, baseFont: .callout)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-
-                    Text("Created \(summary.createdAt.formatted(.dateTime.month(.abbreviated).day().hour().minute()))")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                    .padding(.vertical, 4)
                 }
-                .padding(.vertical, 4)
             }
+            .listStyle(.inset(alternatesRowBackgrounds: true))
         }
-        .listStyle(.inset(alternatesRowBackgrounds: true))
     }
 
     // MARK: - Helpers
@@ -328,6 +582,16 @@ struct MemoryEditorView: View {
         case .failed: return .red
         case .paused: return .secondary
         case .interrupted: return .yellow
+        }
+    }
+}
+
+private extension MemoryEntry.UpdateSource {
+    /// Capitalized label used in the Memory editor's "Updated … by …" stat row.
+    var displayLabel: String {
+        switch self {
+        case .user: return "User"
+        case .system: return "System"
         }
     }
 }

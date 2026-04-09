@@ -70,6 +70,7 @@ struct MainView: View {
                     onRestoreHistory: { viewModel.restoreHistory() },
                     selectedImageAttachment: $selectedImageAttachment
                 )
+                .equatable()
 
                 Divider()
 

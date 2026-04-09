@@ -867,32 +867,53 @@ final class AppViewModel {
         await memoryStore.delete(id: id)
     }
 
-    /// Searches memories by semantic similarity, returning results with scores.
-    func searchMemories(query: String, limit: Int = 20) async -> [MemorySearchResult] {
-        guard let memoryStore = await runtime?.memoryStore else { return [] }
+    /// Errors thrown by the memory editor's search helpers, surfaced to the UI.
+    enum MemorySearchUIError: LocalizedError {
+        case smithNotRunning
+        case underlying(Error)
+
+        var errorDescription: String? {
+            switch self {
+            case .smithNotRunning:
+                return "Memory store is unavailable. Start Smith from the toolbar to load and search memories."
+            case .underlying(let error):
+                return "Search failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Searches memories by semantic similarity. Throws so the editor can distinguish
+    /// "no results" from "search failed" and surface a meaningful message to the user.
+    func searchMemories(query: String, limit: Int = 20) async throws -> [MemorySearchResult] {
+        guard let memoryStore = await runtime?.memoryStore else {
+            throw MemorySearchUIError.smithNotRunning
+        }
         do {
             return try await memoryStore.searchMemories(query: query, limit: limit, threshold: 0.0)
         } catch {
             print("[AppViewModel] Memory search failed: \(error)")
-            return []
+            throw MemorySearchUIError.underlying(error)
         }
     }
 
-    /// Searches task summaries by semantic similarity, returning results with scores.
-    func searchTaskSummaries(query: String, limit: Int = 20) async -> [TaskSummarySearchResult] {
-        guard let memoryStore = await runtime?.memoryStore else { return [] }
+    /// Searches task summaries by semantic similarity. Same error contract as `searchMemories`.
+    func searchTaskSummaries(query: String, limit: Int = 20) async throws -> [TaskSummarySearchResult] {
+        guard let memoryStore = await runtime?.memoryStore else {
+            throw MemorySearchUIError.smithNotRunning
+        }
         do {
             return try await memoryStore.searchTaskSummaries(query: query, limit: limit, threshold: 0.0)
         } catch {
             print("[AppViewModel] Task summary search failed: \(error)")
-            return []
+            throw MemorySearchUIError.underlying(error)
         }
     }
 
-    /// Updates a memory's content and/or tags. Re-embeds if content changed.
+    /// Updates a memory's content and/or tags via the Memory editor. Marked as a `.user`
+    /// edit so the entry's `lastUpdatedBy` reflects who made the change.
     func updateMemory(id: UUID, content: String? = nil, tags: [String]? = nil) async throws {
         guard let memoryStore = await runtime?.memoryStore else { return }
-        try await memoryStore.update(id: id, content: content, tags: tags)
+        try await memoryStore.update(id: id, content: content, tags: tags, updatedBy: .user)
     }
 
     private func persistMemories(memoryStore: MemoryStore) {

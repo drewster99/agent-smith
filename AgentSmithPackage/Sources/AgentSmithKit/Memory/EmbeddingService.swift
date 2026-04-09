@@ -1,6 +1,7 @@
 import Foundation
 import NaturalLanguage
 import Accelerate
+import os
 
 /// Provides sentence-level embeddings using Apple's NaturalLanguage framework
 /// and fast dot-product similarity via vDSP (Double precision).
@@ -24,6 +25,31 @@ public final class EmbeddingService: Sendable {
 
     /// Minimum character length for a sentence to be worth embedding.
     private static let minSentenceLength = 10
+
+    /// Process-wide accumulators tracking how often `NLEmbedding.vector(for:)` returns nil.
+    /// Useful for spotting drift in embedding quality on real corpora — sentences that fail
+    /// to embed are silently skipped, so without this counter the loss is invisible.
+    private struct NilStats: Sendable {
+        var attempted: Int = 0
+        var nilCount: Int = 0
+    }
+    private let nilStats = OSAllocatedUnfairLock(initialState: NilStats())
+
+    /// Snapshot of cumulative sentence-embedding statistics since this service was created.
+    public struct EmbeddingNilStats: Sendable {
+        public let attempted: Int
+        public let nilCount: Int
+        public var nilPercentage: Double {
+            attempted == 0 ? 0.0 : Double(nilCount) * 100.0 / Double(attempted)
+        }
+    }
+
+    /// Returns a snapshot of the cumulative nil-rate counters.
+    public func currentNilStats() -> EmbeddingNilStats {
+        nilStats.withLock { stats in
+            EmbeddingNilStats(attempted: stats.attempted, nilCount: stats.nilCount)
+        }
+    }
 
     public enum EmbeddingError: Error, LocalizedError {
         case modelUnavailable(NLLanguage)
@@ -66,9 +92,10 @@ public final class EmbeddingService: Sendable {
 
     /// Splits text into sentences and embeds each one separately.
     ///
-    /// Uses `NLTokenizer` for linguistic sentence boundary detection, then further
-    /// splits on newlines. Filters out sentences shorter than `minSentenceLength`
-    /// characters and caps at `maxSentencesPerDocument`. All vectors are L2-normalized.
+    /// Uses `NLTokenizer(unit: .sentence)` for linguistic sentence boundary detection.
+    /// Filters out sentences shorter than `minSentenceLength` characters and caps at
+    /// `maxSentencesPerDocument`. All vectors are L2-normalized. Tracks nil-vector
+    /// returns in process-wide stats so the silent skip rate can be observed.
     ///
     /// - Parameter text: The text to split and embed.
     /// - Returns: An array of normalized embedding vectors, one per sentence.
@@ -76,9 +103,21 @@ public final class EmbeddingService: Sendable {
     public func splitAndEmbed(_ text: String) throws -> [[Double]] {
         let sentences = Self.splitIntoSentences(text)
         var embeddings: [[Double]] = []
-        for sentence in sentences.prefix(Self.maxSentencesPerDocument) {
+        var localNilCount = 0
+        let attemptedSlice = sentences.prefix(Self.maxSentencesPerDocument)
+        for sentence in attemptedSlice {
             if let vector = embedding.vector(for: sentence) {
                 embeddings.append(Self.l2Normalize(vector))
+            } else {
+                localNilCount += 1
+            }
+        }
+        let attemptedCount = attemptedSlice.count
+        let nilDelta = localNilCount
+        if attemptedCount > 0 {
+            nilStats.withLock { stats in
+                stats.attempted += attemptedCount
+                stats.nilCount += nilDelta
             }
         }
         if embeddings.isEmpty {
@@ -89,29 +128,24 @@ public final class EmbeddingService: Sendable {
         return embeddings
     }
 
-    /// Splits text into individual sentences using NLTokenizer + newline splitting.
+    /// Splits text into individual sentences using `NLTokenizer(unit: .sentence)`.
     ///
-    /// Filters out sentences shorter than `minSentenceLength` characters.
+    /// Filters out sentences shorter than `minSentenceLength` characters. NLTokenizer
+    /// handles newlines, punctuation, and language-aware boundaries on its own — no
+    /// pre-split is needed.
     public static func splitIntoSentences(_ text: String) -> [String] {
-        // First split on newlines to respect paragraph boundaries.
-        let paragraphs = text.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+        guard !text.isEmpty else { return [] }
 
         var sentences: [String] = []
         let tokenizer = NLTokenizer(unit: .sentence)
-
-        for paragraph in paragraphs {
-            tokenizer.string = paragraph
-            tokenizer.enumerateTokens(in: paragraph.startIndex..<paragraph.endIndex) { range, _ in
-                let sentence = String(paragraph[range]).trimmingCharacters(in: .whitespaces)
-                if sentence.count >= minSentenceLength {
-                    sentences.append(sentence)
-                }
-                return true
+        tokenizer.string = text
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            let sentence = text[range].trimmingCharacters(in: .whitespacesAndNewlines)
+            if sentence.count >= minSentenceLength {
+                sentences.append(sentence)
             }
+            return true
         }
-
         return sentences
     }
 

@@ -334,6 +334,73 @@ The model stats popover (shown when clicking the model name on an agent card) cu
 ### Token usage cost estimation
 Add estimated cost columns to the Token Usage analytics window. Use LiteLLM pricing data (already available via `ModelMetadataService`) to calculate per-turn and per-task cost estimates based on model ID and token counts. Display in the Overview, By Task, and By Model/Provider tabs. Handle cache pricing correctly (Anthropic cached reads are cheaper than uncached input).
 
+### Replace NLEmbedding with MLX Qwen3-Embedding-0.6B-4bit-DWQ
+The current `EmbeddingService` uses Apple's `NLEmbedding.sentenceEmbedding(for: .english)` from the NaturalLanguage framework — a 512-dim sentence embedding model that runs locally with no API cost. It works, but it's an older model and we've observed weak retrieval on rare technical terms, code, identifiers, and topical paraphrasing. The 25% lexical overlap component in our RRF blend (`MemoryStore.searchAll`) was added partly to compensate for this.
+
+**Target model:** [`mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ`](https://huggingface.co/mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ) — a 4-bit DWQ-quantized variant of Alibaba's Qwen3 Embedding 0.6B, runnable on Apple Silicon via the MLX framework. Demonstrated in the [`mlx-swift-examples`](https://github.com/ml-explore/mlx-swift-examples) repo's `embedder-tool` example.
+
+**Why:** We compared this model against the current Apple NLEmbedding pipeline using a real corpus of our own task data (see methodology below) and got noticeably better results — top-K matches were more topically relevant and the model handled queries the Apple model would miss entirely (paraphrases, conceptual lookups, and queries about specific entities mentioned only briefly in long documents).
+
+**Open question:** speed and memory footprint on real workloads. The MLX inference path is fast on M-series Macs but it's a much larger model than `NLEmbedding`, so per-call latency, peak memory during embedding, and re-embed time on app start need to be measured before committing. The current corpus reembed pass on startup is essentially free (NLEmbedding is microseconds per sentence). Need to benchmark Qwen3 on a realistic corpus (hundreds to low thousands of memories + task summaries) before deciding whether to move to it directly, keep both and pick at runtime, or only use it for the search side and keep NLEmbedding for save-time embedding.
+
+**Initial timing measurement (52-task corpus, M-series Mac, "how to send messages" query):**
+```
+timing: loaded 52 entries in 11.38 ms
+timing: embedded query in 32.89 ms
+timing: sanitized/normalized query in 0.01 ms
+timing: ranked 52 entries in 0.03 ms (0.56 µs/entry)
+timing: total search pipeline 44.50 ms
+```
+Top 4 results were all genuinely relevant ("Send iMessage to Todd Bruss", "Send a message to Rachel Benson", etc.) with similarity scores 0.69–0.74. ~44 ms total per search is acceptable for a corpus this size, but the bulk of that (~33 ms) is the query embedding step — that cost grows roughly linearly with query length. Wishlist: faster query-embedding path. The ranking step at 0.56 µs/entry is essentially free and would scale to thousands of documents without trouble; the bottleneck is the per-call embed cost, not the search pass. Need a second measurement on a larger corpus (200+ entries) to confirm the linear-search assumption holds and to see how `save_memory`/`task_complete` save-time embed latency feels in practice.
+
+**Testing methodology used so far:**
+
+1. **Corpus export.** Wrote a Python script (`/tmp/export_tasks_to_corpus.py`) that reads `~/Library/Application Support/AgentSmith/tasks.json`, decodes the Swift `Date` fields (default `JSONEncoder` uses seconds-since-2001-01-01-UTC, NOT Unix epoch), and writes one Markdown file per task to `/tmp/corpus/`. Each file has the task ID, status, disposition, all timestamps, the description, result, commentary, summary, and the full progress-update history — basically the same composite text we feed into `MemoryStore.composeEmbeddingText`. This gives us a static corpus we can re-run experiments against without depending on the live app state.
+
+2. **Index build.** From a checkout of `mlx-swift-examples`:
+    ```
+    ./mlx-run embedder-tool \
+        --model mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ \
+        index \
+        --output /tmp/embed_index.json \
+        --directory /tmp/corpus \
+        --extensions md txt \
+        --recursive
+    ```
+
+3. **Queries run** (representative examples from our session):
+    ```
+    ./mlx-run embedder-tool search \
+        --model mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ \
+        --index /tmp/embed_index.json \
+        --query "PRs submitted to github repos" --top 4
+
+    ./mlx-run embedder-tool search \
+        --model mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ \
+        --index /tmp/embed_index.json \
+        --query "info about my friends or family" --top 4
+
+    ./mlx-run embedder-tool search \
+        --model mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ \
+        --index /tmp/embed_index.json \
+        --query "how to send messages" --top 4
+    ```
+
+   All three returned visibly more relevant top-K results than what `searchAll` produces with the current Apple model on the same corpus.
+
+**Implementation sketch:**
+- Add `mlx-swift` and `mlx-swift-examples` (or just the embedder helper) as Swift Package dependencies on `AgentSmithKit`.
+- Replace or wrap `EmbeddingService` so it loads `mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ` once at init and produces embeddings the same way (sentence-level if we keep multi-vector retrieval, or whole-document if we drop it). Vector dimension changes — Qwen3 embeddings are larger than 512 — so on-disk vectors need a re-embed pass.
+- The `reembedAllMemories` / `reembedTaskSummariesFromTasks` functions already exist for exactly this scenario; bumping a stored embedding model identifier and detecting mismatch on load is the standard migration path.
+- Decide on the lexical-overlap weight in RRF: with a stronger semantic channel, we may want to lower the lexical contribution (currently 25% via `searchAllNoiseFloor` filtering and joint RRF ranking).
+- Decide on the `searchAllNoiseFloor` value — Qwen3 cosines have a different distribution than NLEmbedding cosines, so the `0.55` floor will need recalibration.
+
+**Risks:**
+- Model weight download size (small, but adds a one-time cost).
+- Memory footprint during runtime (need to confirm 4-bit quantized 0.6B is comfortable in our process).
+- Per-embedding latency on save (every `save_memory` and `task_complete` triggers an embed; if it's >100ms it'll be noticeable).
+- Re-embed pass time on startup (currently instant; may grow to seconds for a corpus of a few hundred entries).
+
 ## Blockers
 
 ### ~~SSH key not configured on this device~~ ✅ Resolved

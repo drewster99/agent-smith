@@ -34,10 +34,14 @@ public struct SaveMemoryTool: AgentTool {
         "required": .array([.string("content")])
     ]
 
-    /// Minimum max-sentence-similarity to consider two memories as candidates for consolidation.
-    /// With multi-vector search this is a sentence-level match, so 0.85 means at least one
-    /// sentence pair is very similar. Tag overlap is also required (see guard below).
+    /// Minimum semantic cosine similarity for two memories to be considered consolidation
+    /// candidates. Applied to `MemorySearchResult.similarity` (which is the raw semantic
+    /// score), independently of the RRF ranking that orders search results.
+    /// Tag overlap is also required (see guard below).
     private static let consolidationThreshold: Double = 0.85
+    /// Loose noise floor for the candidate fetch — anything moderately related is OK
+    /// because the strict semantic gate above is what actually decides consolidation.
+    private static let consolidationCandidateFloor: Double = 0.5
 
     public init() {}
 
@@ -70,20 +74,23 @@ public struct SaveMemoryTool: AgentTool {
             }
         }
 
-        // Search for semantically similar existing memories to consolidate.
+        // Fetch a small candidate pool with a permissive noise floor, then apply the
+        // strict semantic gate ourselves. The search returns results ordered by RRF
+        // (which mixes lexical overlap), so we can't just take `first` — we need the
+        // first candidate whose raw semantic similarity clears `consolidationThreshold`.
         let similarMemories: [MemorySearchResult]
         do {
             similarMemories = try await context.memoryStore.searchMemories(
                 query: content,
-                limit: 1,
-                threshold: Self.consolidationThreshold
+                limit: 5,
+                threshold: Self.consolidationCandidateFloor
             )
         } catch {
             // If search fails, proceed with normal save.
             similarMemories = []
         }
 
-        if let match = similarMemories.first {
+        if let match = similarMemories.first(where: { $0.similarity >= Self.consolidationThreshold }) {
             // Require at least one shared tag before consolidating — pure semantic similarity
             // from local NLEmbedding is too noisy and can produce false-positive merges
             // between completely unrelated memories.
@@ -102,7 +109,8 @@ public struct SaveMemoryTool: AgentTool {
                     try await context.memoryStore.update(
                         id: match.memory.id,
                         content: merged,
-                        tags: mergedTags
+                        tags: mergedTags,
+                        updatedBy: .system
                     )
                 } catch {
                     // If update fails, fall through to normal save.

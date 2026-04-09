@@ -9,7 +9,7 @@ private let sharedTimestampFormatter: DateFormatter = {
 }()
 
 /// Color-coded scrolling message stream with attachment display.
-struct ChannelLogView: View {
+struct ChannelLogView: View, Equatable {
     var messages: [ChannelMessage]
     var persistedHistoryCount: Int
     var hasRestoredHistory: Bool
@@ -19,6 +19,16 @@ struct ChannelLogView: View {
     @State private var autoScrollEnabled = true
     /// The attachment currently shown in the full-screen image viewer, managed by the parent.
     @Binding var selectedImageAttachment: Attachment?
+
+    /// Prevents body re-evaluation when only unrelated parent properties change (e.g. inputText).
+    /// Closures and Bindings are excluded — they can't be meaningfully compared, and
+    /// the Binding manages its own invalidation internally.
+    nonisolated static func == (lhs: ChannelLogView, rhs: ChannelLogView) -> Bool {
+        lhs.messages.count == rhs.messages.count
+        && lhs.messages.last?.id == rhs.messages.last?.id
+        && lhs.persistedHistoryCount == rhs.persistedHistoryCount
+        && lhs.hasRestoredHistory == rhs.hasRestoredHistory
+    }
 
     private struct ScrollMetrics: Equatable {
         var isNearBottom: Bool
@@ -124,8 +134,9 @@ struct ChannelLogView: View {
                                 )
                                     .id(message.id)
                             } else if case .string(let kind) = message.metadata?["messageKind"], kind == "memory_saved" {
+                                let isConsolidated = message.boolMetadata("consolidated") ?? false
                                 MemoryBanner(
-                                    kind: .saved,
+                                    kind: isConsolidated ? .consolidated : .saved,
                                     summary: message.content,
                                     detail: message.stringMetadata("memoryContent"),
                                     tags: message.stringMetadata("memoryTags"),
@@ -142,7 +153,9 @@ struct ChannelLogView: View {
                                     source: nil,
                                     timestamp: message.timestamp,
                                     memoryCount: message.intMetadata("memoryCount") ?? 0,
-                                    taskCount: message.intMetadata("taskCount") ?? 0
+                                    taskCount: message.intMetadata("taskCount") ?? 0,
+                                    memoryResults: message.stringMetadata("memoryResults"),
+                                    taskResults: message.stringMetadata("taskResults")
                                 )
                                     .id(message.id)
                             } else {
@@ -821,6 +834,11 @@ private extension ChannelMessage {
         default: return nil
         }
     }
+
+    func boolMetadata(_ key: String) -> Bool? {
+        if case .bool(let value) = metadata?[key] { return value }
+        return nil
+    }
 }
 
 /// Visually distinct banner announcing a newly created task in the channel log.
@@ -911,33 +929,33 @@ private struct TaskCreatedBanner: View {
                 .onTapGesture { isContextExpanded.toggle() }
 
                 if isContextExpanded {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 10) {
                         if let contextMemories {
                             Text("Memories")
                                 .font(.caption.bold())
                                 .foregroundStyle(.secondary)
-                            ForEach(
-                                Array(contextMemories.components(separatedBy: "\n").enumerated()),
-                                id: \.offset
-                            ) { _, line in
-                                Text(line)
+                            let memoryEntries = parseContextEntries(contextMemories)
+                            ForEach(Array(memoryEntries.enumerated()), id: \.offset) { idx, entry in
+                                if idx > 0 {
+                                    Divider().opacity(0.4)
+                                }
+                                Text(entry)
                                     .font(AppFonts.inspectorBody)
                                     .foregroundStyle(.secondary)
                                     .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
                         if let contextPriorTasks {
                             Text("Prior Tasks")
                                 .font(.caption.bold())
                                 .foregroundStyle(.secondary)
-                            ForEach(
-                                Array(contextPriorTasks.components(separatedBy: "\n").enumerated()),
-                                id: \.offset
-                            ) { _, line in
-                                Text(line)
-                                    .font(AppFonts.inspectorBody)
-                                    .foregroundStyle(.secondary)
-                                    .textSelection(.enabled)
+                            let taskEntries = parseContextEntries(contextPriorTasks)
+                            ForEach(Array(taskEntries.enumerated()), id: \.offset) { idx, entry in
+                                if idx > 0 {
+                                    Divider().opacity(0.4)
+                                }
+                                contextEntryView(entry)
                             }
                         }
                     }
@@ -955,6 +973,45 @@ private struct TaskCreatedBanner: View {
         .padding(.vertical, 4)
     }
 
+}
+
+/// Splits a context metadata string into entries on the ASCII Record Separator (U+001E)
+/// that `CreateTaskTool` and `SearchMemoryTool` write between items. Falls back to
+/// splitting on newlines for backward compatibility with older persisted messages that
+/// pre-date the separator change. Empty entries are dropped.
+private func parseContextEntries(_ raw: String) -> [String] {
+    let parts: [String]
+    if raw.contains("\u{1E}") {
+        parts = raw.components(separatedBy: "\u{1E}")
+    } else {
+        parts = raw.components(separatedBy: "\n")
+    }
+    return parts
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+}
+
+/// Renders a single context entry as a bold header line followed by an optional body.
+/// The header is the first line of the entry; everything after the first newline is body.
+/// Used by both `TaskCreatedBanner` (prior tasks) and `MemoryBanner` (search results).
+@ViewBuilder
+private func contextEntryView(_ entry: String) -> some View {
+    let split = entry.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+    let header = split.first.map(String.init) ?? entry
+    let body = split.count > 1 ? String(split[1]).trimmingCharacters(in: .whitespacesAndNewlines) : ""
+    VStack(alignment: .leading, spacing: 3) {
+        Text(header)
+            .font(AppFonts.inspectorBody.weight(.semibold))
+            .foregroundStyle(.primary)
+            .textSelection(.enabled)
+        if !body.isEmpty {
+            Text(body)
+                .font(AppFonts.inspectorBody)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
 }
 
 /// Gold/amber banner marking a task's completion in the channel log.
@@ -1124,7 +1181,7 @@ private struct TaskUpdateBanner: View {
 
 /// Green mini-banner for memory save/search events in the channel log.
 private struct MemoryBanner: View {
-    enum Kind { case saved, searched }
+    enum Kind { case saved, consolidated, searched }
 
     let kind: Kind
     let summary: String
@@ -1134,6 +1191,10 @@ private struct MemoryBanner: View {
     let timestamp: Date
     var memoryCount: Int = 0
     var taskCount: Int = 0
+    /// For `.searched` only — formatted memory result entries joined by `\u{1E}`.
+    var memoryResults: String? = nil
+    /// For `.searched` only — formatted task summary result entries joined by `\u{1E}`.
+    var taskResults: String? = nil
 
     @State private var isExpanded = false
 
@@ -1148,7 +1209,7 @@ private struct MemoryBanner: View {
                 withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
             }, label: {
                 HStack(spacing: 6) {
-                    Image(systemName: kind == .saved ? "brain.head.profile" : "magnifyingglass")
+                    Image(systemName: iconName)
                         .font(.system(size: 10))
                         .foregroundStyle(accentColor)
 
@@ -1178,7 +1239,64 @@ private struct MemoryBanner: View {
             })
             .buttonStyle(.plain)
 
-            if isExpanded, let detail, !detail.isEmpty {
+            if isExpanded {
+                expandedBody
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 4)
+            }
+
+            accentColor.frame(height: 1).opacity(0.3)
+        }
+        .background(accentColor.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+        .padding(.vertical, 1)
+    }
+
+    private var headerText: String {
+        switch kind {
+        case .saved: return "Memory Saved"
+        case .consolidated: return "Memory Consolidated"
+        case .searched:
+            if memoryCount == 0 && taskCount == 0 {
+                return "Memory Search — no results"
+            }
+            var parts: [String] = []
+            if memoryCount > 0 { parts.append("\(memoryCount) memor\(memoryCount == 1 ? "y" : "ies")") }
+            if taskCount > 0 { parts.append("\(taskCount) task\(taskCount == 1 ? "" : "s")") }
+            return "Memory Search — \(parts.joined(separator: ", "))"
+        }
+    }
+
+    private var iconName: String {
+        switch kind {
+        case .saved: return "brain.head.profile"
+        case .consolidated: return "arrow.triangle.merge"
+        case .searched: return "magnifyingglass"
+        }
+    }
+
+    /// Single-line preview shown next to the header. Returns the full summary so SwiftUI's
+    /// `.lineLimit(1)` can truncate to fit the available width — no arbitrary char cap.
+    private var summaryPreview: String {
+        summary
+    }
+
+    private var hasExpandableContent: Bool {
+        switch kind {
+        case .saved, .consolidated:
+            return detail != nil && !(detail ?? "").isEmpty
+        case .searched:
+            let hasMemories = !(memoryResults?.isEmpty ?? true)
+            let hasTasks = !(taskResults?.isEmpty ?? true)
+            return hasMemories || hasTasks
+        }
+    }
+
+    @ViewBuilder
+    private var expandedBody: some View {
+        switch kind {
+        case .saved, .consolidated:
+            if let detail, !detail.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(detail)
                         .font(AppFonts.channelBody)
@@ -1196,37 +1314,31 @@ private struct MemoryBanner: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.bottom, 4)
             }
-
-            accentColor.frame(height: 1).opacity(0.3)
-        }
-        .background(accentColor.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 3))
-        .padding(.vertical, 1)
-    }
-
-    private var headerText: String {
-        switch kind {
-        case .saved: return "Memory Saved"
         case .searched:
-            if memoryCount == 0 && taskCount == 0 {
-                return "Memory Search — no results"
+            VStack(alignment: .leading, spacing: 10) {
+                if let memoryResults, !memoryResults.isEmpty {
+                    Text("Memories")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    let entries = parseContextEntries(memoryResults)
+                    ForEach(Array(entries.enumerated()), id: \.offset) { idx, entry in
+                        if idx > 0 { Divider().opacity(0.4) }
+                        contextEntryView(entry)
+                    }
+                }
+                if let taskResults, !taskResults.isEmpty {
+                    Text("Prior Tasks")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    let entries = parseContextEntries(taskResults)
+                    ForEach(Array(entries.enumerated()), id: \.offset) { idx, entry in
+                        if idx > 0 { Divider().opacity(0.4) }
+                        contextEntryView(entry)
+                    }
+                }
             }
-            var parts: [String] = []
-            if memoryCount > 0 { parts.append("\(memoryCount) memor\(memoryCount == 1 ? "y" : "ies")") }
-            if taskCount > 0 { parts.append("\(taskCount) task\(taskCount == 1 ? "" : "s")") }
-            return "Memory Search — \(parts.joined(separator: ", "))"
         }
-    }
-
-    private var summaryPreview: String {
-        String(summary.prefix(80))
-    }
-
-    private var hasExpandableContent: Bool {
-        kind == .saved && detail != nil && !(detail ?? "").isEmpty
     }
 
 }

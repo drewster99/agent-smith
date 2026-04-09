@@ -1,19 +1,27 @@
 import Foundation
 
-/// Allows agents to fetch full details of a specific task by ID.
+/// Allows agents to fetch full details of one or more tasks by ID.
 public struct GetTaskDetailsTool: AgentTool {
     public let name = "get_task_details"
-    public let toolDescription = "Fetch the full details of a task by its ID, including title, description, commentary, progress updates, and summary."
+    public let toolDescription = """
+        Fetch the full details of one or more tasks by their IDs, including title, description, \
+        commentary, progress updates, result, and summary. Pass an array of task IDs (max 10) \
+        to retrieve several tasks in a single call.
+        """
+
+    /// Maximum number of task IDs accepted in a single call.
+    private static let maxTaskIDs = 10
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
         "properties": .dictionary([
-            "task_id": .dictionary([
-                "type": .string("string"),
-                "description": .string("The UUID of the task to fetch.")
+            "task_ids": .dictionary([
+                "type": .string("array"),
+                "items": .dictionary(["type": .string("string")]),
+                "description": .string("Array of task UUIDs to fetch. Maximum 10 IDs per call.")
             ])
         ]),
-        "required": .array([.string("task_id")])
+        "required": .array([.string("task_ids")])
     ]
 
     public init() {}
@@ -23,19 +31,73 @@ public struct GetTaskDetailsTool: AgentTool {
     }
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
-        guard case .string(let taskIDString) = arguments["task_id"] else {
-            throw ToolCallError.missingRequiredArgument("task_id")
-        }
-        guard let taskID = UUID(uuidString: taskIDString) else {
-            return "Invalid `task_id`: '\(taskIDString)' is not a valid UUID."
-        }
-        guard let task = await context.taskStore.task(id: taskID) else {
-            return "No task found with ID \(taskID). Use `list_tasks` to see available tasks."
+        // Accept the canonical `task_ids` array, and tolerate a single legacy `task_id` string
+        // so the LLM can degrade gracefully if it forgets the new schema.
+        var requestedIDStrings: [String] = []
+        if case .array(let items) = arguments["task_ids"] {
+            for item in items {
+                if case .string(let s) = item {
+                    requestedIDStrings.append(s)
+                }
+            }
+        } else if case .string(let single) = arguments["task_id"] {
+            requestedIDStrings.append(single)
         }
 
+        guard !requestedIDStrings.isEmpty else {
+            throw ToolCallError.missingRequiredArgument("task_ids")
+        }
+
+        if requestedIDStrings.count > Self.maxTaskIDs {
+            return "Too many task IDs requested (\(requestedIDStrings.count)). Maximum is \(Self.maxTaskIDs) per call. Split into multiple calls."
+        }
+
+        var sections: [String] = []
+        var invalidIDs: [String] = []
+        var notFoundIDs: [UUID] = []
+
+        for idString in requestedIDStrings {
+            guard let taskID = UUID(uuidString: idString) else {
+                invalidIDs.append(idString)
+                continue
+            }
+            guard let task = await context.taskStore.task(id: taskID) else {
+                notFoundIDs.append(taskID)
+                continue
+            }
+            sections.append(formatTask(task))
+        }
+
+        var output: [String] = []
+
+        if !sections.isEmpty {
+            // Separate each task with a horizontal rule so the LLM can clearly distinguish
+            // boundaries between tasks in the response.
+            output.append(sections.joined(separator: "\n\n---\n\n"))
+        }
+
+        if !invalidIDs.isEmpty {
+            output.append("Invalid task IDs (not valid UUIDs): \(invalidIDs.joined(separator: ", "))")
+        }
+        if !notFoundIDs.isEmpty {
+            let list = notFoundIDs.map(\.uuidString).joined(separator: ", ")
+            output.append("No task found with ID(s): \(list). Use `list_tasks` to see available tasks.")
+        }
+
+        if output.isEmpty {
+            return "No tasks could be retrieved for the given IDs."
+        }
+
+        return output.joined(separator: "\n\n")
+    }
+
+    /// Formats a single task's details. Each section is included only when present.
+    private func formatTask(_ task: AgentTask) -> String {
         var parts: [String] = []
+        parts.append("Task ID: \(task.id.uuidString)")
         parts.append("Title: \(task.title)")
         parts.append("Status: \(task.status.rawValue)")
+        parts.append("Disposition: \(task.disposition.rawValue)")
         parts.append("Description: \(task.description)")
 
         if let commentary = task.commentary, !commentary.isEmpty {

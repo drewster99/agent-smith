@@ -97,18 +97,25 @@ public struct CreateTaskTool: AgentTool {
         if let task = await context.taskStore.task(id: task.id) {
             if let memories = task.relevantMemories, !memories.isEmpty {
                 meta["contextMemoryCount"] = .int(memories.count)
+                // Each entry: "85% — content [tags]". Entries separated by ASCII Record
+                // Separator (U+001E) so multi-line content can't accidentally split entries
+                // when the UI parses the metadata string.
                 meta["contextMemories"] = .string(memories.map { m in
                     let pct = String(format: "%.0f%%", m.similarity * 100)
                     let tags = m.tags.isEmpty ? "" : " [\(m.tags.joined(separator: ", "))]"
                     return "\(pct) — \(m.content)\(tags)"
-                }.joined(separator: "\n"))
+                }.joined(separator: "\u{1E}"))
             }
             if let priorTasks = task.relevantPriorTasks, !priorTasks.isEmpty {
                 meta["contextPriorTaskCount"] = .int(priorTasks.count)
+                // Each entry: header line ("85% — Title (id: UUID)") + newline + summary body.
+                // Entries separated by ASCII Record Separator (U+001E) so summary bodies that
+                // contain their own newlines (numbered lists, etc.) don't bleed between tasks
+                // when the UI parses the metadata string.
                 meta["contextPriorTasks"] = .string(priorTasks.map { p in
                     let pct = String(format: "%.0f%%", p.similarity * 100)
-                    return "\(pct) — \(p.title): \(p.summary)"
-                }.joined(separator: "\n"))
+                    return "\(pct) — \(p.title) (id: \(p.taskID.uuidString))\n\(p.summary)"
+                }.joined(separator: "\u{1E}"))
             }
         }
 

@@ -87,6 +87,7 @@ public enum JonesBehavior {
         - Obfuscated execution: `base64 -d|sh`, `base64 --decode|bash`
         - `find / -delete`, `find / -exec rm` — recursive deletion from root
         - Note: `rm -rf /tmp/some-directory` is NOT the same as `rm -rf /` — evaluate the actual target path
+        - Any "--force" argument to any "git" `bash` command is EXTREMELY dangerous
 
         ### Sensitive paths — WARN or higher:
         - Credential directories: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config/gcloud`, `~/.docker`

@@ -15,7 +15,11 @@ public struct TaskSummaryEntry: Codable, Identifiable, Sendable {
     public let embeddings: [[Double]]
     /// Whether the task completed successfully or failed.
     public let status: AgentTask.Status
-    /// When the summary was generated.
+    /// When the *task* was originally created (taken from `AgentTask.createdAt`).
+    /// This is the date users care about — the moment they asked for the work to be done.
+    public let taskCreatedAt: Date
+    /// When the *summary* was generated (after the task ran). Distinct from `taskCreatedAt`
+    /// because a long-running task can be created days before its summary is written.
     public let createdAt: Date
 
     public init(
@@ -25,6 +29,7 @@ public struct TaskSummaryEntry: Codable, Identifiable, Sendable {
         embeddingSourceText: String,
         embeddings: [[Double]],
         status: AgentTask.Status,
+        taskCreatedAt: Date,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -33,11 +38,14 @@ public struct TaskSummaryEntry: Codable, Identifiable, Sendable {
         self.embeddingSourceText = embeddingSourceText
         self.embeddings = embeddings
         self.status = status
+        self.taskCreatedAt = taskCreatedAt
         self.createdAt = createdAt
     }
 
     /// Backward-compatible decoding: handles old `embedding: [Double]` (single vector),
-    /// new `embeddings: [[Double]]` (multi-sentence), and missing `embeddingSourceText`.
+    /// new `embeddings: [[Double]]` (multi-sentence), missing `embeddingSourceText`, and
+    /// missing `taskCreatedAt` (legacy entries fall back to the summary `createdAt` until
+    /// the next reembed pass repairs them with the actual task creation date).
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -52,14 +60,16 @@ public struct TaskSummaryEntry: Codable, Identifiable, Sendable {
             embeddings = [single]
         }
         status = try c.decode(AgentTask.Status.self, forKey: .status)
-        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        let summaryCreatedAt = try c.decode(Date.self, forKey: .createdAt)
+        createdAt = summaryCreatedAt
+        taskCreatedAt = try c.decodeIfPresent(Date.self, forKey: .taskCreatedAt) ?? summaryCreatedAt
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, title, summary, embeddingSourceText
         // Map "embeddings" property to "embedding" JSON key for backward compat
         case embeddings = "embedding"
-        case status, createdAt
+        case status, createdAt, taskCreatedAt
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -71,5 +81,6 @@ public struct TaskSummaryEntry: Codable, Identifiable, Sendable {
         try c.encode(embeddings, forKey: .embeddings)
         try c.encode(status, forKey: .status)
         try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(taskCreatedAt, forKey: .taskCreatedAt)
     }
 }

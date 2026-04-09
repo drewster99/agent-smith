@@ -13,15 +13,39 @@ public struct MemoryEntry: Codable, Identifiable, Sendable {
     public let tags: [String]
     /// The task that was active when this memory was saved, if any.
     public let sourceTaskID: UUID?
+    /// When this memory was originally saved.
     public let createdAt: Date
-    /// Updated each time this memory appears in a search result.
-    public var lastAccessedAt: Date
 
-    /// Who originated the memory.
+    /// Set the most recent time an agent-driven search retrieved this memory and used it
+    /// (i.e. it appeared in `searchAll` results consumed by a tool or auto-context inject).
+    /// `nil` if the memory has never been retrieved by an agent. Browsing in the Memory
+    /// editor does NOT update this field.
+    public var lastRetrievedAt: Date?
+
+    /// Total number of times an agent-driven search has retrieved this memory. Same scoping
+    /// as `lastRetrievedAt` — editor browsing does not increment this.
+    public var retrievalCount: Int
+
+    /// Set the most recent time the memory's content or tags were edited. `nil` if the
+    /// memory has never been modified since creation.
+    public var lastUpdatedAt: Date?
+
+    /// Who performed the most recent edit. `nil` if never edited.
+    public var lastUpdatedBy: UpdateSource?
+
+    /// Who originated the memory at save time.
     public enum Source: String, Codable, Sendable {
         case user
         case smith
         case brown
+    }
+
+    /// Who performed an edit on an existing memory.
+    public enum UpdateSource: String, Codable, Sendable {
+        /// Edited by the user via the Memory editor.
+        case user
+        /// Edited automatically by the system — currently only via `SaveMemoryTool` consolidation.
+        case system
     }
 
     public init(
@@ -32,7 +56,10 @@ public struct MemoryEntry: Codable, Identifiable, Sendable {
         tags: [String] = [],
         sourceTaskID: UUID? = nil,
         createdAt: Date = Date(),
-        lastAccessedAt: Date = Date()
+        lastRetrievedAt: Date? = nil,
+        retrievalCount: Int = 0,
+        lastUpdatedAt: Date? = nil,
+        lastUpdatedBy: UpdateSource? = nil
     ) {
         self.id = id
         self.content = content
@@ -41,11 +68,16 @@ public struct MemoryEntry: Codable, Identifiable, Sendable {
         self.tags = tags
         self.sourceTaskID = sourceTaskID
         self.createdAt = createdAt
-        self.lastAccessedAt = lastAccessedAt
+        self.lastRetrievedAt = lastRetrievedAt
+        self.retrievalCount = retrievalCount
+        self.lastUpdatedAt = lastUpdatedAt
+        self.lastUpdatedBy = lastUpdatedBy
     }
 
-    /// Backward-compatible decoding: handles both old `embedding: [Double]`
-    /// (single vector) and new `embeddings: [[Double]]` (multi-sentence).
+    /// Backward-compatible decoding: handles both old `embedding: [Double]` (single vector)
+    /// and new `embeddings: [[Double]]` (multi-sentence). Also tolerates pre-existing
+    /// records that lack the new retrieval/update tracking fields, and ignores the legacy
+    /// `lastAccessedAt` field that has been replaced by `lastRetrievedAt`.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -61,12 +93,18 @@ public struct MemoryEntry: Codable, Identifiable, Sendable {
         tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
         sourceTaskID = try c.decodeIfPresent(UUID.self, forKey: .sourceTaskID)
         createdAt = try c.decode(Date.self, forKey: .createdAt)
-        lastAccessedAt = try c.decode(Date.self, forKey: .lastAccessedAt)
+        lastRetrievedAt = try c.decodeIfPresent(Date.self, forKey: .lastRetrievedAt)
+        retrievalCount = try c.decodeIfPresent(Int.self, forKey: .retrievalCount) ?? 0
+        lastUpdatedAt = try c.decodeIfPresent(Date.self, forKey: .lastUpdatedAt)
+        lastUpdatedBy = try c.decodeIfPresent(UpdateSource.self, forKey: .lastUpdatedBy)
     }
 
     private enum CodingKeys: String, CodingKey {
-        // Map "embeddings" to also decode legacy "embedding" key
-        case id, content, embeddings = "embedding", source, tags, sourceTaskID, createdAt, lastAccessedAt
+        // Map "embeddings" property to "embedding" JSON key for backward compat.
+        case id, content
+        case embeddings = "embedding"
+        case source, tags, sourceTaskID, createdAt
+        case lastRetrievedAt, retrievalCount, lastUpdatedAt, lastUpdatedBy
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -78,6 +116,9 @@ public struct MemoryEntry: Codable, Identifiable, Sendable {
         try c.encode(tags, forKey: .tags)
         try c.encodeIfPresent(sourceTaskID, forKey: .sourceTaskID)
         try c.encode(createdAt, forKey: .createdAt)
-        try c.encode(lastAccessedAt, forKey: .lastAccessedAt)
+        try c.encodeIfPresent(lastRetrievedAt, forKey: .lastRetrievedAt)
+        try c.encode(retrievalCount, forKey: .retrievalCount)
+        try c.encodeIfPresent(lastUpdatedAt, forKey: .lastUpdatedAt)
+        try c.encodeIfPresent(lastUpdatedBy, forKey: .lastUpdatedBy)
     }
 }
