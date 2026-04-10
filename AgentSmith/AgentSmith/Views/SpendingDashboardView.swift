@@ -24,6 +24,8 @@ struct SpendingDashboardView: View {
     @State private var chartHoveredDate: Date?
     /// Task selected for the detail sheet (nil = no sheet shown).
     @State private var selectedTaskID: UUID?
+    /// Task row currently hovered for visual highlight.
+    @State private var hoveredTaskID: UUID?
     /// Snapshot of pricing data, captured on load so the aggregator closure doesn't
     /// need to cross actor boundaries.
     @State private var pricingSnapshot: [String: ModelPricing] = [:]
@@ -572,9 +574,9 @@ struct SpendingDashboardView: View {
                     taskRow(title: title, summary: taskSummary)
                         .contentShape(Rectangle())
                         .onTapGesture { selectedTaskID = taskID }
-                        .onHover { hovering in
-                            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-                        }
+                        .background(hoveredTaskID == taskID ? Color.accentColor.opacity(0.08) : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .onHover { hovering in hoveredTaskID = hovering ? taskID : nil }
                 }
             }
         }
@@ -870,22 +872,23 @@ private struct TaskCostDetailSheet: View {
 
     // MARK: - Configuration
 
+    @ViewBuilder
     private var configurationSection: some View {
         let configs = Set(records.compactMap { $0.configuration?.id })
         let configRecords = records.compactMap(\.configuration)
-        guard let primaryConfig = configRecords.first else { return AnyView(EmptyView()) }
-
-        return AnyView(card(title: "Configuration") {
-            HStack(spacing: 24) {
-                miniStat(label: "Model", value: primaryConfig.model)
-                miniStat(label: "Temperature", value: primaryConfig.useDefaultTemperature ? "default" : String(format: "%.1f", primaryConfig.temperature))
-                miniStat(label: "Max Output", value: formatTokenCount(primaryConfig.maxTokens))
-                miniStat(label: "Context Window", value: formatTokenCount(primaryConfig.contextWindowSize))
-                if configs.count > 1 {
-                    miniStat(label: "Configs Used", value: "\(configs.count)", color: .orange)
+        if let primaryConfig = configRecords.first {
+            card(title: "Configuration") {
+                HStack(spacing: 24) {
+                    miniStat(label: "Model", value: primaryConfig.model)
+                    miniStat(label: "Temperature", value: primaryConfig.useDefaultTemperature ? "default" : String(format: "%.1f", primaryConfig.temperature))
+                    miniStat(label: "Max Output", value: formatTokenCount(primaryConfig.maxTokens))
+                    miniStat(label: "Context Window", value: formatTokenCount(primaryConfig.contextWindowSize))
+                    if configs.count > 1 {
+                        miniStat(label: "Configs Used", value: "\(configs.count)", color: .orange)
+                    }
                 }
             }
-        })
+        }
     }
 
     // MARK: - Turn Timeline
@@ -893,6 +896,9 @@ private struct TaskCostDetailSheet: View {
     private var turnTimelineSection: some View {
         card(title: "Turn-by-Turn (\(records.count) calls)") {
             let sorted = records.sorted { $0.timestamp < $1.timestamp }
+            let displayedTurns = Array(sorted.suffix(100))
+            let startOffset = sorted.count - displayedTurns.count
+
             if sorted.count > 100 {
                 Text("Showing last 100 of \(sorted.count) turns")
                     .font(.caption2)
@@ -914,10 +920,10 @@ private struct TaskCostDetailSheet: View {
 
             Divider()
 
-            ForEach(Array(sorted.suffix(100).enumerated()), id: \.element.id) { index, record in
+            ForEach(Array(displayedTurns.enumerated()), id: \.element.id) { index, record in
                 let turnCost = computeTurnCost(record)
                 HStack(spacing: 0) {
-                    Text("\(index + 1)")
+                    Text("\(startOffset + index + 1)")
                         .frame(width: 30, alignment: .trailing)
                     Text(record.agentRole.displayName)
                         .foregroundStyle(AppColors.color(for: .agent(record.agentRole)))

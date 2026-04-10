@@ -300,322 +300,164 @@ final class AppViewModel {
             startupError = msg
         }
 
-        // TODO: Remove migration after May 9 2026
-        // One-time migration: backfill `providerID` AND the full `configuration` snapshot
-        // on usage records persisted before those fields existed. For each record missing
-        // either, look up the originating ModelConfiguration via configurationID and copy
-        // the full config in — but ONLY if the config's current providerType still matches
-        // the record's providerType. If the user has since repointed the config at a
-        // different provider family, we leave the record unchanged rather than write wrong
-        // attribution. Records whose config or provider has been deleted, or whose
-        // configurationID was never captured, are also left unchanged. Idempotent: once
-        // a record has providerID AND configuration populated it's skipped on the next
-        // pass; the save below is gated on `backfilled > 0`.
+        // TODO: Remove all three migrations after 05/10/2026
+        // Combined one-shot migration pass over UsageRecords. Loads once, runs three
+        // idempotent backfills in sequence, saves once at the end if anything changed.
+        // 1. Configuration: backfill providerID + full ModelConfiguration snapshot
+        // 2. Smith taskID: match Smith records to the task active at their timestamp
+        // 3. Tool calls: match records to API response logs for toolCallNames
         do {
             var rawRecords = try await persistenceManager.loadUsageRecords()
-            var backfilled = 0
-            var alreadyComplete = 0
-            var noConfigurationID = 0
-            var configMissing = 0
-            var providerMissing = 0
-            var providerTypeMismatch = 0
+            var totalModified = 0
+
+            // --- Pass 1: Configuration backfill ---
+            var configBackfilled = 0
             for i in rawRecords.indices {
                 let record = rawRecords[i]
-                if record.providerID != nil && record.configuration != nil {
-                    alreadyComplete += 1
-                    continue
-                }
-                guard let configID = record.configurationID else {
-                    noConfigurationID += 1
-                    continue
-                }
-                guard let config = llmKit.configurations.first(where: { $0.id == configID }) else {
-                    configMissing += 1
-                    continue
-                }
-                guard let provider = llmKit.providers.first(where: { $0.id == config.providerID }) else {
-                    providerMissing += 1
-                    continue
-                }
-                guard provider.apiType.rawValue == record.providerType else {
-                    providerTypeMismatch += 1
-                    continue
-                }
+                if record.providerID != nil && record.configuration != nil { continue }
+                guard let configID = record.configurationID,
+                      let config = llmKit.configurations.first(where: { $0.id == configID }),
+                      let provider = llmKit.providers.first(where: { $0.id == config.providerID }),
+                      provider.apiType.rawValue == record.providerType else { continue }
                 rawRecords[i] = UsageRecord(
-                    id: record.id,
-                    timestamp: record.timestamp,
-                    agentRole: record.agentRole,
-                    taskID: record.taskID,
-                    modelID: record.modelID,
-                    providerType: record.providerType,
-                    providerID: config.providerID,
-                    configuration: config,
-                    configurationID: configID,
-                    inputTokens: record.inputTokens,
-                    outputTokens: record.outputTokens,
-                    cacheReadTokens: record.cacheReadTokens,
-                    cacheWriteTokens: record.cacheWriteTokens,
-                    latencyMs: record.latencyMs,
-                    preResetInputTokens: record.preResetInputTokens,
-                    outputCharCount: record.outputCharCount,
-                    toolCallCount: record.toolCallCount,
-                    toolCallNames: record.toolCallNames,
-                    toolCallArgumentsChars: record.toolCallArgumentsChars,
-                    totalToolExecutionMs: record.totalToolExecutionMs,
-                    totalToolResultChars: record.totalToolResultChars,
+                    id: record.id, timestamp: record.timestamp, agentRole: record.agentRole,
+                    taskID: record.taskID, modelID: record.modelID, providerType: record.providerType,
+                    providerID: config.providerID, configuration: config, configurationID: configID,
+                    inputTokens: record.inputTokens, outputTokens: record.outputTokens,
+                    cacheReadTokens: record.cacheReadTokens, cacheWriteTokens: record.cacheWriteTokens,
+                    latencyMs: record.latencyMs, preResetInputTokens: record.preResetInputTokens,
+                    outputCharCount: record.outputCharCount, toolCallCount: record.toolCallCount,
+                    toolCallNames: record.toolCallNames, toolCallArgumentsChars: record.toolCallArgumentsChars,
+                    totalToolExecutionMs: record.totalToolExecutionMs, totalToolResultChars: record.totalToolResultChars,
                     sessionID: record.sessionID
                 )
-                backfilled += 1
+                configBackfilled += 1
             }
-            let totalRecords = rawRecords.count
-            let unrecoverable = noConfigurationID + configMissing + providerMissing + providerTypeMismatch
-            print("[AgentSmith] UsageRecord configuration migration: total=\(totalRecords), alreadyComplete=\(alreadyComplete), backfilled=\(backfilled), unrecoverable=\(unrecoverable) (configMissing=\(configMissing), providerMissing=\(providerMissing), providerTypeMismatch=\(providerTypeMismatch), noConfigurationID=\(noConfigurationID))")
-            if backfilled > 0 {
+            totalModified += configBackfilled
+            if configBackfilled > 0 {
+                print("[AgentSmith] Migration pass 1 (configuration): backfilled \(configBackfilled) records.")
+            }
+
+            // --- Pass 2: Smith taskID backfill ---
+            struct TaskWindow { let taskID: UUID; let start: Date; let end: Date }
+            var windows: [TaskWindow] = []
+            for task in tasks {
+                guard let started = task.startedAt else { continue }
+                windows.append(TaskWindow(taskID: task.id, start: started, end: task.completedAt ?? task.updatedAt))
+            }
+            windows.sort { $0.start < $1.start }
+
+            var smithBackfilled = 0
+            for i in rawRecords.indices where rawRecords[i].agentRole == .smith && rawRecords[i].taskID == nil {
+                let ts = rawRecords[i].timestamp
+                guard let match = windows.last(where: { ts >= $0.start && ts <= $0.end }) else { continue }
+                rawRecords[i] = UsageRecord(
+                    id: rawRecords[i].id, timestamp: rawRecords[i].timestamp, agentRole: rawRecords[i].agentRole,
+                    taskID: match.taskID, modelID: rawRecords[i].modelID, providerType: rawRecords[i].providerType,
+                    providerID: rawRecords[i].providerID, configuration: rawRecords[i].configuration,
+                    configurationID: rawRecords[i].configurationID,
+                    inputTokens: rawRecords[i].inputTokens, outputTokens: rawRecords[i].outputTokens,
+                    cacheReadTokens: rawRecords[i].cacheReadTokens, cacheWriteTokens: rawRecords[i].cacheWriteTokens,
+                    latencyMs: rawRecords[i].latencyMs, preResetInputTokens: rawRecords[i].preResetInputTokens,
+                    outputCharCount: rawRecords[i].outputCharCount, toolCallCount: rawRecords[i].toolCallCount,
+                    toolCallNames: rawRecords[i].toolCallNames, toolCallArgumentsChars: rawRecords[i].toolCallArgumentsChars,
+                    totalToolExecutionMs: rawRecords[i].totalToolExecutionMs, totalToolResultChars: rawRecords[i].totalToolResultChars,
+                    sessionID: rawRecords[i].sessionID
+                )
+                smithBackfilled += 1
+            }
+            totalModified += smithBackfilled
+            if smithBackfilled > 0 {
+                print("[AgentSmith] Migration pass 2 (Smith taskID): backfilled \(smithBackfilled) records.")
+            }
+
+            // --- Pass 3: Tool call backfill from API response logs ---
+            var toolCallBackfilled = 0
+            if rawRecords.contains(where: { $0.toolCallNames == nil }) {
+                let logDir = FileManager.default.temporaryDirectory.appendingPathComponent("AgentSmith-LLM-Logs")
+                let fm = FileManager.default
+                if fm.fileExists(atPath: logDir.path) {
+                    struct LogEntry { let mtime: TimeInterval; let toolNames: [String] }
+                    var logEntries: [LogEntry] = []
+                    let logFiles = (try? fm.contentsOfDirectory(at: logDir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+                    for file in logFiles where file.lastPathComponent.hasSuffix("_response.json") {
+                        guard let attrs = try? fm.attributesOfItem(atPath: file.path),
+                              let mdate = attrs[.modificationDate] as? Date,
+                              let data = try? Data(contentsOf: file),
+                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                        var names: [String] = []
+                        if let choices = json["choices"] as? [[String: Any]] {
+                            for choice in choices {
+                                for tc in ((choice["message"] as? [String: Any])?["tool_calls"] as? [[String: Any]]) ?? [] {
+                                    if let name = (tc["function"] as? [String: Any])?["name"] as? String { names.append(name) }
+                                }
+                            }
+                        } else if let content = json["content"] as? [[String: Any]] {
+                            for block in content where block["type"] as? String == "tool_use" {
+                                if let name = block["name"] as? String { names.append(name) }
+                            }
+                        } else if let candidates = json["candidates"] as? [[String: Any]] {
+                            for cand in candidates {
+                                for part in ((cand["content"] as? [String: Any])?["parts"] as? [[String: Any]]) ?? [] {
+                                    if let fc = part["functionCall"] as? [String: Any], let name = fc["name"] as? String { names.append(name) }
+                                }
+                            }
+                        }
+                        logEntries.append(LogEntry(mtime: mdate.timeIntervalSinceReferenceDate, toolNames: names))
+                    }
+                    logEntries.sort { $0.mtime < $1.mtime }
+                    let logMtimes = logEntries.map(\.mtime)
+                    print("[AgentSmith] Migration pass 3 (tool calls): indexed \(logEntries.count) response logs.")
+
+                    let matchWindow: TimeInterval = 10
+                    for i in rawRecords.indices where rawRecords[i].toolCallNames == nil {
+                        let ts = rawRecords[i].timestamp.timeIntervalSinceReferenceDate
+                        var lo = logMtimes.startIndex, hi = logMtimes.endIndex
+                        while lo < hi { let mid = lo + (hi - lo) / 2; if logMtimes[mid] < ts - matchWindow { lo = mid + 1 } else { hi = mid } }
+                        var bestDist = TimeInterval.infinity, bestIdx = -1, idx = lo
+                        while idx < logEntries.count {
+                            let d = abs(logEntries[idx].mtime - ts)
+                            if logEntries[idx].mtime > ts + matchWindow { break }
+                            if d < bestDist { bestDist = d; bestIdx = idx }
+                            idx += 1
+                        }
+                        guard bestIdx >= 0 else { continue }
+                        let matched = logEntries[bestIdx]
+                        rawRecords[i] = UsageRecord(
+                            id: rawRecords[i].id, timestamp: rawRecords[i].timestamp, agentRole: rawRecords[i].agentRole,
+                            taskID: rawRecords[i].taskID, modelID: rawRecords[i].modelID, providerType: rawRecords[i].providerType,
+                            providerID: rawRecords[i].providerID, configuration: rawRecords[i].configuration,
+                            configurationID: rawRecords[i].configurationID,
+                            inputTokens: rawRecords[i].inputTokens, outputTokens: rawRecords[i].outputTokens,
+                            cacheReadTokens: rawRecords[i].cacheReadTokens, cacheWriteTokens: rawRecords[i].cacheWriteTokens,
+                            latencyMs: rawRecords[i].latencyMs, preResetInputTokens: rawRecords[i].preResetInputTokens,
+                            outputCharCount: rawRecords[i].outputCharCount, toolCallCount: matched.toolNames.count,
+                            toolCallNames: matched.toolNames, toolCallArgumentsChars: rawRecords[i].toolCallArgumentsChars,
+                            totalToolExecutionMs: rawRecords[i].totalToolExecutionMs, totalToolResultChars: rawRecords[i].totalToolResultChars,
+                            sessionID: rawRecords[i].sessionID
+                        )
+                        toolCallBackfilled += 1
+                    }
+                    totalModified += toolCallBackfilled
+                    if toolCallBackfilled > 0 {
+                        print("[AgentSmith] Migration pass 3 (tool calls): backfilled \(toolCallBackfilled) records.")
+                    }
+                } else {
+                    print("[AgentSmith] Migration pass 3 (tool calls): log directory not found; skipping.")
+                }
+            }
+
+            // Single save for all three passes
+            if totalModified > 0 {
                 do {
                     try await persistenceManager.saveUsageRecords(rawRecords)
-                    print("[AgentSmith] UsageRecord configuration migration: re-saved usage_records.json with \(backfilled) backfilled records.")
+                    print("[AgentSmith] UsageRecord migrations: saved \(totalModified) total modified records (config=\(configBackfilled), smith=\(smithBackfilled), toolCalls=\(toolCallBackfilled)).")
                 } catch {
                     logger.error("Failed to save migrated usage records: \(error.localizedDescription)")
                 }
             }
         } catch {
-            logger.error("Failed to load usage records for configuration migration: \(error.localizedDescription)")
-        }
-
-        // TODO: Remove migration after 05/10/2026
-        // One-time migration: backfill taskID on Smith's UsageRecords. Smith
-        // orchestrates every task but was never listed in assigneeIDs, so
-        // taskForAgent returned nil and all Smith records got taskID = nil.
-        // Fix: match each Smith record's timestamp to the task that was active
-        // (running or awaitingReview) at that time using startedAt/completedAt
-        // windows. Idempotent: records with non-nil taskID are skipped.
-        do {
-            var rawRecords = try await persistenceManager.loadUsageRecords()
-            let smithNeedsBackfill = rawRecords.contains { $0.agentRole == .smith && $0.taskID == nil }
-            if smithNeedsBackfill {
-                // Build time windows from tasks: (taskID, start, end)
-                struct TaskWindow {
-                    let taskID: UUID
-                    let start: Date
-                    let end: Date
-                }
-                var windows: [TaskWindow] = []
-                for task in tasks {
-                    guard let started = task.startedAt else { continue }
-                    let ended = task.completedAt ?? task.updatedAt
-                    windows.append(TaskWindow(taskID: task.id, start: started, end: ended))
-                }
-                windows.sort { $0.start < $1.start }
-
-                var backfilled = 0
-                var alreadyHadTaskID = 0
-                var noMatch = 0
-                var notSmith = 0
-
-                for i in rawRecords.indices {
-                    let record = rawRecords[i]
-                    guard record.agentRole == .smith else { notSmith += 1; continue }
-                    guard record.taskID == nil else { alreadyHadTaskID += 1; continue }
-
-                    // Find a task window that contains this timestamp
-                    let ts = record.timestamp
-                    if let match = windows.last(where: { ts >= $0.start && ts <= $0.end }) {
-                        rawRecords[i] = UsageRecord(
-                            id: record.id,
-                            timestamp: record.timestamp,
-                            agentRole: record.agentRole,
-                            taskID: match.taskID,
-                            modelID: record.modelID,
-                            providerType: record.providerType,
-                            providerID: record.providerID,
-                            configuration: record.configuration,
-                            configurationID: record.configurationID,
-                            inputTokens: record.inputTokens,
-                            outputTokens: record.outputTokens,
-                            cacheReadTokens: record.cacheReadTokens,
-                            cacheWriteTokens: record.cacheWriteTokens,
-                            latencyMs: record.latencyMs,
-                            preResetInputTokens: record.preResetInputTokens,
-                            outputCharCount: record.outputCharCount,
-                            toolCallCount: record.toolCallCount,
-                            toolCallNames: record.toolCallNames,
-                            toolCallArgumentsChars: record.toolCallArgumentsChars,
-                            totalToolExecutionMs: record.totalToolExecutionMs,
-                            totalToolResultChars: record.totalToolResultChars,
-                            sessionID: record.sessionID
-                        )
-                        backfilled += 1
-                    } else {
-                        noMatch += 1
-                    }
-                }
-
-                let smithTotal = backfilled + alreadyHadTaskID + noMatch
-                let pct: (Int) -> String = { n in
-                    guard smithTotal > 0 else { return "0.0%" }
-                    return String(format: "%.1f%%", Double(n) / Double(smithTotal) * 100)
-                }
-                print("[AgentSmith] Smith taskID backfill: smithRecords=\(smithTotal), backfilled=\(backfilled) (\(pct(backfilled))), alreadyHadTaskID=\(alreadyHadTaskID), noMatch=\(noMatch) (\(pct(noMatch)))")
-
-                if backfilled > 0 {
-                    do {
-                        try await persistenceManager.saveUsageRecords(rawRecords)
-                        print("[AgentSmith] Smith taskID backfill: saved \(backfilled) updated records.")
-                    } catch {
-                        logger.error("Failed to save Smith taskID backfill: \(error.localizedDescription)")
-                    }
-                }
-            }
-        } catch {
-            logger.error("Failed to load usage records for Smith taskID backfill: \(error.localizedDescription)")
-        }
-
-        // TODO: Remove migration after 05/10/2026
-        // One-time migration: backfill toolCallNames/toolCallCount on usage records
-        // from the raw API response log files in $TMPDIR/AgentSmith-LLM-Logs/.
-        // These fields were only captured starting in Phase 1; older records have nil.
-        // The migration matches each record to its nearest response log by timestamp
-        // (within 10 seconds) and extracts tool call names from the JSON. Idempotent:
-        // records with non-nil toolCallNames are skipped. If the log directory doesn't
-        // exist (cleaned up by the OS), the migration is a no-op.
-        do {
-            var rawRecords = try await persistenceManager.loadUsageRecords()
-            let needsBackfill = rawRecords.contains { $0.toolCallNames == nil }
-
-            if needsBackfill {
-                let logDir = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("AgentSmith-LLM-Logs")
-                let fm = FileManager.default
-                if !fm.fileExists(atPath: logDir.path) {
-                    print("[AgentSmith] Tool call backfill: log directory not found at \(logDir.path); skipping.")
-                } else {
-
-                // Index response logs by modification time for fast lookup.
-                let logFiles = (try? fm.contentsOfDirectory(
-                    at: logDir, includingPropertiesForKeys: [.contentModificationDateKey]
-                )) ?? []
-                let responseFiles = logFiles.filter { $0.lastPathComponent.hasSuffix("_response.json") }
-
-                struct LogEntry {
-                    let mtime: TimeInterval
-                    let toolNames: [String]
-                }
-                var logEntries: [LogEntry] = []
-                for file in responseFiles {
-                    guard let attrs = try? fm.attributesOfItem(atPath: file.path),
-                          let mdate = attrs[.modificationDate] as? Date else { continue }
-                    guard let data = try? Data(contentsOf: file),
-                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-                    var names: [String] = []
-                    // OpenAI / Mistral
-                    if let choices = json["choices"] as? [[String: Any]] {
-                        for choice in choices {
-                            for tc in ((choice["message"] as? [String: Any])?["tool_calls"] as? [[String: Any]]) ?? [] {
-                                if let name = (tc["function"] as? [String: Any])?["name"] as? String {
-                                    names.append(name)
-                                }
-                            }
-                        }
-                    // Anthropic
-                    } else if let content = json["content"] as? [[String: Any]] {
-                        for block in content where block["type"] as? String == "tool_use" {
-                            if let name = block["name"] as? String { names.append(name) }
-                        }
-                    // Gemini
-                    } else if let candidates = json["candidates"] as? [[String: Any]] {
-                        for cand in candidates {
-                            for part in ((cand["content"] as? [String: Any])?["parts"] as? [[String: Any]]) ?? [] {
-                                if let fc = part["functionCall"] as? [String: Any],
-                                   let name = fc["name"] as? String {
-                                    names.append(name)
-                                }
-                            }
-                        }
-                    }
-                    logEntries.append(LogEntry(mtime: mdate.timeIntervalSinceReferenceDate, toolNames: names))
-                }
-                logEntries.sort { $0.mtime < $1.mtime }
-                let logMtimes = logEntries.map(\.mtime)
-
-                print("[AgentSmith] Tool call backfill: indexed \(logEntries.count) response logs.")
-
-                let matchWindow: TimeInterval = 10
-                var backfilled = 0
-                var alreadyPopulated = 0
-                var noMatch = 0
-
-                for i in rawRecords.indices {
-                    if rawRecords[i].toolCallNames != nil {
-                        alreadyPopulated += 1
-                        continue
-                    }
-                    let ts = rawRecords[i].timestamp.timeIntervalSinceReferenceDate
-                    // Binary search for nearest entry within the match window.
-                    var lo = logMtimes.startIndex
-                    var hi = logMtimes.endIndex
-                    while lo < hi {
-                        let mid = lo + (hi - lo) / 2
-                        if logMtimes[mid] < ts - matchWindow { lo = mid + 1 } else { hi = mid }
-                    }
-                    var bestDist = TimeInterval.infinity
-                    var bestIdx = -1
-                    var idx = lo
-                    while idx < logEntries.count {
-                        let entryTime = logEntries[idx].mtime
-                        if entryTime > ts + matchWindow { break }
-                        let dist = abs(entryTime - ts)
-                        if dist < bestDist { bestDist = dist; bestIdx = idx }
-                        idx += 1
-                    }
-                    guard bestIdx >= 0 else { noMatch += 1; continue }
-
-                    let matched = logEntries[bestIdx]
-                    rawRecords[i] = UsageRecord(
-                        id: rawRecords[i].id,
-                        timestamp: rawRecords[i].timestamp,
-                        agentRole: rawRecords[i].agentRole,
-                        taskID: rawRecords[i].taskID,
-                        modelID: rawRecords[i].modelID,
-                        providerType: rawRecords[i].providerType,
-                        providerID: rawRecords[i].providerID,
-                        configuration: rawRecords[i].configuration,
-                        configurationID: rawRecords[i].configurationID,
-                        inputTokens: rawRecords[i].inputTokens,
-                        outputTokens: rawRecords[i].outputTokens,
-                        cacheReadTokens: rawRecords[i].cacheReadTokens,
-                        cacheWriteTokens: rawRecords[i].cacheWriteTokens,
-                        latencyMs: rawRecords[i].latencyMs,
-                        preResetInputTokens: rawRecords[i].preResetInputTokens,
-                        outputCharCount: rawRecords[i].outputCharCount,
-                        toolCallCount: matched.toolNames.count,
-                        toolCallNames: matched.toolNames,
-                        toolCallArgumentsChars: rawRecords[i].toolCallArgumentsChars,
-                        totalToolExecutionMs: rawRecords[i].totalToolExecutionMs,
-                        totalToolResultChars: rawRecords[i].totalToolResultChars,
-                        sessionID: rawRecords[i].sessionID
-                    )
-                    backfilled += 1
-                }
-
-                let total = rawRecords.count
-                let pct: (Int) -> String = { n in
-                    guard total > 0 else { return "0.0%" }
-                    return String(format: "%.1f%%", Double(n) / Double(total) * 100)
-                }
-                print("[AgentSmith] Tool call backfill: total=\(total), backfilled=\(backfilled) (\(pct(backfilled))), alreadyPopulated=\(alreadyPopulated) (\(pct(alreadyPopulated))), noMatch=\(noMatch) (\(pct(noMatch)))")
-
-                if backfilled > 0 {
-                    do {
-                        try await persistenceManager.saveUsageRecords(rawRecords)
-                        print("[AgentSmith] Tool call backfill: saved \(backfilled) updated records.")
-                    } catch {
-                        logger.error("Failed to save tool call backfill: \(error.localizedDescription)")
-                    }
-                }
-                } // else (log directory exists)
-            }
-        } catch {
-            logger.error("Failed to load usage records for tool call backfill: \(error.localizedDescription)")
+            logger.error("Failed to load usage records for migration: \(error.localizedDescription)")
         }
 
         // Load persisted usage records.
