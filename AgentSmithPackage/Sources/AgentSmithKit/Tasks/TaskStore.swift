@@ -78,6 +78,39 @@ public actor TaskStore {
         }
     }
 
+    /// Removes an agent from a single task's assignee list.
+    /// No-op if the task doesn't exist or the agent wasn't assigned.
+    public func unassignAgent(taskID: UUID, agentID: UUID) {
+        guard var task = tasks[taskID] else { return }
+        guard let idx = task.assigneeIDs.firstIndex(of: agentID) else { return }
+        task.assigneeIDs.remove(at: idx)
+        task.updatedAt = Date()
+        tasks[taskID] = task
+        onChange?()
+    }
+
+    /// Removes an agent from every task's assignee list. Called when an agent is
+    /// terminated so stale UUIDs don't accumulate across respawns.
+    /// Returns the IDs of the tasks that were actually modified (for callers that
+    /// want to log or persist just those).
+    @discardableResult
+    public func unassignAgentFromAllTasks(agentID: UUID) -> [UUID] {
+        var modified: [UUID] = []
+        let now = Date()
+        for (taskID, task) in tasks {
+            guard let idx = task.assigneeIDs.firstIndex(of: agentID) else { continue }
+            var updated = task
+            updated.assigneeIDs.remove(at: idx)
+            updated.updatedAt = now
+            tasks[taskID] = updated
+            modified.append(taskID)
+        }
+        if !modified.isEmpty {
+            onChange?()
+        }
+        return modified
+    }
+
     /// Returns the oldest actionable task assigned to the given agent.
     ///
     /// Tasks are sorted by `createdAt` ascending so the result is deterministic
@@ -246,8 +279,14 @@ public actor TaskStore {
     // MARK: - Bulk operations
 
     /// Restores tasks from a persisted list (e.g., on app launch).
+    ///
+    /// Clears every restored task's `assigneeIDs` — persisted agent UUIDs are
+    /// all stale at this point (the agents they refer to died with the previous
+    /// process). The runtime will re-populate the list as it spawns fresh agents
+    /// and assigns them via `assignAgent`.
     public func restore(_ persistedTasks: [AgentTask]) {
-        for task in persistedTasks {
+        for var task in persistedTasks {
+            task.assigneeIDs.removeAll()
             tasks[task.id] = task
         }
         onChange?()

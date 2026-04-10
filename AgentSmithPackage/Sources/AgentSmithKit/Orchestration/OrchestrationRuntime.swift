@@ -794,6 +794,12 @@ public actor OrchestrationRuntime {
         agentRoles.removeValue(forKey: id)
         await unsubscribeAgent(id: id)
 
+        // Scrub the terminated agent's UUID from every task's assignee list so stale
+        // Brown UUIDs don't accumulate across respawns. Without this, the periodic
+        // status messages Smith sees ("assigned to N agents") grow monotonically and
+        // misrepresent how many agents are actually live on a task.
+        await taskStore.unassignAgentFromAllTasks(agentID: id)
+
         if currentBrownID == id {
             currentBrownID = nil
         }
