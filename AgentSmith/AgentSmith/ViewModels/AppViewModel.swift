@@ -455,7 +455,11 @@ final class AppViewModel {
                     return (r.providerType == "gemini" || openAICompatibleTypes.contains(r.providerType))
                         && r.cacheReadTokens == 0
                 }
-                if !candidateIndices.isEmpty, logDirExists {
+                if candidateIndices.isEmpty {
+                    // No Gemini/OpenAI records with zero cache tokens — nothing to
+                    // backfill now or ever. Set the flag to skip the scan on future launches.
+                    UserDefaults.standard.set(true, forKey: cacheBackfillKey)
+                } else if logDirExists {
                     struct CacheLogEntry { let mtime: TimeInterval; let cacheReadTokens: Int }
                     var logEntries: [CacheLogEntry] = []
                     // try? justified: same rationale as pass 3 — temp directory files
@@ -522,7 +526,8 @@ final class AppViewModel {
                     // If the OS cleaned $TMPDIR before this launch, we want to retry
                     // on the next launch when logs may have been regenerated.
                     UserDefaults.standard.set(true, forKey: cacheBackfillKey)
-                } else if !logDirExists && !candidateIndices.isEmpty {
+                } else {
+                    // candidates exist but log directory is missing
                     print("[AgentSmith] Migration pass 4 (cache tokens): log directory not found; will retry next launch.")
                 }
             }

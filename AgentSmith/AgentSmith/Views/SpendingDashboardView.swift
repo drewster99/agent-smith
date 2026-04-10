@@ -120,9 +120,6 @@ struct SpendingDashboardView: View {
         .onChange(of: selectedRange) {
             recomputeDerivedState()
         }
-        .onChange(of: allRecords) {
-            recomputeDerivedState()
-        }
         .overlay {
             if isLoading {
                 ProgressView("Loading usage data...")
@@ -170,6 +167,8 @@ struct SpendingDashboardView: View {
     /// `pricingSnapshot`. Called after data loads and when the time range changes.
     /// Avoids redundant O(n) passes — without caching, each computed property
     /// was recalculated on every body evaluation (5-7 accesses per render).
+    /// NOTE: If `allRecords` is ever set outside `loadRecords()`, this must be
+    /// called afterward (or an `.onChange(of: allRecords)` handler added).
     private func recomputeDerivedState() {
         let interval = selectedRange.dateInterval()
         if selectedRange == .all {
