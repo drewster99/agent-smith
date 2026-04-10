@@ -301,28 +301,28 @@ final class AppViewModel {
         }
 
         // TODO: Remove migration after May 9 2026
-        // One-time migration: backfill `providerID` on usage records persisted before
-        // that field existed. For each record with a nil providerID, look up the
-        // originating ModelConfiguration via configurationID and copy its current
-        // providerID — but ONLY if the config's current providerType still matches
+        // One-time migration: backfill `providerID` AND the full `configuration` snapshot
+        // on usage records persisted before those fields existed. For each record missing
+        // either, look up the originating ModelConfiguration via configurationID and copy
+        // the full config in — but ONLY if the config's current providerType still matches
         // the record's providerType. If the user has since repointed the config at a
-        // different provider family, we leave the record unchanged rather than write
-        // wrong attribution. Records whose config or provider has been deleted, or
-        // whose configurationID was never captured, are also left unchanged.
-        // Idempotent: once a record has a non-nil providerID it's skipped on the
-        // next pass, so the save below is gated on `backfilled > 0`.
+        // different provider family, we leave the record unchanged rather than write wrong
+        // attribution. Records whose config or provider has been deleted, or whose
+        // configurationID was never captured, are also left unchanged. Idempotent: once
+        // a record has providerID AND configuration populated it's skipped on the next
+        // pass; the save below is gated on `backfilled > 0`.
         do {
             var rawRecords = try await persistenceManager.loadUsageRecords()
             var backfilled = 0
-            var alreadyHadProviderID = 0
+            var alreadyComplete = 0
             var noConfigurationID = 0
             var configMissing = 0
             var providerMissing = 0
             var providerTypeMismatch = 0
             for i in rawRecords.indices {
                 let record = rawRecords[i]
-                if record.providerID != nil {
-                    alreadyHadProviderID += 1
+                if record.providerID != nil && record.configuration != nil {
+                    alreadyComplete += 1
                     continue
                 }
                 guard let configID = record.configurationID else {
@@ -349,29 +349,37 @@ final class AppViewModel {
                     modelID: record.modelID,
                     providerType: record.providerType,
                     providerID: config.providerID,
-                    configurationID: record.configurationID,
+                    configuration: config,
+                    configurationID: configID,
                     inputTokens: record.inputTokens,
                     outputTokens: record.outputTokens,
                     cacheReadTokens: record.cacheReadTokens,
                     cacheWriteTokens: record.cacheWriteTokens,
                     latencyMs: record.latencyMs,
-                    preResetInputTokens: record.preResetInputTokens
+                    preResetInputTokens: record.preResetInputTokens,
+                    outputCharCount: record.outputCharCount,
+                    toolCallCount: record.toolCallCount,
+                    toolCallNames: record.toolCallNames,
+                    toolCallArgumentsChars: record.toolCallArgumentsChars,
+                    totalToolExecutionMs: record.totalToolExecutionMs,
+                    totalToolResultChars: record.totalToolResultChars,
+                    sessionID: record.sessionID
                 )
                 backfilled += 1
             }
             let totalRecords = rawRecords.count
             let unrecoverable = noConfigurationID + configMissing + providerMissing + providerTypeMismatch
-            print("[AgentSmith] UsageRecord providerID migration: total=\(totalRecords), alreadyHadProviderID=\(alreadyHadProviderID), backfilled=\(backfilled), unrecoverable=\(unrecoverable) (configMissing=\(configMissing), providerMissing=\(providerMissing), providerTypeMismatch=\(providerTypeMismatch), noConfigurationID=\(noConfigurationID))")
+            print("[AgentSmith] UsageRecord configuration migration: total=\(totalRecords), alreadyComplete=\(alreadyComplete), backfilled=\(backfilled), unrecoverable=\(unrecoverable) (configMissing=\(configMissing), providerMissing=\(providerMissing), providerTypeMismatch=\(providerTypeMismatch), noConfigurationID=\(noConfigurationID))")
             if backfilled > 0 {
                 do {
                     try await persistenceManager.saveUsageRecords(rawRecords)
-                    print("[AgentSmith] UsageRecord providerID migration: re-saved usage_records.json with \(backfilled) backfilled records.")
+                    print("[AgentSmith] UsageRecord configuration migration: re-saved usage_records.json with \(backfilled) backfilled records.")
                 } catch {
                     logger.error("Failed to save migrated usage records: \(error.localizedDescription)")
                 }
             }
         } catch {
-            logger.error("Failed to load usage records for providerID migration: \(error.localizedDescription)")
+            logger.error("Failed to load usage records for configuration migration: \(error.localizedDescription)")
         }
 
         // Load persisted usage records.

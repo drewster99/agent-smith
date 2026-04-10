@@ -1,4 +1,5 @@
 import Foundation
+import SwiftLLMKit
 
 /// The outcome of a security evaluation of a tool request.
 public struct SecurityDisposition: Sendable {
@@ -88,11 +89,16 @@ public actor SecurityEvaluator {
 
     /// Token usage store for persistent analytics.
     private let usageStore: UsageStore?
-    /// Model metadata for usage records.
-    private let modelID: String
+    /// Full snapshot of the ModelConfiguration used for Jones's LLM calls. Carried
+    /// directly (instead of separate modelID/providerID/configurationID fields) so
+    /// UsageRecords get the full config — context size, temperature, etc. — embedded
+    /// as immutable historical truth.
+    private let configuration: ModelConfiguration?
+    /// API type key for the provider (e.g. "anthropic", "openAICompatible"). Not on
+    /// ModelConfiguration itself, so still passed separately.
     private let providerType: String
-    private let providerID: String?
-    private let configurationID: UUID?
+    /// Session ID for the current orchestration run — stamped on every UsageRecord.
+    private let sessionID: UUID?
 
     public init(
         provider: any LLMProvider,
@@ -100,20 +106,18 @@ public actor SecurityEvaluator {
         channel: MessageChannel,
         abort: @escaping @Sendable (String, AgentRole) async -> Void,
         usageStore: UsageStore? = nil,
-        modelID: String = "",
+        configuration: ModelConfiguration? = nil,
         providerType: String = "",
-        providerID: String? = nil,
-        configurationID: UUID? = nil
+        sessionID: UUID? = nil
     ) {
         self.provider = provider
         self.systemPrompt = systemPrompt
         self.channel = channel
         self.abort = abort
         self.usageStore = usageStore
-        self.modelID = modelID
+        self.configuration = configuration
         self.providerType = providerType
-        self.providerID = providerID
-        self.configurationID = configurationID
+        self.sessionID = sessionID
     }
 
     /// Returns the evaluation history for inspector display.
@@ -179,28 +183,11 @@ public actor SecurityEvaluator {
         while retryCount < Self.maxRetries && totalIterations < maxTotalIterations {
             totalIterations += 1
             let response: LLMResponse
+            let callLatencyMs: Int
             do {
                 let callStart = Date()
                 response = try await provider.send(messages: conversationMessages, tools: [Self.fileReadToolDef])
-                let callLatencyMs = Int(Date().timeIntervalSince(callStart) * 1000)
-
-                // Capture Jones's token usage for analytics.
-                if let usageStore {
-                    let taskUUID = taskID.flatMap { UUID(uuidString: $0) }
-                    await UsageRecorder.record(
-                        response: response,
-                        context: LLMCallContext(
-                            agentRole: .jones,
-                            taskID: taskUUID,
-                            modelID: modelID,
-                            providerType: providerType,
-                            providerID: providerID,
-                            configurationID: configurationID
-                        ),
-                        latencyMs: callLatencyMs,
-                        to: usageStore
-                    )
-                }
+                callLatencyMs = Int(Date().timeIntervalSince(callStart) * 1000)
             } catch {
                 if Task.isCancelled {
                     let disposition = SecurityDisposition(approved: false, message: "Evaluation cancelled")
@@ -212,7 +199,10 @@ public actor SecurityEvaluator {
                 continue
             }
 
-            // If Jones requested file reads, execute them and continue the conversation.
+            // LLM call succeeded. Execute any file_reads Jones requested, accumulating
+            // per-turn tool execution stats for the UsageRecord below.
+            var turnToolExecutionMs = 0
+            var turnToolResultChars = 0
             if !response.toolCalls.isEmpty {
                 // Append assistant message with the tool calls (and any accompanying text).
                 if let text = response.text, !text.isEmpty {
@@ -220,12 +210,39 @@ public actor SecurityEvaluator {
                 } else {
                     conversationMessages.append(LLMMessage(role: .assistant, content: .toolCalls(response.toolCalls)))
                 }
-                // Execute each file_read and append tool results.
+                // Execute each file_read and append tool results, timing each one.
                 for call in response.toolCalls {
                     await postJonesFileReadToChannel(call)
+                    let execStart = Date()
                     let result = executeJonesFileRead(call)
+                    turnToolExecutionMs += Int(Date().timeIntervalSince(execStart) * 1000)
+                    turnToolResultChars += result.count
                     conversationMessages.append(LLMMessage(role: .tool, content: .toolResult(toolCallID: call.id, content: result)))
                 }
+            }
+
+            // Capture Jones's token usage for analytics — tool stats folded in.
+            if let usageStore {
+                let taskUUID = taskID.flatMap { UUID(uuidString: $0) }
+                await UsageRecorder.record(
+                    response: response,
+                    context: LLMCallContext(
+                        agentRole: .jones,
+                        taskID: taskUUID,
+                        modelID: configuration?.model ?? "",
+                        providerType: providerType,
+                        providerID: configuration?.providerID,
+                        configuration: configuration,
+                        sessionID: sessionID,
+                        totalToolExecutionMs: turnToolExecutionMs,
+                        totalToolResultChars: turnToolResultChars
+                    ),
+                    latencyMs: callLatencyMs,
+                    to: usageStore
+                )
+            }
+
+            if !response.toolCalls.isEmpty {
                 continue
             }
 

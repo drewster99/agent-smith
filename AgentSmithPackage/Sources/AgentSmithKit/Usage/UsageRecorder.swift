@@ -9,8 +9,17 @@ public struct LLMCallContext: Sendable {
     public let modelID: String
     public let providerType: String
     public let providerID: String?
-    public let configurationID: UUID?
+    /// Full snapshot of the ModelConfiguration used for this call. Captured here
+    /// rather than just its ID so historical records remain accurate even if the
+    /// source config is later deleted or edited.
+    public let configuration: ModelConfiguration?
+    public let sessionID: UUID?
     public let preResetInputTokens: Int?
+    /// Wall-clock milliseconds spent executing tools this turn's response requested.
+    /// Zero when the response had no tool calls or when the caller doesn't run tools.
+    public let totalToolExecutionMs: Int
+    /// Total characters across all tool result strings returned from this turn's tool calls.
+    public let totalToolResultChars: Int
 
     public init(
         agentRole: AgentRole,
@@ -18,16 +27,22 @@ public struct LLMCallContext: Sendable {
         modelID: String,
         providerType: String,
         providerID: String?,
-        configurationID: UUID?,
-        preResetInputTokens: Int? = nil
+        configuration: ModelConfiguration?,
+        sessionID: UUID?,
+        preResetInputTokens: Int? = nil,
+        totalToolExecutionMs: Int = 0,
+        totalToolResultChars: Int = 0
     ) {
         self.agentRole = agentRole
         self.taskID = taskID
         self.modelID = modelID
         self.providerType = providerType
         self.providerID = providerID
-        self.configurationID = configurationID
+        self.configuration = configuration
+        self.sessionID = sessionID
         self.preResetInputTokens = preResetInputTokens
+        self.totalToolExecutionMs = totalToolExecutionMs
+        self.totalToolResultChars = totalToolResultChars
     }
 }
 
@@ -46,19 +61,33 @@ public enum UsageRecorder {
         to store: UsageStore
     ) async {
         guard let usage = response.usage else { return }
+
+        // Derive response-side fields that are free to compute from the LLMResponse.
+        let outputCharCount = response.text?.count ?? 0
+        let toolCallCount = response.toolCalls.count
+        let toolCallNames = response.toolCalls.map(\.name)
+        let toolCallArgumentsChars = response.toolCalls.reduce(0) { $0 + $1.arguments.count }
+
         await store.append(UsageRecord(
             agentRole: context.agentRole,
             taskID: context.taskID,
             modelID: context.modelID,
             providerType: context.providerType,
             providerID: context.providerID,
-            configurationID: context.configurationID,
+            configuration: context.configuration,
             inputTokens: usage.inputTokens,
             outputTokens: usage.outputTokens,
             cacheReadTokens: usage.cacheReadTokens,
             cacheWriteTokens: usage.cacheWriteTokens,
             latencyMs: latencyMs,
-            preResetInputTokens: context.preResetInputTokens
+            preResetInputTokens: context.preResetInputTokens,
+            outputCharCount: outputCharCount,
+            toolCallCount: toolCallCount,
+            toolCallNames: toolCallNames,
+            toolCallArgumentsChars: toolCallArgumentsChars,
+            totalToolExecutionMs: context.totalToolExecutionMs,
+            totalToolResultChars: context.totalToolResultChars,
+            sessionID: context.sessionID
         ))
     }
 }

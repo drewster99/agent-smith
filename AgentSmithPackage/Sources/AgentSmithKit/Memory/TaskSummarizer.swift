@@ -1,4 +1,5 @@
 import Foundation
+import SwiftLLMKit
 
 /// Generates concise summaries of completed or failed tasks using a dedicated LLM call.
 ///
@@ -12,10 +13,12 @@ public actor TaskSummarizer {
     private let contextWindowSize: Int
     private let maxOutputTokens: Int
     private let usageStore: UsageStore?
-    private let modelID: String
+    /// Full snapshot of the ModelConfiguration used for summarization LLM calls.
+    private let configuration: ModelConfiguration?
+    /// Provider API type (e.g. "anthropic", "openAICompatible") — not on ModelConfiguration.
     private let providerType: String
-    private let providerID: String?
-    private let configurationID: UUID?
+    /// Session ID for the current orchestration run — stamped on every UsageRecord.
+    private let sessionID: UUID?
 
     private static let systemPrompt = """
         You are a task summarizer for an AI agent system. Given a completed or failed task's \
@@ -39,10 +42,9 @@ public actor TaskSummarizer {
         contextWindowSize: Int,
         maxOutputTokens: Int,
         usageStore: UsageStore? = nil,
-        modelID: String = "",
+        configuration: ModelConfiguration? = nil,
         providerType: String = "",
-        providerID: String? = nil,
-        configurationID: UUID? = nil
+        sessionID: UUID? = nil
     ) {
         self.provider = provider
         self.memoryStore = memoryStore
@@ -50,10 +52,9 @@ public actor TaskSummarizer {
         self.contextWindowSize = contextWindowSize
         self.maxOutputTokens = maxOutputTokens
         self.usageStore = usageStore
-        self.modelID = modelID
+        self.configuration = configuration
         self.providerType = providerType
-        self.providerID = providerID
-        self.configurationID = configurationID
+        self.sessionID = sessionID
     }
 
     private static let maxRetries = 3
@@ -180,10 +181,11 @@ public actor TaskSummarizer {
                         context: LLMCallContext(
                             agentRole: .summarizer,
                             taskID: nil,
-                            modelID: modelID,
+                            modelID: configuration?.model ?? "",
                             providerType: providerType,
-                            providerID: providerID,
-                            configurationID: configurationID
+                            providerID: configuration?.providerID,
+                            configuration: configuration,
+                            sessionID: sessionID
                         ),
                         latencyMs: callLatencyMs,
                         to: usageStore
@@ -228,10 +230,11 @@ public actor TaskSummarizer {
                 context: LLMCallContext(
                     agentRole: .summarizer,
                     taskID: task.id,
-                    modelID: modelID,
+                    modelID: configuration?.model ?? "",
                     providerType: providerType,
-                    providerID: providerID,
-                    configurationID: configurationID
+                    providerID: configuration?.providerID,
+                    configuration: configuration,
+                    sessionID: sessionID
                 ),
                 latencyMs: callLatencyMs,
                 to: usageStore

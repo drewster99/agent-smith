@@ -64,6 +64,12 @@ public actor OrchestrationRuntime {
     /// Maps each agent ID to its channel subscription IDs for proper cleanup.
     private var agentSubscriptions: [UUID: [UUID]] = [:]
 
+    /// Identifier for the current contiguous run of the runtime. Set fresh each time
+    /// `start()` is called and cleared on `stop()` / `abort()`. Stamped on every
+    /// UsageRecord and ChannelMessage produced during the run so queries can group
+    /// by session without having to join timestamps to a separate session log.
+    public private(set) var currentSessionID: UUID?
+
     /// Set by Jones abort — prevents restart until user clears it.
     private var aborted = false
     /// Callback to notify the app layer when abort is triggered.
@@ -198,6 +204,12 @@ public actor OrchestrationRuntime {
         guard smith == nil else { return }
         guard !aborted else { return }
 
+        // Mint a fresh session ID for this run. Propagated to every agent, evaluator,
+        // and summarizer so their UsageRecords carry it. A separate phase will also
+        // publish it to the MessageChannel for ChannelMessage stamping.
+        let sessionID = UUID()
+        currentSessionID = sessionID
+
         let powerMgr = PowerAssertionManager(taskStore: taskStore)
         await powerMgr.start()
         powerManager = powerMgr
@@ -213,10 +225,9 @@ public actor OrchestrationRuntime {
                 contextWindowSize: summarizerConfig.contextWindowSize,
                 maxOutputTokens: summarizerConfig.maxTokens,
                 usageStore: usageStore,
-                modelID: summarizerConfig.model,
+                configuration: summarizerConfig,
                 providerType: providerAPITypes[.summarizer]?.rawValue ?? "",
-                providerID: summarizerConfig.providerID,
-                configurationID: summarizerConfig.id
+                sessionID: sessionID
             )
         } else {
             taskSummarizer = nil
@@ -294,6 +305,7 @@ public actor OrchestrationRuntime {
         )
         await followUpScheduler.set(agent: smithAgent)
         await smithAgent.setUsageStore(usageStore)
+        await smithAgent.setSessionID(currentSessionID)
         if let turnCallback = onTurnRecorded {
             await smithAgent.setOnTurnRecorded { turn in turnCallback(.smith, turn) }
         }
@@ -631,6 +643,7 @@ public actor OrchestrationRuntime {
         currentBrownID = nil
         smith = nil
         smithID = nil
+        currentSessionID = nil
 
         await channel.post(ChannelMessage(
             sender: .system,
@@ -685,10 +698,9 @@ public actor OrchestrationRuntime {
                 await self.abort(reason: reason, callerRole: callerRole)
             },
             usageStore: usageStore,
-            modelID: jonesConfig?.model ?? "",
+            configuration: jonesConfig,
             providerType: providerAPITypes[.jones]?.rawValue ?? "",
-            providerID: jonesConfig?.providerID,
-            configurationID: jonesConfig?.id
+            sessionID: currentSessionID
         )
         securityEvaluators[brownID] = evaluator
 
@@ -727,6 +739,7 @@ public actor OrchestrationRuntime {
         )
         await brownAgent.setSecurityEvaluator(evaluator)
         await brownAgent.setUsageStore(usageStore)
+        await brownAgent.setSessionID(currentSessionID)
         if let turnCallback = onTurnRecorded {
             await brownAgent.setOnTurnRecorded { turn in turnCallback(.brown, turn) }
         }

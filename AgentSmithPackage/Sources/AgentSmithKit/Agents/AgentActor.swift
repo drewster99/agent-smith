@@ -18,8 +18,17 @@ public actor AgentActor {
     private var securityEvaluator: SecurityEvaluator?
     /// Token usage store for persistent analytics. Set via `setUsageStore(_:)`.
     private var usageStore: UsageStore?
+    /// Session ID for the current orchestration run — stamped on every UsageRecord.
+    /// Set via `setSessionID(_:)` at start time. Nil when the actor is running
+    /// detached from a session (shouldn't happen in normal orchestration).
+    private var sessionID: UUID?
     /// Captured before context pruning, emitted on the next UsageRecord.
     private var pendingPreResetTokens: Int?
+    /// Accumulators for the current turn's tool execution stats. Populated during
+    /// `handleResponse` as each tool runs; read and zeroed when the UsageRecord is
+    /// written after `handleResponse` returns.
+    private var turnToolExecutionMs: Int = 0
+    private var turnToolResultChars: Int = 0
     /// Set after context pruning to prevent re-using stale token counts from `llmTurns`.
     /// Cleared on the next successful LLM response.
     private var lastUsageStale = false
@@ -167,6 +176,12 @@ public actor AgentActor {
     /// Injects the usage store for persistent token analytics.
     public func setUsageStore(_ store: UsageStore) {
         usageStore = store
+    }
+
+    /// Injects the orchestration session ID. Called at start time by the runtime so
+    /// every UsageRecord this actor writes is stamped with the current session.
+    public func setSessionID(_ id: UUID?) {
+        sessionID = id
     }
 
     /// Registers a callback fired after each LLM turn is recorded.
@@ -434,19 +449,42 @@ public actor AgentActor {
                 pruneOldTurnSnapshots()
                 onTurnRecorded?(turnRecord)
 
-                // Persist usage record for analytics.
+                // Capture task context at the moment of the LLM call, before
+                // handleResponse runs any tools that might change it (e.g. task_complete).
+                let currentTaskAtCallTime = await toolContext.taskStore.taskForAgent(agentID: id)
+
+                // Reset per-turn tool-execution accumulators. handleResponse will add to
+                // these as tools run; the UsageRecord below reads the totals.
+                turnToolExecutionMs = 0
+                turnToolResultChars = 0
+
+                // Run tools via handleResponse, but capture any error so we can still
+                // persist the UsageRecord (LLM call succeeded — its token/cost/latency
+                // data is valid even if a subsequent tool failed). Re-thrown below so
+                // the outer catch still runs its backoff/retry logic.
+                var handleResponseError: Error?
+                do {
+                    try await handleResponse(response)
+                } catch {
+                    handleResponseError = error
+                }
+
+                // Persist usage record for analytics — with tool execution stats now
+                // folded in from handleResponse.
                 if let usageStore {
-                    let currentTask = await toolContext.taskStore.taskForAgent(agentID: id)
                     await UsageRecorder.record(
                         response: response,
                         context: LLMCallContext(
                             agentRole: configuration.role,
-                            taskID: currentTask?.id,
+                            taskID: currentTaskAtCallTime?.id,
                             modelID: configuration.llmConfig.model,
                             providerType: configuration.providerAPIType.rawValue,
                             providerID: configuration.llmConfig.providerID,
-                            configurationID: configuration.llmConfig.id,
-                            preResetInputTokens: pendingPreResetTokens
+                            configuration: configuration.llmConfig,
+                            sessionID: sessionID,
+                            preResetInputTokens: pendingPreResetTokens,
+                            totalToolExecutionMs: turnToolExecutionMs,
+                            totalToolResultChars: turnToolResultChars
                         ),
                         latencyMs: llmLatencyMs,
                         to: usageStore
@@ -454,7 +492,9 @@ public actor AgentActor {
                     pendingPreResetTokens = nil
                 }
 
-                try await handleResponse(response)
+                if let handleResponseError {
+                    throw handleResponseError
+                }
             } catch {
                 guard isRunning else { break }
 
@@ -732,6 +772,10 @@ public actor AgentActor {
                     let batchIndex: Int
                     let callID: String
                     let result: String
+                    /// Wall-clock ms spent inside `tool.execute(...)`. Zero for denied
+                    /// calls (which skip execute entirely). Does NOT include the Jones
+                    /// security-evaluation LLM call — that gets its own UsageRecord.
+                    let executionMs: Int
                 }
 
                 let channel = toolContext.channel
@@ -777,13 +821,16 @@ public actor AgentActor {
                     )
 
                     let result: String
+                    var executionMs = 0
                     if disposition.approved {
+                        let executionStart = Date()
                         do {
                             let args = try entry.call.parsedArguments()
                             result = try await entry.tool.execute(arguments: args, context: ctx)
                         } catch {
                             result = "Tool error: \(error.localizedDescription)"
                         }
+                        executionMs = Int(Date().timeIntervalSince(executionStart) * 1000)
                         await AgentActor.postToolOutputToChannel(
                             result: result, call: entry.call, role: role, channel: channel
                         )
@@ -798,7 +845,8 @@ public actor AgentActor {
                     }
 
                     return ParallelToolResult(
-                        batchIndex: entry.batchIndex, callID: entry.call.id, result: result
+                        batchIndex: entry.batchIndex, callID: entry.call.id,
+                        result: result, executionMs: executionMs
                     )
                 }
 
@@ -829,6 +877,8 @@ public actor AgentActor {
 
                 for r in results.sorted(by: { $0.batchIndex < $1.batchIndex }) {
                     executedCallIDs.insert(r.callID)
+                    turnToolExecutionMs += r.executionMs
+                    turnToolResultChars += r.result.count
                     conversationHistory.append(LLMMessage(
                         role: .tool,
                         content: .toolResult(toolCallID: r.callID, content: Self.capToolResult(r.result))
@@ -1004,12 +1054,18 @@ public actor AgentActor {
     }
 
     private func directExecute(_ call: LLMToolCall, tool: any AgentTool) async -> String {
+        let start = Date()
+        let result: String
         do {
             let args = try call.parsedArguments()
-            return try await tool.execute(arguments: args, context: toolContext)
+            result = try await tool.execute(arguments: args, context: toolContext)
         } catch {
-            return "Tool error: \(error.localizedDescription)"
+            result = "Tool error: \(error.localizedDescription)"
         }
+        let elapsedMs = Int(Date().timeIntervalSince(start) * 1000)
+        turnToolExecutionMs += elapsedMs
+        turnToolResultChars += result.count
+        return result
     }
 
     // MARK: - Channel posting helpers
