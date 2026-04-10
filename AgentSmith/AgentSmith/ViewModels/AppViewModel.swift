@@ -382,6 +382,154 @@ final class AppViewModel {
             logger.error("Failed to load usage records for configuration migration: \(error.localizedDescription)")
         }
 
+        // TODO: Remove migration after 05/10/2026
+        // One-time migration: backfill toolCallNames/toolCallCount on usage records
+        // from the raw API response log files in $TMPDIR/AgentSmith-LLM-Logs/.
+        // These fields were only captured starting in Phase 1; older records have nil.
+        // The migration matches each record to its nearest response log by timestamp
+        // (within 10 seconds) and extracts tool call names from the JSON. Idempotent:
+        // records with non-nil toolCallNames are skipped. If the log directory doesn't
+        // exist (cleaned up by the OS), the migration is a no-op.
+        do {
+            var rawRecords = try await persistenceManager.loadUsageRecords()
+            let needsBackfill = rawRecords.contains { $0.toolCallNames == nil }
+
+            if needsBackfill {
+                let logDir = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("AgentSmith-LLM-Logs")
+                let fm = FileManager.default
+                if !fm.fileExists(atPath: logDir.path) {
+                    print("[AgentSmith] Tool call backfill: log directory not found at \(logDir.path); skipping.")
+                } else {
+
+                // Index response logs by modification time for fast lookup.
+                let logFiles = (try? fm.contentsOfDirectory(
+                    at: logDir, includingPropertiesForKeys: [.contentModificationDateKey]
+                )) ?? []
+                let responseFiles = logFiles.filter { $0.lastPathComponent.hasSuffix("_response.json") }
+
+                struct LogEntry {
+                    let mtime: TimeInterval
+                    let toolNames: [String]
+                }
+                var logEntries: [LogEntry] = []
+                for file in responseFiles {
+                    guard let attrs = try? fm.attributesOfItem(atPath: file.path),
+                          let mdate = attrs[.modificationDate] as? Date else { continue }
+                    guard let data = try? Data(contentsOf: file),
+                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                    var names: [String] = []
+                    // OpenAI / Mistral
+                    if let choices = json["choices"] as? [[String: Any]] {
+                        for choice in choices {
+                            for tc in ((choice["message"] as? [String: Any])?["tool_calls"] as? [[String: Any]]) ?? [] {
+                                if let name = (tc["function"] as? [String: Any])?["name"] as? String {
+                                    names.append(name)
+                                }
+                            }
+                        }
+                    // Anthropic
+                    } else if let content = json["content"] as? [[String: Any]] {
+                        for block in content where block["type"] as? String == "tool_use" {
+                            if let name = block["name"] as? String { names.append(name) }
+                        }
+                    // Gemini
+                    } else if let candidates = json["candidates"] as? [[String: Any]] {
+                        for cand in candidates {
+                            for part in ((cand["content"] as? [String: Any])?["parts"] as? [[String: Any]]) ?? [] {
+                                if let fc = part["functionCall"] as? [String: Any],
+                                   let name = fc["name"] as? String {
+                                    names.append(name)
+                                }
+                            }
+                        }
+                    }
+                    logEntries.append(LogEntry(mtime: mdate.timeIntervalSinceReferenceDate, toolNames: names))
+                }
+                logEntries.sort { $0.mtime < $1.mtime }
+                let logMtimes = logEntries.map(\.mtime)
+
+                print("[AgentSmith] Tool call backfill: indexed \(logEntries.count) response logs.")
+
+                let matchWindow: TimeInterval = 10
+                var backfilled = 0
+                var alreadyPopulated = 0
+                var noMatch = 0
+
+                for i in rawRecords.indices {
+                    if rawRecords[i].toolCallNames != nil {
+                        alreadyPopulated += 1
+                        continue
+                    }
+                    let ts = rawRecords[i].timestamp.timeIntervalSinceReferenceDate
+                    // Binary search for nearest entry within the match window.
+                    var lo = logMtimes.startIndex
+                    var hi = logMtimes.endIndex
+                    while lo < hi {
+                        let mid = lo + (hi - lo) / 2
+                        if logMtimes[mid] < ts - matchWindow { lo = mid + 1 } else { hi = mid }
+                    }
+                    var bestDist = TimeInterval.infinity
+                    var bestIdx = -1
+                    var idx = lo
+                    while idx < logEntries.count {
+                        let entryTime = logEntries[idx].mtime
+                        if entryTime > ts + matchWindow { break }
+                        let dist = abs(entryTime - ts)
+                        if dist < bestDist { bestDist = dist; bestIdx = idx }
+                        idx += 1
+                    }
+                    guard bestIdx >= 0 else { noMatch += 1; continue }
+
+                    let matched = logEntries[bestIdx]
+                    rawRecords[i] = UsageRecord(
+                        id: rawRecords[i].id,
+                        timestamp: rawRecords[i].timestamp,
+                        agentRole: rawRecords[i].agentRole,
+                        taskID: rawRecords[i].taskID,
+                        modelID: rawRecords[i].modelID,
+                        providerType: rawRecords[i].providerType,
+                        providerID: rawRecords[i].providerID,
+                        configuration: rawRecords[i].configuration,
+                        configurationID: rawRecords[i].configurationID,
+                        inputTokens: rawRecords[i].inputTokens,
+                        outputTokens: rawRecords[i].outputTokens,
+                        cacheReadTokens: rawRecords[i].cacheReadTokens,
+                        cacheWriteTokens: rawRecords[i].cacheWriteTokens,
+                        latencyMs: rawRecords[i].latencyMs,
+                        preResetInputTokens: rawRecords[i].preResetInputTokens,
+                        outputCharCount: rawRecords[i].outputCharCount,
+                        toolCallCount: matched.toolNames.count,
+                        toolCallNames: matched.toolNames,
+                        toolCallArgumentsChars: rawRecords[i].toolCallArgumentsChars,
+                        totalToolExecutionMs: rawRecords[i].totalToolExecutionMs,
+                        totalToolResultChars: rawRecords[i].totalToolResultChars,
+                        sessionID: rawRecords[i].sessionID
+                    )
+                    backfilled += 1
+                }
+
+                let total = rawRecords.count
+                let pct: (Int) -> String = { n in
+                    guard total > 0 else { return "0.0%" }
+                    return String(format: "%.1f%%", Double(n) / Double(total) * 100)
+                }
+                print("[AgentSmith] Tool call backfill: total=\(total), backfilled=\(backfilled) (\(pct(backfilled))), alreadyPopulated=\(alreadyPopulated) (\(pct(alreadyPopulated))), noMatch=\(noMatch) (\(pct(noMatch)))")
+
+                if backfilled > 0 {
+                    do {
+                        try await persistenceManager.saveUsageRecords(rawRecords)
+                        print("[AgentSmith] Tool call backfill: saved \(backfilled) updated records.")
+                    } catch {
+                        logger.error("Failed to save tool call backfill: \(error.localizedDescription)")
+                    }
+                }
+                } // else (log directory exists)
+            }
+        } catch {
+            logger.error("Failed to load usage records for tool call backfill: \(error.localizedDescription)")
+        }
+
         // Load persisted usage records.
         await usageStore.load()
 
