@@ -181,7 +181,8 @@ struct ProviderManagementView: View {
 // MARK: - Built-in row
 
 /// One row in the built-in providers list. Shows the fixed name/type/endpoint and a
-/// SecureField for the API key with inline Save / Clear actions.
+/// SecureField for the API key with an inline Save action. Built-in providers cannot
+/// be deleted; clearing a key is done by emptying the field and saving.
 ///
 /// Save side-effects:
 /// - Stores the new key in Keychain via `LLMKitManager.setBuiltInProviderAPIKey`.
@@ -243,17 +244,6 @@ private struct BuiltInProviderRow: View {
 
                     Button("Save") { save() }
                         .disabled(!hasUnsavedChanges)
-
-                    if hasAPIKey {
-                        Button(role: .destructive) {
-                            draftKey = ""
-                            save()
-                        } label: {
-                            Image(systemName: "trash")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Remove API key")
-                    }
 
                     if isRefreshing {
                         ProgressView()
