@@ -261,9 +261,14 @@ final class SpeechController {
     private func handleSystemMessage(_ message: ChannelMessage) {
         // Security review results
         if case .string(let result) = message.metadata?["securityDisposition"] {
+            // Approved tool calls are the overwhelming common case; playing a
+            // "safe" sound here doesn't convey useful information to the user
+            // and regularly collides with an already-playing NSSound, producing
+            // "Already playing" warnings. Suppress both the sound and the log
+            // line for approvals — only surface the interesting verdicts
+            // (warning / denied / abort).
+            guard result != "approved" else { return }
             switch result {
-            case "approved":
-                playSound(named: securitySafeSoundName)
             case "warning":
                 playSound(named: securityWarnSoundName)
             case "denied":
