@@ -260,10 +260,39 @@ public actor AgentActor {
         }
     }
 
-    /// Stops the agent.
-    public func stop() {
+    /// Stops the agent and waits (up to a bounded grace period) for its run loop
+    /// to actually exit before returning.
+    ///
+    /// Without the await, callers like `OrchestrationRuntime.stopAll` and
+    /// `terminateAgent` were only signalling cancellation — the run loop could
+    /// still be blocked inside `provider.send(...)` or `BashTool.execute(...)`
+    /// when the runtime moved on, spawning a *new* agent for the same role while
+    /// the old one kept executing. That produced "zombie Browns" that logged LLM
+    /// calls for a task nobody believed they were on anymore.
+    ///
+    /// The grace period is capped so a pathologically unresponsive subprocess
+    /// can't block `stopAll` indefinitely; the pair of this + a cancel-aware
+    /// `ProcessRunner` means clean unwinds usually take milliseconds.
+    public func stop() async {
         isRunning = false
-        runTask?.cancel()
+        guard let task = runTask else { return }
+        task.cancel()
+
+        // Race the run loop's exit against a grace timeout. Whichever finishes
+        // first wins; the other is cancelled. The `runTask.value` branch runs
+        // on the cooperative thread pool, not on this actor, so actor reentrancy
+        // lets the run loop continue processing the cancellation while stop()
+        // is suspended here.
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                _ = await task.value
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(5))
+            }
+            _ = await group.next()
+            group.cancelAll()
+        }
         runTask = nil
     }
 
