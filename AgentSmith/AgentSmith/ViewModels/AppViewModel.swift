@@ -333,34 +333,43 @@ final class AppViewModel {
             }
 
             // --- Pass 2: Smith taskID backfill ---
-            struct TaskWindow { let taskID: UUID; let start: Date; let end: Date }
-            var windows: [TaskWindow] = []
-            for task in tasks {
-                guard let started = task.startedAt else { continue }
-                windows.append(TaskWindow(taskID: task.id, start: started, end: task.completedAt ?? task.updatedAt))
-            }
-            windows.sort { $0.start < $1.start }
-
             var smithBackfilled = 0
-            for i in rawRecords.indices where rawRecords[i].agentRole == .smith && rawRecords[i].taskID == nil {
-                let ts = rawRecords[i].timestamp
-                guard let match = windows.last(where: { ts >= $0.start && ts <= $0.end }) else { continue }
-                rawRecords[i] = rawRecords[i].replacing(taskID: match.taskID)
-                smithBackfilled += 1
+            if rawRecords.contains(where: { $0.agentRole == .smith && $0.taskID == nil }) {
+                struct TaskWindow { let taskID: UUID; let start: Date; let end: Date }
+                var windows: [TaskWindow] = []
+                for task in tasks {
+                    guard let started = task.startedAt else { continue }
+                    windows.append(TaskWindow(taskID: task.id, start: started, end: task.completedAt ?? task.updatedAt))
+                }
+                windows.sort { $0.start < $1.start }
+
+                for i in rawRecords.indices where rawRecords[i].agentRole == .smith && rawRecords[i].taskID == nil {
+                    let ts = rawRecords[i].timestamp
+                    guard let match = windows.last(where: { ts >= $0.start && ts <= $0.end }) else { continue }
+                    rawRecords[i] = rawRecords[i].replacing(taskID: match.taskID)
+                    smithBackfilled += 1
+                }
             }
             totalModified += smithBackfilled
             if smithBackfilled > 0 {
                 print("[AgentSmith] Migration pass 2 (Smith taskID): backfilled \(smithBackfilled) records.")
             }
 
+            // Passes 3 and 4 scan $TMPDIR/AgentSmith-LLM-Logs/ response files.
+            // Shared log directory reference — used by both passes.
+            let logDir = FileManager.default.temporaryDirectory.appendingPathComponent("AgentSmith-LLM-Logs")
+            let fm = FileManager.default
+            let logDirExists = fm.fileExists(atPath: logDir.path)
+
             // --- Pass 3: Tool call backfill from API response logs ---
             var toolCallBackfilled = 0
             if rawRecords.contains(where: { $0.toolCallNames == nil }) {
-                let logDir = FileManager.default.temporaryDirectory.appendingPathComponent("AgentSmith-LLM-Logs")
-                let fm = FileManager.default
-                if fm.fileExists(atPath: logDir.path) {
+                if logDirExists {
                     struct LogEntry { let mtime: TimeInterval; let toolNames: [String] }
                     var logEntries: [LogEntry] = []
+                    // try? justified: log files live in $TMPDIR and may be partially
+                    // written, cleaned up by the OS, or have stale metadata. Skipping
+                    // unreadable files is the correct degradation for a best-effort backfill.
                     let logFiles = (try? fm.contentsOfDirectory(at: logDir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
                     for file in logFiles where file.lastPathComponent.hasSuffix("_response.json") {
                         guard let attrs = try? fm.attributesOfItem(atPath: file.path),
@@ -394,9 +403,15 @@ final class AppViewModel {
                     let matchWindow: TimeInterval = 10
                     for i in rawRecords.indices where rawRecords[i].toolCallNames == nil {
                         let ts = rawRecords[i].timestamp.timeIntervalSinceReferenceDate
-                        var lo = logMtimes.startIndex, hi = logMtimes.endIndex
-                        while lo < hi { let mid = lo + (hi - lo) / 2; if logMtimes[mid] < ts - matchWindow { lo = mid + 1 } else { hi = mid } }
-                        var bestDist = TimeInterval.infinity, bestIdx = -1, idx = lo
+                        var lo = logMtimes.startIndex
+                        var hi = logMtimes.endIndex
+                        while lo < hi {
+                            let mid = lo + (hi - lo) / 2
+                            if logMtimes[mid] < ts - matchWindow { lo = mid + 1 } else { hi = mid }
+                        }
+                        var bestDist = TimeInterval.infinity
+                        var bestIdx = -1
+                        var idx = lo
                         while idx < logEntries.count {
                             let d = abs(logEntries[idx].mtime - ts)
                             if logEntries[idx].mtime > ts + matchWindow { break }
@@ -440,66 +455,76 @@ final class AppViewModel {
                     return (r.providerType == "gemini" || openAICompatibleTypes.contains(r.providerType))
                         && r.cacheReadTokens == 0
                 }
-                if !candidateIndices.isEmpty {
-                    let logDir = FileManager.default.temporaryDirectory.appendingPathComponent("AgentSmith-LLM-Logs")
-                    let fm = FileManager.default
-                    if fm.fileExists(atPath: logDir.path) {
-                        struct CacheLogEntry { let mtime: TimeInterval; let cacheReadTokens: Int }
-                        var logEntries: [CacheLogEntry] = []
-                        let logFiles = (try? fm.contentsOfDirectory(at: logDir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-                        for file in logFiles where file.lastPathComponent.hasSuffix("_response.json") {
-                            let name = file.lastPathComponent
-                            guard name.contains("_Gemini_") || name.contains("_OpenAI_") else { continue }
-                            guard let attrs = try? fm.attributesOfItem(atPath: file.path),
-                                  let mdate = attrs[.modificationDate] as? Date,
-                                  let data = try? Data(contentsOf: file),
-                                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                if !candidateIndices.isEmpty, logDirExists {
+                    struct CacheLogEntry { let mtime: TimeInterval; let cacheReadTokens: Int }
+                    var logEntries: [CacheLogEntry] = []
+                    // try? justified: same rationale as pass 3 — temp directory files
+                    // may be missing, partially written, or have stale metadata.
+                    let logFiles = (try? fm.contentsOfDirectory(at: logDir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+                    for file in logFiles where file.lastPathComponent.hasSuffix("_response.json") {
+                        let name = file.lastPathComponent
+                        // Log filenames contain the provider adapter class name (e.g. "_Gemini_",
+                        // "_OpenAI_"). This is a convention set by the LLM logging layer — if
+                        // adapter naming changes, this filter must be updated accordingly.
+                        guard name.contains("_Gemini_") || name.contains("_OpenAI_") else { continue }
+                        guard let attrs = try? fm.attributesOfItem(atPath: file.path),
+                              let mdate = attrs[.modificationDate] as? Date,
+                              let data = try? Data(contentsOf: file),
+                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
 
-                            var cacheRead = 0
-                            if name.contains("_Gemini_") {
-                                if let meta = json["usageMetadata"] as? [String: Any] {
-                                    cacheRead = meta["cachedContentTokenCount"] as? Int ?? 0
-                                }
-                            } else {
-                                if let usage = json["usage"] as? [String: Any],
-                                   let details = usage["prompt_tokens_details"] as? [String: Any] {
-                                    cacheRead = details["cached_tokens"] as? Int ?? 0
-                                }
+                        var cacheRead = 0
+                        if name.contains("_Gemini_") {
+                            if let meta = json["usageMetadata"] as? [String: Any] {
+                                cacheRead = meta["cachedContentTokenCount"] as? Int ?? 0
                             }
-                            logEntries.append(CacheLogEntry(mtime: mdate.timeIntervalSinceReferenceDate, cacheReadTokens: cacheRead))
-                        }
-                        logEntries.sort { $0.mtime < $1.mtime }
-                        let logMtimes = logEntries.map(\.mtime)
-                        print("[AgentSmith] Migration pass 4 (cache tokens): indexed \(logEntries.count) Gemini/OpenAI response logs.")
-
-                        let matchWindow: TimeInterval = 10
-                        for i in candidateIndices {
-                            let ts = rawRecords[i].timestamp.timeIntervalSinceReferenceDate
-                            var lo = logMtimes.startIndex, hi = logMtimes.endIndex
-                            while lo < hi { let mid = lo + (hi - lo) / 2; if logMtimes[mid] < ts - matchWindow { lo = mid + 1 } else { hi = mid } }
-                            var bestDist = TimeInterval.infinity, bestIdx = -1, idx = lo
-                            while idx < logEntries.count {
-                                let d = abs(logEntries[idx].mtime - ts)
-                                if logEntries[idx].mtime > ts + matchWindow { break }
-                                if d < bestDist { bestDist = d; bestIdx = idx }
-                                idx += 1
+                        } else {
+                            if let usage = json["usage"] as? [String: Any],
+                               let details = usage["prompt_tokens_details"] as? [String: Any] {
+                                cacheRead = details["cached_tokens"] as? Int ?? 0
                             }
-                            guard bestIdx >= 0, logEntries[bestIdx].cacheReadTokens > 0 else { continue }
-                            let matched = logEntries[bestIdx]
-                            rawRecords[i] = rawRecords[i].replacing(
-                                cacheReadTokens: matched.cacheReadTokens
-                            )
-                            cacheBackfilled += 1
                         }
-                        totalModified += cacheBackfilled
-                        if cacheBackfilled > 0 {
-                            print("[AgentSmith] Migration pass 4 (cache tokens): backfilled \(cacheBackfilled) records.")
-                        }
-                    } else {
-                        print("[AgentSmith] Migration pass 4 (cache tokens): log directory not found; skipping.")
+                        logEntries.append(CacheLogEntry(mtime: mdate.timeIntervalSinceReferenceDate, cacheReadTokens: cacheRead))
                     }
+                    logEntries.sort { $0.mtime < $1.mtime }
+                    let logMtimes = logEntries.map(\.mtime)
+                    print("[AgentSmith] Migration pass 4 (cache tokens): indexed \(logEntries.count) Gemini/OpenAI response logs.")
+
+                    let matchWindow: TimeInterval = 10
+                    for i in candidateIndices {
+                        let ts = rawRecords[i].timestamp.timeIntervalSinceReferenceDate
+                        var lo = logMtimes.startIndex
+                        var hi = logMtimes.endIndex
+                        while lo < hi {
+                            let mid = lo + (hi - lo) / 2
+                            if logMtimes[mid] < ts - matchWindow { lo = mid + 1 } else { hi = mid }
+                        }
+                        var bestDist = TimeInterval.infinity
+                        var bestIdx = -1
+                        var idx = lo
+                        while idx < logEntries.count {
+                            let d = abs(logEntries[idx].mtime - ts)
+                            if logEntries[idx].mtime > ts + matchWindow { break }
+                            if d < bestDist { bestDist = d; bestIdx = idx }
+                            idx += 1
+                        }
+                        guard bestIdx >= 0, logEntries[bestIdx].cacheReadTokens > 0 else { continue }
+                        let matched = logEntries[bestIdx]
+                        rawRecords[i] = rawRecords[i].replacing(
+                            cacheReadTokens: matched.cacheReadTokens
+                        )
+                        cacheBackfilled += 1
+                    }
+                    totalModified += cacheBackfilled
+                    if cacheBackfilled > 0 {
+                        print("[AgentSmith] Migration pass 4 (cache tokens): backfilled \(cacheBackfilled) records.")
+                    }
+                    // Only mark complete when logs were actually available to scan.
+                    // If the OS cleaned $TMPDIR before this launch, we want to retry
+                    // on the next launch when logs may have been regenerated.
+                    UserDefaults.standard.set(true, forKey: cacheBackfillKey)
+                } else if !logDirExists && !candidateIndices.isEmpty {
+                    print("[AgentSmith] Migration pass 4 (cache tokens): log directory not found; will retry next launch.")
                 }
-                UserDefaults.standard.set(true, forKey: cacheBackfillKey)
             }
 
             // Single save for all four passes

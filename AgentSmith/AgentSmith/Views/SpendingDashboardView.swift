@@ -120,6 +120,9 @@ struct SpendingDashboardView: View {
         .onChange(of: selectedRange) {
             recomputeDerivedState()
         }
+        .onChange(of: allRecords) {
+            recomputeDerivedState()
+        }
         .overlay {
             if isLoading {
                 ProgressView("Loading usage data...")
