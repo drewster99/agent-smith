@@ -383,6 +383,94 @@ final class AppViewModel {
         }
 
         // TODO: Remove migration after 05/10/2026
+        // One-time migration: backfill taskID on Smith's UsageRecords. Smith
+        // orchestrates every task but was never listed in assigneeIDs, so
+        // taskForAgent returned nil and all Smith records got taskID = nil.
+        // Fix: match each Smith record's timestamp to the task that was active
+        // (running or awaitingReview) at that time using startedAt/completedAt
+        // windows. Idempotent: records with non-nil taskID are skipped.
+        do {
+            var rawRecords = try await persistenceManager.loadUsageRecords()
+            let smithNeedsBackfill = rawRecords.contains { $0.agentRole == .smith && $0.taskID == nil }
+            if smithNeedsBackfill {
+                // Build time windows from tasks: (taskID, start, end)
+                struct TaskWindow {
+                    let taskID: UUID
+                    let start: Date
+                    let end: Date
+                }
+                var windows: [TaskWindow] = []
+                for task in tasks {
+                    guard let started = task.startedAt else { continue }
+                    let ended = task.completedAt ?? task.updatedAt
+                    windows.append(TaskWindow(taskID: task.id, start: started, end: ended))
+                }
+                windows.sort { $0.start < $1.start }
+
+                var backfilled = 0
+                var alreadyHadTaskID = 0
+                var noMatch = 0
+                var notSmith = 0
+
+                for i in rawRecords.indices {
+                    let record = rawRecords[i]
+                    guard record.agentRole == .smith else { notSmith += 1; continue }
+                    guard record.taskID == nil else { alreadyHadTaskID += 1; continue }
+
+                    // Find a task window that contains this timestamp
+                    let ts = record.timestamp
+                    if let match = windows.last(where: { ts >= $0.start && ts <= $0.end }) {
+                        rawRecords[i] = UsageRecord(
+                            id: record.id,
+                            timestamp: record.timestamp,
+                            agentRole: record.agentRole,
+                            taskID: match.taskID,
+                            modelID: record.modelID,
+                            providerType: record.providerType,
+                            providerID: record.providerID,
+                            configuration: record.configuration,
+                            configurationID: record.configurationID,
+                            inputTokens: record.inputTokens,
+                            outputTokens: record.outputTokens,
+                            cacheReadTokens: record.cacheReadTokens,
+                            cacheWriteTokens: record.cacheWriteTokens,
+                            latencyMs: record.latencyMs,
+                            preResetInputTokens: record.preResetInputTokens,
+                            outputCharCount: record.outputCharCount,
+                            toolCallCount: record.toolCallCount,
+                            toolCallNames: record.toolCallNames,
+                            toolCallArgumentsChars: record.toolCallArgumentsChars,
+                            totalToolExecutionMs: record.totalToolExecutionMs,
+                            totalToolResultChars: record.totalToolResultChars,
+                            sessionID: record.sessionID
+                        )
+                        backfilled += 1
+                    } else {
+                        noMatch += 1
+                    }
+                }
+
+                let smithTotal = backfilled + alreadyHadTaskID + noMatch
+                let pct: (Int) -> String = { n in
+                    guard smithTotal > 0 else { return "0.0%" }
+                    return String(format: "%.1f%%", Double(n) / Double(smithTotal) * 100)
+                }
+                print("[AgentSmith] Smith taskID backfill: smithRecords=\(smithTotal), backfilled=\(backfilled) (\(pct(backfilled))), alreadyHadTaskID=\(alreadyHadTaskID), noMatch=\(noMatch) (\(pct(noMatch)))")
+
+                if backfilled > 0 {
+                    do {
+                        try await persistenceManager.saveUsageRecords(rawRecords)
+                        print("[AgentSmith] Smith taskID backfill: saved \(backfilled) updated records.")
+                    } catch {
+                        logger.error("Failed to save Smith taskID backfill: \(error.localizedDescription)")
+                    }
+                }
+            }
+        } catch {
+            logger.error("Failed to load usage records for Smith taskID backfill: \(error.localizedDescription)")
+        }
+
+        // TODO: Remove migration after 05/10/2026
         // One-time migration: backfill toolCallNames/toolCallCount on usage records
         // from the raw API response log files in $TMPDIR/AgentSmith-LLM-Logs/.
         // These fields were only captured starting in Phase 1; older records have nil.

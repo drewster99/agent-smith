@@ -22,6 +22,8 @@ struct SpendingDashboardView: View {
     @State private var allRecords: [UsageRecord] = []
     /// The date bucket currently hovered in the cost-over-time chart (nil = none).
     @State private var chartHoveredDate: Date?
+    /// Task selected for the detail sheet (nil = no sheet shown).
+    @State private var selectedTaskID: UUID?
     /// Snapshot of pricing data, captured on load so the aggregator closure doesn't
     /// need to cross actor boundaries.
     @State private var pricingSnapshot: [String: ModelPricing] = [:]
@@ -126,6 +128,16 @@ struct SpendingDashboardView: View {
             if isLoading {
                 ProgressView("Loading usage data...")
             }
+        }
+        .sheet(item: $selectedTaskID) { taskID in
+            TaskCostDetailSheet(
+                taskID: taskID,
+                task: viewModel.tasks.first(where: { $0.id == taskID }),
+                records: filteredRecords.filter { $0.taskID == taskID },
+                allRecordsSummary: currentSummary,
+                aggregator: aggregator,
+                providerNames: providerNames
+            )
         }
     }
 
@@ -541,7 +553,7 @@ struct SpendingDashboardView: View {
             } else {
                 // Header
                 HStack(spacing: 0) {
-                    Text("Task").frame(width: 220, alignment: .leading)
+                    Text("Task").frame(maxWidth: .infinity, alignment: .leading)
                     Text("Cost").frame(width: 80, alignment: .trailing)
                     Text("Calls").frame(width: 60, alignment: .trailing)
                     Text("Tokens").frame(width: 80, alignment: .trailing)
@@ -556,6 +568,11 @@ struct SpendingDashboardView: View {
 
                 ForEach(byTask.prefix(50), id: \.0) { taskID, title, taskSummary in
                     taskRow(title: title, summary: taskSummary)
+                        .contentShape(Rectangle())
+                        .onTapGesture { selectedTaskID = taskID }
+                        .onHover { hovering in
+                            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                        }
                 }
             }
         }
@@ -571,7 +588,7 @@ struct SpendingDashboardView: View {
             Text(title)
                 .font(.caption)
                 .lineLimit(1)
-                .frame(width: 220, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Text(formatCost(summary.totalCostUSD))
                 .font(.caption.monospacedDigit())
                 .frame(width: 80, alignment: .trailing)
@@ -633,5 +650,372 @@ struct SpendingDashboardView: View {
         } else {
             return "\(ms)ms"
         }
+    }
+
+    private func formatDuration(_ interval: TimeInterval) -> String {
+        let totalSeconds = Int(interval)
+        if totalSeconds >= 3600 {
+            return "\(totalSeconds / 3600)h \((totalSeconds % 3600) / 60)m"
+        } else if totalSeconds >= 60 {
+            return "\(totalSeconds / 60)m \(totalSeconds % 60)s"
+        } else {
+            return "\(totalSeconds)s"
+        }
+    }
+}
+
+// MARK: - UUID + Identifiable (for .sheet(item:))
+
+extension UUID: @retroactive Identifiable {
+    public var id: UUID { self }
+}
+
+// MARK: - Task Cost Detail Sheet
+
+/// Sheet showing detailed cost and usage metrics for a single task.
+/// Opened by clicking a task row in the Spending Dashboard's task ledger.
+private struct TaskCostDetailSheet: View {
+    let taskID: UUID
+    let task: AgentTask?
+    let records: [UsageRecord]
+    let allRecordsSummary: UsageSummary
+    let aggregator: UsageAggregator
+    let providerNames: [String: String]
+
+    @Environment(\.dismiss) private var dismiss
+
+    private var summary: UsageSummary {
+        aggregator.summarize(records, scopeLabel: task?.title ?? "Unknown")
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                headerSection
+                costBreakdownSection
+                efficiencySection
+                toolUsageSection
+                configurationSection
+                turnTimelineSection
+
+                // Task ID in the lower right corner
+                HStack {
+                    Spacer()
+                    Text(taskID.uuidString)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(24)
+        }
+        .frame(minWidth: 600, minHeight: 500)
+        .background(AppColors.background)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Done") { dismiss() }
+            }
+        }
+    }
+
+    // MARK: - Header
+
+    private var headerSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(task?.title ?? "Unknown Task")
+                    .font(.title2.bold())
+                Spacer()
+                if let task {
+                    HStack(spacing: 4) {
+                        Image(systemName: TaskStatusBadge.icon(for: task.status))
+                            .foregroundStyle(TaskStatusBadge.color(for: task.status))
+                        Text(task.status.rawValue.capitalized)
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(TaskStatusBadge.color(for: task.status))
+                    }
+                }
+            }
+
+            HStack(spacing: 20) {
+                headerStat(label: "Total Cost", value: formatCost(summary.totalCostUSD))
+                headerStat(label: "LLM Calls", value: "\(summary.callCount)")
+                headerStat(label: "Tokens", value: formatTokenCount(summary.totalInputTokens + summary.totalOutputTokens))
+
+                if let task {
+                    if let started = task.startedAt {
+                        let end = task.completedAt ?? Date()
+                        headerStat(label: "Duration", value: formatDuration(end.timeIntervalSince(started)))
+                    }
+                }
+
+                // Comparison to average
+                if allRecordsSummary.callCount > 0 {
+                    let avgTaskCost = allRecordsSummary.totalCostUSD / Double(max(1, aggregator.byTask(records).count))
+                    if avgTaskCost > 0 {
+                        let ratio = summary.totalCostUSD / avgTaskCost
+                        headerStat(
+                            label: "vs Average",
+                            value: String(format: "%.1fx", ratio),
+                            color: ratio > 2 ? .red : ratio > 1 ? .orange : .green
+                        )
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 12).fill(AppColors.secondaryBackground))
+    }
+
+    // MARK: - Cost Breakdown
+
+    private var costBreakdownSection: some View {
+        HStack(alignment: .top, spacing: 16) {
+            // By Agent Role
+            card(title: "Cost by Agent") {
+                let byAgent = aggregator.byAgent(records)
+                    .sorted { $0.value.totalCostUSD > $1.value.totalCostUSD }
+                ForEach(byAgent, id: \.key) { role, agentSummary in
+                    costRow(
+                        name: role.displayName,
+                        cost: agentSummary.totalCostUSD,
+                        detail: "\(agentSummary.callCount) calls",
+                        color: AppColors.color(for: .agent(role))
+                    )
+                }
+                if !byAgent.contains(where: { $0.key == .smith }) {
+                    Text("Smith's costs are not attributed to individual tasks (Smith orchestrates but is not assigned as a task worker).")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                }
+            }
+
+            // By Token Category
+            card(title: "Token Breakdown") {
+                let s = summary
+                tokenRow(label: "Uncached Input", count: s.totalUncachedInputTokens, cost: s.inputCostUSD)
+                tokenRow(label: "Output", count: s.totalOutputTokens, cost: s.outputCostUSD)
+                tokenRow(label: "Cache Read", count: s.totalCacheReadTokens, cost: s.cacheReadCostUSD)
+                tokenRow(label: "Cache Write", count: s.totalCacheWriteTokens, cost: s.cacheWriteCostUSD)
+                Divider()
+                HStack {
+                    Text("Cache Hit Rate")
+                        .font(.caption)
+                    Spacer()
+                    Text(String(format: "%.0f%%", s.cacheHitRate * 100))
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                }
+            }
+        }
+    }
+
+    // MARK: - Efficiency Metrics
+
+    private var efficiencySection: some View {
+        card(title: "Efficiency") {
+            let s = summary
+            HStack(spacing: 24) {
+                miniStat(label: "Avg Cost / Call", value: formatCost(s.avgCostUSD))
+                miniStat(label: "Avg Tokens / Call", value: formatTokenCount(Int(s.avgInputTokens + s.avgOutputTokens)))
+                miniStat(label: "Avg Latency", value: formatLatency(Int(s.avgLatencyMs)))
+                miniStat(label: "LLM Time", value: formatLatency(s.totalLatencyMs))
+                miniStat(label: "Tool Exec Time", value: formatLatency(s.totalToolExecutionMs))
+
+                let contextResets = records.filter { $0.preResetInputTokens != nil }.count
+                if contextResets > 0 {
+                    miniStat(label: "Context Resets", value: "\(contextResets)", color: .orange)
+                }
+            }
+        }
+    }
+
+    // MARK: - Tool Usage
+
+    private var toolUsageSection: some View {
+        card(title: "Tool Usage") {
+            let toolCounts = toolFrequency(records)
+                .sorted { $0.value > $1.value }
+            if toolCounts.isEmpty {
+                Text("No tool call data")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                let maxCount = toolCounts.first?.value ?? 1
+                ForEach(toolCounts.prefix(12), id: \.key) { tool, count in
+                    HStack(spacing: 8) {
+                        Text(tool)
+                            .font(.caption)
+                            .frame(width: 160, alignment: .leading)
+                            .lineLimit(1)
+                        GeometryReader { geo in
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(Color.accentColor.opacity(0.5))
+                                .frame(width: max(2, geo.size.width * Double(count) / Double(maxCount)))
+                        }
+                        .frame(height: 8)
+                        Text("\(count)")
+                            .font(.caption.monospacedDigit())
+                            .frame(width: 40, alignment: .trailing)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Configuration
+
+    private var configurationSection: some View {
+        let configs = Set(records.compactMap { $0.configuration?.id })
+        let configRecords = records.compactMap(\.configuration)
+        guard let primaryConfig = configRecords.first else { return AnyView(EmptyView()) }
+
+        return AnyView(card(title: "Configuration") {
+            HStack(spacing: 24) {
+                miniStat(label: "Model", value: primaryConfig.model)
+                miniStat(label: "Temperature", value: primaryConfig.useDefaultTemperature ? "default" : String(format: "%.1f", primaryConfig.temperature))
+                miniStat(label: "Max Output", value: formatTokenCount(primaryConfig.maxTokens))
+                miniStat(label: "Context Window", value: formatTokenCount(primaryConfig.contextWindowSize))
+                if configs.count > 1 {
+                    miniStat(label: "Configs Used", value: "\(configs.count)", color: .orange)
+                }
+            }
+        })
+    }
+
+    // MARK: - Turn Timeline
+
+    private var turnTimelineSection: some View {
+        card(title: "Turn-by-Turn (\(records.count) calls)") {
+            let sorted = records.sorted { $0.timestamp < $1.timestamp }
+            if sorted.count > 100 {
+                Text("Showing last 100 of \(sorted.count) turns")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            // Header
+            HStack(spacing: 0) {
+                Text("#").frame(width: 30, alignment: .trailing)
+                Text("Agent").frame(width: 60, alignment: .leading).padding(.leading, 8)
+                Text("In").frame(width: 60, alignment: .trailing)
+                Text("Out").frame(width: 60, alignment: .trailing)
+                Text("Cost").frame(width: 60, alignment: .trailing)
+                Text("Latency").frame(width: 60, alignment: .trailing)
+                Text("Tools").frame(width: 150, alignment: .leading).padding(.leading, 8)
+            }
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+
+            Divider()
+
+            ForEach(Array(sorted.suffix(100).enumerated()), id: \.element.id) { index, record in
+                let turnCost = computeTurnCost(record)
+                HStack(spacing: 0) {
+                    Text("\(index + 1)")
+                        .frame(width: 30, alignment: .trailing)
+                    Text(record.agentRole.displayName)
+                        .foregroundStyle(AppColors.color(for: .agent(record.agentRole)))
+                        .frame(width: 60, alignment: .leading)
+                        .padding(.leading, 8)
+                    Text(formatTokenCount(record.inputTokens))
+                        .frame(width: 60, alignment: .trailing)
+                    Text(formatTokenCount(record.outputTokens))
+                        .frame(width: 60, alignment: .trailing)
+                    Text(formatCost(turnCost))
+                        .frame(width: 60, alignment: .trailing)
+                    Text(formatLatency(record.latencyMs))
+                        .frame(width: 60, alignment: .trailing)
+                    Text((record.toolCallNames ?? []).joined(separator: ", "))
+                        .lineLimit(1)
+                        .frame(width: 150, alignment: .leading)
+                        .padding(.leading, 8)
+                }
+                .font(.caption2.monospacedDigit())
+                .padding(.vertical, 1)
+            }
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func card<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(AppFonts.sectionHeader)
+            content()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(AppColors.secondaryBackground))
+    }
+
+    private func headerStat(label: String, value: String, color: Color = .primary) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.system(.title3, design: .rounded, weight: .semibold)).foregroundStyle(color)
+        }
+    }
+
+    private func miniStat(label: String, value: String, color: Color = .primary) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(.caption.weight(.semibold)).foregroundStyle(color)
+        }
+    }
+
+    private func costRow(name: String, cost: Double, detail: String, color: Color) -> some View {
+        HStack {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(name).font(.caption)
+            Spacer()
+            Text(formatCost(cost)).font(.caption.monospacedDigit())
+            Text(detail).font(.caption2).foregroundStyle(.secondary).frame(width: 60, alignment: .trailing)
+        }
+    }
+
+    private func tokenRow(label: String, count: Int, cost: Double) -> some View {
+        HStack {
+            Text(label).font(.caption)
+            Spacer()
+            Text(formatTokenCount(count)).font(.caption.monospacedDigit()).frame(width: 60, alignment: .trailing)
+            Text(formatCost(cost)).font(.caption.monospacedDigit()).frame(width: 60, alignment: .trailing)
+        }
+    }
+
+    private func toolFrequency(_ records: [UsageRecord]) -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for r in records {
+            for name in r.toolCallNames ?? [] { counts[name, default: 0] += 1 }
+        }
+        return counts
+    }
+
+    private func computeTurnCost(_ record: UsageRecord) -> Double {
+        guard let providerID = record.providerID else { return 0 }
+        guard let pricing = aggregator.pricingLookup(providerID, record.modelID) else { return 0 }
+        let rates = pricing.effectiveRates(totalInputTokens: record.inputTokens)
+        let uncached = max(0, record.inputTokens - record.cacheReadTokens - record.cacheWriteTokens)
+        return Double(uncached) * (rates.input ?? 0)
+             + Double(record.outputTokens) * (rates.output ?? 0)
+             + Double(record.cacheReadTokens) * (rates.cacheRead ?? 0)
+             + Double(record.cacheWriteTokens) * (rates.cacheWrite ?? 0)
+    }
+
+    private func formatCost(_ cost: Double) -> String { String(format: "$%.2f", cost) }
+    private func formatTokenCount(_ count: Int) -> String {
+        if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }
+        if count >= 1_000 { return String(format: "%.0fK", Double(count) / 1_000) }
+        return "\(count)"
+    }
+    private func formatLatency(_ ms: Int) -> String {
+        if ms >= 60_000 { return String(format: "%.1fm", Double(ms) / 60_000) }
+        if ms >= 1_000 { return String(format: "%.1fs", Double(ms) / 1_000) }
+        return "\(ms)ms"
+    }
+    private func formatDuration(_ interval: TimeInterval) -> String {
+        let s = Int(interval)
+        if s >= 3600 { return "\(s / 3600)h \((s % 3600) / 60)m" }
+        if s >= 60 { return "\(s / 60)m \(s % 60)s" }
+        return "\(s)s"
     }
 }

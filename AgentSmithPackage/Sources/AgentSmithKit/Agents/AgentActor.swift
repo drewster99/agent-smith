@@ -490,7 +490,17 @@ public actor AgentActor {
 
                 // Capture task context at the moment of the LLM call, before
                 // handleResponse runs any tools that might change it (e.g. task_complete).
-                let currentTaskAtCallTime = await toolContext.taskStore.taskForAgent(agentID: id)
+                // Smith is never in a task's assigneeIDs (only Brown is), so for Smith
+                // we look up the currently active task by status instead.
+                let currentTaskAtCallTime: AgentTask?
+                if configuration.role == .smith {
+                    let allTasks = await toolContext.taskStore.allTasks()
+                    currentTaskAtCallTime = allTasks.first(where: {
+                        $0.disposition == .active && ($0.status == .running || $0.status == .awaitingReview)
+                    })
+                } else {
+                    currentTaskAtCallTime = await toolContext.taskStore.taskForAgent(agentID: id)
+                }
 
                 // Reset per-turn tool-execution accumulators. handleResponse will add to
                 // these as tools run; the UsageRecord below reads the totals.
