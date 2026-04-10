@@ -194,12 +194,7 @@ public struct ToolContext: Sendable {
         var stamped = message
         if stamped.taskID == nil {
             if agentRole == .smith {
-                // Smith orchestrates tasks but isn't in any task's assigneeIDs.
-                // Find the currently active task by status instead.
-                let allTasks = await taskStore.allTasks()
-                stamped.taskID = allTasks.first(where: {
-                    $0.disposition == .active && ($0.status == .running || $0.status == .awaitingReview)
-                })?.id
+                stamped.taskID = await taskStore.currentActiveTask()?.id
             } else {
                 stamped.taskID = await taskStore.taskForAgent(agentID: agentID)?.id
             }

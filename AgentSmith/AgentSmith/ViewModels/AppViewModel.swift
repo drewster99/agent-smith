@@ -300,12 +300,13 @@ final class AppViewModel {
             startupError = msg
         }
 
-        // TODO: Remove all three migrations after 05/10/2026
-        // Combined one-shot migration pass over UsageRecords. Loads once, runs three
+        // TODO: Remove all four migrations after 05/10/2026
+        // Combined one-shot migration pass over UsageRecords. Loads once, runs four
         // idempotent backfills in sequence, saves once at the end if anything changed.
         // 1. Configuration: backfill providerID + full ModelConfiguration snapshot
         // 2. Smith taskID: match Smith records to the task active at their timestamp
         // 3. Tool calls: match records to API response logs for toolCallNames
+        // 4. Cache tokens: backfill cacheReadTokens for Gemini/OpenAI records from logs
         do {
             var rawRecords = try await persistenceManager.loadUsageRecords()
             var totalModified = 0
@@ -319,17 +320,10 @@ final class AppViewModel {
                       let config = llmKit.configurations.first(where: { $0.id == configID }),
                       let provider = llmKit.providers.first(where: { $0.id == config.providerID }),
                       provider.apiType.rawValue == record.providerType else { continue }
-                rawRecords[i] = UsageRecord(
-                    id: record.id, timestamp: record.timestamp, agentRole: record.agentRole,
-                    taskID: record.taskID, modelID: record.modelID, providerType: record.providerType,
-                    providerID: config.providerID, configuration: config, configurationID: configID,
-                    inputTokens: record.inputTokens, outputTokens: record.outputTokens,
-                    cacheReadTokens: record.cacheReadTokens, cacheWriteTokens: record.cacheWriteTokens,
-                    latencyMs: record.latencyMs, preResetInputTokens: record.preResetInputTokens,
-                    outputCharCount: record.outputCharCount, toolCallCount: record.toolCallCount,
-                    toolCallNames: record.toolCallNames, toolCallArgumentsChars: record.toolCallArgumentsChars,
-                    totalToolExecutionMs: record.totalToolExecutionMs, totalToolResultChars: record.totalToolResultChars,
-                    sessionID: record.sessionID
+                rawRecords[i] = record.replacing(
+                    providerID: config.providerID,
+                    configuration: config,
+                    configurationID: configID
                 )
                 configBackfilled += 1
             }
@@ -351,19 +345,7 @@ final class AppViewModel {
             for i in rawRecords.indices where rawRecords[i].agentRole == .smith && rawRecords[i].taskID == nil {
                 let ts = rawRecords[i].timestamp
                 guard let match = windows.last(where: { ts >= $0.start && ts <= $0.end }) else { continue }
-                rawRecords[i] = UsageRecord(
-                    id: rawRecords[i].id, timestamp: rawRecords[i].timestamp, agentRole: rawRecords[i].agentRole,
-                    taskID: match.taskID, modelID: rawRecords[i].modelID, providerType: rawRecords[i].providerType,
-                    providerID: rawRecords[i].providerID, configuration: rawRecords[i].configuration,
-                    configurationID: rawRecords[i].configurationID,
-                    inputTokens: rawRecords[i].inputTokens, outputTokens: rawRecords[i].outputTokens,
-                    cacheReadTokens: rawRecords[i].cacheReadTokens, cacheWriteTokens: rawRecords[i].cacheWriteTokens,
-                    latencyMs: rawRecords[i].latencyMs, preResetInputTokens: rawRecords[i].preResetInputTokens,
-                    outputCharCount: rawRecords[i].outputCharCount, toolCallCount: rawRecords[i].toolCallCount,
-                    toolCallNames: rawRecords[i].toolCallNames, toolCallArgumentsChars: rawRecords[i].toolCallArgumentsChars,
-                    totalToolExecutionMs: rawRecords[i].totalToolExecutionMs, totalToolResultChars: rawRecords[i].totalToolResultChars,
-                    sessionID: rawRecords[i].sessionID
-                )
+                rawRecords[i] = rawRecords[i].replacing(taskID: match.taskID)
                 smithBackfilled += 1
             }
             totalModified += smithBackfilled
@@ -423,18 +405,9 @@ final class AppViewModel {
                         }
                         guard bestIdx >= 0 else { continue }
                         let matched = logEntries[bestIdx]
-                        rawRecords[i] = UsageRecord(
-                            id: rawRecords[i].id, timestamp: rawRecords[i].timestamp, agentRole: rawRecords[i].agentRole,
-                            taskID: rawRecords[i].taskID, modelID: rawRecords[i].modelID, providerType: rawRecords[i].providerType,
-                            providerID: rawRecords[i].providerID, configuration: rawRecords[i].configuration,
-                            configurationID: rawRecords[i].configurationID,
-                            inputTokens: rawRecords[i].inputTokens, outputTokens: rawRecords[i].outputTokens,
-                            cacheReadTokens: rawRecords[i].cacheReadTokens, cacheWriteTokens: rawRecords[i].cacheWriteTokens,
-                            latencyMs: rawRecords[i].latencyMs, preResetInputTokens: rawRecords[i].preResetInputTokens,
-                            outputCharCount: rawRecords[i].outputCharCount, toolCallCount: matched.toolNames.count,
-                            toolCallNames: matched.toolNames, toolCallArgumentsChars: rawRecords[i].toolCallArgumentsChars,
-                            totalToolExecutionMs: rawRecords[i].totalToolExecutionMs, totalToolResultChars: rawRecords[i].totalToolResultChars,
-                            sessionID: rawRecords[i].sessionID
+                        rawRecords[i] = rawRecords[i].replacing(
+                            toolCallCount: matched.toolNames.count,
+                            toolCallNames: matched.toolNames
                         )
                         toolCallBackfilled += 1
                     }
@@ -447,11 +420,93 @@ final class AppViewModel {
                 }
             }
 
-            // Single save for all three passes
+            // --- Pass 4: Cache token backfill from API response logs ---
+            // TODO: Remove after 05/10/2026 (along with UserDefaults key "cacheTokenBackfillV1Completed")
+            // Gemini and OpenAI-compatible providers didn't parse cache token fields
+            // until now. Scan response logs to recover cacheReadTokens for historical
+            // records. Guarded by a UserDefaults flag because cacheReadTokens is a
+            // non-optional Int (0 could be genuine), so we can't detect "needs backfill"
+            // from the data alone.
+            var cacheBackfilled = 0
+            let cacheBackfillKey = "cacheTokenBackfillV1Completed"
+            if !UserDefaults.standard.bool(forKey: cacheBackfillKey) {
+                // All ProviderAPIType cases that use OpenAICompatibleProvider:
+                let openAICompatibleTypes: Set<String> = [
+                    "openAICompatible", "lmStudio", "mistral", "huggingFace",
+                    "xAI", "zAI", "metaLlama", "alibabaCloud", "openRouter"
+                ]
+                let candidateIndices = rawRecords.indices.filter { i in
+                    let r = rawRecords[i]
+                    return (r.providerType == "gemini" || openAICompatibleTypes.contains(r.providerType))
+                        && r.cacheReadTokens == 0
+                }
+                if !candidateIndices.isEmpty {
+                    let logDir = FileManager.default.temporaryDirectory.appendingPathComponent("AgentSmith-LLM-Logs")
+                    let fm = FileManager.default
+                    if fm.fileExists(atPath: logDir.path) {
+                        struct CacheLogEntry { let mtime: TimeInterval; let cacheReadTokens: Int }
+                        var logEntries: [CacheLogEntry] = []
+                        let logFiles = (try? fm.contentsOfDirectory(at: logDir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+                        for file in logFiles where file.lastPathComponent.hasSuffix("_response.json") {
+                            let name = file.lastPathComponent
+                            guard name.contains("_Gemini_") || name.contains("_OpenAI_") else { continue }
+                            guard let attrs = try? fm.attributesOfItem(atPath: file.path),
+                                  let mdate = attrs[.modificationDate] as? Date,
+                                  let data = try? Data(contentsOf: file),
+                                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+
+                            var cacheRead = 0
+                            if name.contains("_Gemini_") {
+                                if let meta = json["usageMetadata"] as? [String: Any] {
+                                    cacheRead = meta["cachedContentTokenCount"] as? Int ?? 0
+                                }
+                            } else {
+                                if let usage = json["usage"] as? [String: Any],
+                                   let details = usage["prompt_tokens_details"] as? [String: Any] {
+                                    cacheRead = details["cached_tokens"] as? Int ?? 0
+                                }
+                            }
+                            logEntries.append(CacheLogEntry(mtime: mdate.timeIntervalSinceReferenceDate, cacheReadTokens: cacheRead))
+                        }
+                        logEntries.sort { $0.mtime < $1.mtime }
+                        let logMtimes = logEntries.map(\.mtime)
+                        print("[AgentSmith] Migration pass 4 (cache tokens): indexed \(logEntries.count) Gemini/OpenAI response logs.")
+
+                        let matchWindow: TimeInterval = 10
+                        for i in candidateIndices {
+                            let ts = rawRecords[i].timestamp.timeIntervalSinceReferenceDate
+                            var lo = logMtimes.startIndex, hi = logMtimes.endIndex
+                            while lo < hi { let mid = lo + (hi - lo) / 2; if logMtimes[mid] < ts - matchWindow { lo = mid + 1 } else { hi = mid } }
+                            var bestDist = TimeInterval.infinity, bestIdx = -1, idx = lo
+                            while idx < logEntries.count {
+                                let d = abs(logEntries[idx].mtime - ts)
+                                if logEntries[idx].mtime > ts + matchWindow { break }
+                                if d < bestDist { bestDist = d; bestIdx = idx }
+                                idx += 1
+                            }
+                            guard bestIdx >= 0, logEntries[bestIdx].cacheReadTokens > 0 else { continue }
+                            let matched = logEntries[bestIdx]
+                            rawRecords[i] = rawRecords[i].replacing(
+                                cacheReadTokens: matched.cacheReadTokens
+                            )
+                            cacheBackfilled += 1
+                        }
+                        totalModified += cacheBackfilled
+                        if cacheBackfilled > 0 {
+                            print("[AgentSmith] Migration pass 4 (cache tokens): backfilled \(cacheBackfilled) records.")
+                        }
+                    } else {
+                        print("[AgentSmith] Migration pass 4 (cache tokens): log directory not found; skipping.")
+                    }
+                }
+                UserDefaults.standard.set(true, forKey: cacheBackfillKey)
+            }
+
+            // Single save for all four passes
             if totalModified > 0 {
                 do {
                     try await persistenceManager.saveUsageRecords(rawRecords)
-                    print("[AgentSmith] UsageRecord migrations: saved \(totalModified) total modified records (config=\(configBackfilled), smith=\(smithBackfilled), toolCalls=\(toolCallBackfilled)).")
+                    print("[AgentSmith] UsageRecord migrations: saved \(totalModified) total modified records (config=\(configBackfilled), smith=\(smithBackfilled), toolCalls=\(toolCallBackfilled), cache=\(cacheBackfilled)).")
                 } catch {
                     logger.error("Failed to save migrated usage records: \(error.localizedDescription)")
                 }

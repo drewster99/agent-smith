@@ -77,12 +77,15 @@ public struct UsageSummary: Sendable, Equatable {
     public var avgLatencyMs: Double { callCount > 0 ? Double(totalLatencyMs) / Double(callCount) : 0 }
     public var avgCostUSD: Double { callCount > 0 ? totalCostUSD / Double(callCount) : 0 }
 
-    /// Fraction of input served from cache: cacheRead / (uncached + cacheRead).
-    /// Returns 0 when there's no input at all.
+    /// Fraction of input served from cache: `cacheReadTokens / totalInputTokens`.
+    ///
+    /// The denominator is the full input token count (uncached + cache read + cache write)
+    /// so that cache writes — which are a distinct billing category for Anthropic but
+    /// semantically a cache miss for everyone else — count against the hit rate. Returns
+    /// 0 when there's no input at all.
     public var cacheHitRate: Double {
-        let denom = totalUncachedInputTokens + totalCacheReadTokens
-        guard denom > 0 else { return 0 }
-        return Double(totalCacheReadTokens) / Double(denom)
+        guard totalInputTokens > 0 else { return 0 }
+        return Double(totalCacheReadTokens) / Double(totalInputTokens)
     }
 
     /// Empty summary with no data.

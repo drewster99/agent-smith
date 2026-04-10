@@ -619,8 +619,10 @@ public actor OrchestrationRuntime {
         // Save Brown's context summary to its task before stopping agents
         await saveBrownContextToTask()
 
-        for (_, agent) in agents {
-            await agent.stop()
+        await withTaskGroup(of: Void.self) { group in
+            for (_, agent) in agents {
+                group.addTask { await agent.stop() }
+            }
         }
 
         for (_, subIDs) in agentSubscriptions {

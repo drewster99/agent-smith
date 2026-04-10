@@ -33,6 +33,17 @@ struct SpendingDashboardView: View {
     @State private var providerNames: [String: String] = [:]
     @State private var isLoading = true
 
+    // MARK: - Cached derived state (recomputed on load and range change)
+
+    /// Filtered to the selected time range. Recomputed via `recomputeDerivedState()`.
+    @State private var filteredRecords: [UsageRecord] = []
+    /// Records from the equivalent prior period (for delta comparison).
+    @State private var priorRecords: [UsageRecord] = []
+    /// Aggregated summary of `filteredRecords`.
+    @State private var currentSummary: UsageSummary = .empty()
+    /// Aggregated summary of `priorRecords`.
+    @State private var priorSummary: UsageSummary = .empty()
+
     // MARK: - Time range
 
     enum TimeRange: String, CaseIterable, Identifiable {
@@ -54,15 +65,15 @@ struct SpendingDashboardView: View {
             switch self {
             case .today:
                 start = calendar.startOfDay(for: now)
-                priorStart = calendar.date(byAdding: .day, value: -1, to: start)!
+                priorStart = calendar.date(byAdding: .day, value: -1, to: start) ?? start
                 priorEnd = start
             case .week:
-                start = calendar.date(byAdding: .day, value: -7, to: now)!
-                priorStart = calendar.date(byAdding: .day, value: -7, to: start)!
+                start = calendar.date(byAdding: .day, value: -7, to: now) ?? now
+                priorStart = calendar.date(byAdding: .day, value: -7, to: start) ?? start
                 priorEnd = start
             case .month:
-                start = calendar.date(byAdding: .month, value: -1, to: now)!
-                priorStart = calendar.date(byAdding: .month, value: -1, to: start)!
+                start = calendar.date(byAdding: .month, value: -1, to: now) ?? now
+                priorStart = calendar.date(byAdding: .month, value: -1, to: start) ?? start
                 priorEnd = start
             case .all:
                 start = .distantPast
@@ -78,29 +89,9 @@ struct SpendingDashboardView: View {
     private var aggregator: UsageAggregator {
         let snapshot = pricingSnapshot
         return UsageAggregator { providerID, modelID in
-            guard let providerID else { return nil }
+            guard let providerID, !providerID.isEmpty, !modelID.isEmpty else { return nil }
             return snapshot["\(providerID)/\(modelID)"]
         }
-    }
-
-    private var filteredRecords: [UsageRecord] {
-        let interval = selectedRange.dateInterval()
-        if selectedRange == .all { return allRecords }
-        return allRecords.filter { $0.timestamp >= interval.current.start && $0.timestamp <= interval.current.end }
-    }
-
-    private var priorRecords: [UsageRecord] {
-        let interval = selectedRange.dateInterval()
-        if selectedRange == .all { return [] }
-        return allRecords.filter { $0.timestamp >= interval.prior.start && $0.timestamp < interval.prior.end }
-    }
-
-    private var currentSummary: UsageSummary {
-        aggregator.summarize(filteredRecords, scopeLabel: selectedRange.rawValue)
-    }
-
-    private var priorSummary: UsageSummary {
-        aggregator.summarize(priorRecords, scopeLabel: "Prior \(selectedRange.rawValue)")
     }
 
     // MARK: - Body
@@ -125,6 +116,9 @@ struct SpendingDashboardView: View {
         }
         .refreshable {
             await loadRecords()
+        }
+        .onChange(of: selectedRange) {
+            recomputeDerivedState()
         }
         .overlay {
             if isLoading {
@@ -152,8 +146,10 @@ struct SpendingDashboardView: View {
         // doesn't need to cross the main-actor boundary at query time.
         var pricing: [String: ModelPricing] = [:]
         for model in viewModel.llmKit.models {
-            if let p = model.pricing {
-                pricing[model.id] = p  // model.id == "providerID/modelID"
+            // model.id == "providerID/modelID"; skip entries with empty components
+            // that would produce nonsensical keys like "providerID/" or "/modelID".
+            if let p = model.pricing, !model.id.hasSuffix("/"), !model.id.hasPrefix("/") {
+                pricing[model.id] = p
             }
         }
         pricingSnapshot = pricing
@@ -163,7 +159,26 @@ struct SpendingDashboardView: View {
             names[provider.id] = provider.name
         }
         providerNames = names
+        recomputeDerivedState()
         isLoading = false
+    }
+
+    /// Recomputes cached derived state from `allRecords`, `selectedRange`, and
+    /// `pricingSnapshot`. Called after data loads and when the time range changes.
+    /// Avoids redundant O(n) passes — without caching, each computed property
+    /// was recalculated on every body evaluation (5-7 accesses per render).
+    private func recomputeDerivedState() {
+        let interval = selectedRange.dateInterval()
+        if selectedRange == .all {
+            filteredRecords = allRecords
+            priorRecords = []
+        } else {
+            filteredRecords = allRecords.filter { $0.timestamp >= interval.current.start && $0.timestamp <= interval.current.end }
+            priorRecords = allRecords.filter { $0.timestamp >= interval.prior.start && $0.timestamp < interval.prior.end }
+        }
+        let agg = aggregator
+        currentSummary = agg.summarize(filteredRecords, scopeLabel: selectedRange.rawValue)
+        priorSummary = agg.summarize(priorRecords, scopeLabel: "Prior \(selectedRange.rawValue)")
     }
 
     // MARK: - Section 1: Headline Card

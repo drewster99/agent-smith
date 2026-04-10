@@ -39,9 +39,11 @@ public struct UsageRecord: Codable, Identifiable, Sendable {
     public let inputTokens: Int
     /// Output (completion) tokens.
     public let outputTokens: Int
-    /// Anthropic: tokens served from prompt cache. 0 for other providers.
+    /// Tokens served from prompt cache (Anthropic `cache_read_input_tokens`,
+    /// Gemini `cachedContentTokenCount`, OpenAI-compatible `prompt_tokens_details.cached_tokens`).
     public let cacheReadTokens: Int
-    /// Anthropic: tokens written to prompt cache. 0 for other providers.
+    /// Tokens written to prompt cache. Currently only Anthropic reports this
+    /// (`cache_creation_input_tokens`); 0 for other providers.
     public let cacheWriteTokens: Int
     /// Wall-clock latency for the LLM API call in milliseconds.
     public let latencyMs: Int
@@ -134,5 +136,56 @@ public struct UsageRecord: Codable, Identifiable, Sendable {
         self.totalToolExecutionMs = totalToolExecutionMs
         self.totalToolResultChars = totalToolResultChars
         self.sessionID = sessionID
+    }
+
+    /// Creates a copy of this record with specific fields replaced. Used by startup
+    /// migrations to patch historical records without spelling out all 20+ fields.
+    /// Double-optional parameters: outer nil = keep existing value, .some(x) = use x.
+    /// Non-optional parameters: nil = keep existing, .some(x) = use x.
+    /// TODO: Remove after 05/10/2026 when migrations are removed.
+    public func replacing(
+        taskID: UUID?? = nil,
+        providerID: String?? = nil,
+        configuration: ModelConfiguration?? = nil,
+        configurationID: UUID?? = nil,
+        cacheReadTokens: Int? = nil,
+        toolCallCount: Int?? = nil,
+        toolCallNames: [String]?? = nil
+    ) -> UsageRecord {
+        // When a new configuration is provided without an explicit configurationID,
+        // pass nil so the init's auto-derive logic (`configurationID ?? configuration?.id`)
+        // picks up the new configuration's ID instead of preserving the stale old one.
+        let resolvedConfigID: UUID?
+        if let explicitID = configurationID {
+            resolvedConfigID = explicitID  // Caller explicitly set it (possibly to nil)
+        } else if configuration != nil {
+            resolvedConfigID = nil  // New config without explicit ID — let init derive it
+        } else {
+            resolvedConfigID = self.configurationID  // No changes to either — preserve
+        }
+        return UsageRecord(
+            id: id,
+            timestamp: timestamp,
+            agentRole: agentRole,
+            taskID: taskID ?? self.taskID,
+            modelID: modelID,
+            providerType: providerType,
+            providerID: providerID ?? self.providerID,
+            configuration: configuration ?? self.configuration,
+            configurationID: resolvedConfigID,
+            inputTokens: inputTokens,
+            outputTokens: outputTokens,
+            cacheReadTokens: cacheReadTokens ?? self.cacheReadTokens,
+            cacheWriteTokens: cacheWriteTokens,
+            latencyMs: latencyMs,
+            preResetInputTokens: preResetInputTokens,
+            outputCharCount: outputCharCount,
+            toolCallCount: toolCallCount ?? self.toolCallCount,
+            toolCallNames: toolCallNames ?? self.toolCallNames,
+            toolCallArgumentsChars: toolCallArgumentsChars,
+            totalToolExecutionMs: totalToolExecutionMs,
+            totalToolResultChars: totalToolResultChars,
+            sessionID: sessionID
+        )
     }
 }

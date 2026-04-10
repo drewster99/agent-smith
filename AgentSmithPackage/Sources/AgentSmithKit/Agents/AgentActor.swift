@@ -285,6 +285,7 @@ public actor AgentActor {
     /// `ProcessRunner` means clean unwinds usually take milliseconds.
     public func stop() async {
         isRunning = false
+        consecutiveEmptyResponses = 0
         guard let task = runTask else { return }
         task.cancel()
 
@@ -494,10 +495,7 @@ public actor AgentActor {
                 // we look up the currently active task by status instead.
                 let currentTaskAtCallTime: AgentTask?
                 if configuration.role == .smith {
-                    let allTasks = await toolContext.taskStore.allTasks()
-                    currentTaskAtCallTime = allTasks.first(where: {
-                        $0.disposition == .active && ($0.status == .running || $0.status == .awaitingReview)
-                    })
+                    currentTaskAtCallTime = await toolContext.taskStore.currentActiveTask()
                 } else {
                     currentTaskAtCallTime = await toolContext.taskStore.taskForAgent(agentID: id)
                 }
@@ -1220,20 +1218,21 @@ public actor AgentActor {
             // but the raw content is dropped immediately afterward.
             if case .string(let path) = args["path"],
                case .string(let newContent) = args["content"] {
-                let oldContent = Self.readOldContentForDiff(path: path)
-                if let oldContent {
+                // File I/O + LCS diff computation run off the actor's executor to
+                // avoid blocking the agent's serial queue on disk reads (up to 1 MB)
+                // and O(m*n) diff generation.
+                let diffJSON: String? = await Task.detached {
+                    guard let oldContent = Self.readOldContentForDiff(path: path) else { return nil }
                     let diffLines = DiffGenerator.generate(old: oldContent, new: newContent)
-                    if !diffLines.isEmpty {
-                        do {
-                            let data = try JSONEncoder().encode(diffLines)
-                            if let jsonString = String(data: data, encoding: .utf8) {
-                                metadata["fileWriteDiff"] = .string(jsonString)
-                            }
-                        } catch {
-                            // Encoding a trivially-Codable [DiffLine] should never fail;
-                            // if it does, just omit the diff metadata.
-                        }
-                    }
+                    guard !diffLines.isEmpty else { return nil }
+                    // try? justified: [DiffLine] is trivially Codable (enum + String + Int);
+                    // encoding cannot fail in practice. If it somehow does, omitting the
+                    // diff metadata is the correct degradation (the tool output still renders).
+                    guard let data = try? JSONEncoder().encode(diffLines) else { return nil }
+                    return String(data: data, encoding: .utf8)
+                }.value
+                if let diffJSON {
+                    metadata["fileWriteDiff"] = .string(diffJSON)
                 }
             }
         }

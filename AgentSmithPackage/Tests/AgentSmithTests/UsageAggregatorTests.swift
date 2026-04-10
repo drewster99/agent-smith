@@ -213,11 +213,12 @@ struct UsageAggregatorTests {
     @Test("Cache hit rate computes correctly")
     func cacheHitRate() {
         // 1000 total, 400 cache read, 100 cache write → uncached = 500
-        // hit rate = 400 / (500 + 400) = 400/900 ≈ 0.4444
+        // hit rate = cacheRead / totalInput = 400 / 1000 = 0.4
+        // Cache writes count against the hit rate (they're misses that populate the cache).
         let r = makeRecord(inputTokens: 1000, cacheReadTokens: 400, cacheWriteTokens: 100)
         let s = testAggregator.summarize([r])
 
-        #expect(abs(s.cacheHitRate - 400.0 / 900.0) < 1e-9)
+        #expect(abs(s.cacheHitRate - 400.0 / 1000.0) < 1e-9)
     }
 
     @Test("Cache hit rate is 0 with no cache")

@@ -70,6 +70,11 @@ public enum DiffGenerator {
     }
 
     /// Classic LCS-based diff returning the raw ordered operation list (no trimming).
+    ///
+    /// Memory: O(m * n) for the DP table — at the 1000-line cap that's ~8 MB. A
+    /// Hirschberg-style O(min(m,n)) optimization exists but adds significant
+    /// complexity for marginal gain at our capped input size. Accepted as-is; the
+    /// `maxLineCount` guard in `generate()` bounds the worst case.
     private static func lcsDiff(oldLines: [String], newLines: [String]) -> [DiffLine] {
         let m = oldLines.count
         let n = newLines.count
