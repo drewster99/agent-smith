@@ -30,7 +30,7 @@ struct AgentSmithApp: App {
                 Button("Spending Dashboard") {
                     openWindow(id: "spending-dashboard")
                 }
-                .keyboardShortcut("4", modifiers: [.command, .shift])
+                .keyboardShortcut("4", modifiers: .command)
             }
         }
 
