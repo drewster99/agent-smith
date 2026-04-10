@@ -26,6 +26,11 @@ struct AgentSmithApp: App {
                     openWindow(id: "memory-browser")
                 }
                 .keyboardShortcut("m", modifiers: [.command, .option])
+
+                Button("Spending Dashboard") {
+                    openWindow(id: "spending-dashboard")
+                }
+                .keyboardShortcut("4", modifiers: [.command, .shift])
             }
         }
 
@@ -53,6 +58,11 @@ struct AgentSmithApp: App {
             MemoryEditorView(viewModel: viewModel)
         }
         .defaultSize(width: 900, height: 600)
+
+        Window("Spending Dashboard", id: "spending-dashboard") {
+            SpendingDashboardView(viewModel: viewModel)
+        }
+        .defaultSize(width: 900, height: 800)
 
         Settings {
             SettingsView(viewModel: viewModel)

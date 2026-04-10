@@ -63,13 +63,9 @@ public struct UsageAggregator: Sendable {
             maxOutputTokens = max(maxOutputTokens, record.outputTokens)
             maxLatencyMs = max(maxLatencyMs, record.latencyMs)
 
-            // Cost
-            let usage = TokenUsage(
-                inputTokens: record.inputTokens,
-                outputTokens: record.outputTokens,
-                cacheReadTokens: record.cacheReadTokens,
-                cacheWriteTokens: record.cacheWriteTokens
-            )
+            // Cost — computed per-category so the summary carries a breakdown,
+            // not just a total. Same math as ModelPricing.estimatedCost(for:) but
+            // split into four accumulators.
             if let pricing = pricingLookup(record.providerID, record.modelID) {
                 let rates = pricing.effectiveRates(totalInputTokens: record.inputTokens)
                 let uncachedInput = max(0, record.inputTokens - record.cacheReadTokens - record.cacheWriteTokens)
@@ -86,14 +82,14 @@ public struct UsageAggregator: Sendable {
             } else {
                 unpricedCallCount += 1
             }
-            _ = usage // suppress unused warning; kept for clarity of intent
 
             // Timestamps
-            if firstTimestamp == nil || record.timestamp < firstTimestamp! {
-                firstTimestamp = record.timestamp
+            let ts = record.timestamp
+            if firstTimestamp == nil || ts < firstTimestamp! {
+                firstTimestamp = ts
             }
-            if lastTimestamp == nil || record.timestamp > lastTimestamp! {
-                lastTimestamp = record.timestamp
+            if lastTimestamp == nil || ts > lastTimestamp! {
+                lastTimestamp = ts
             }
         }
 
