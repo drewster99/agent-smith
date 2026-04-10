@@ -8,8 +8,22 @@ public actor MessageChannel {
     /// Maximum number of messages retained in memory. Older messages are trimmed on post.
     private let maxMessages: Int
 
+    /// Identifier for the currently-running orchestration session. Set by
+    /// `OrchestrationRuntime.start()` and cleared by `stopAll()`. Auto-stamped
+    /// onto every posted message that doesn't already carry a sessionID, so
+    /// every code path (including tools that don't know about sessions) gets
+    /// session attribution for free.
+    private var currentSessionID: UUID?
+
     public init(maxMessages: Int = 10_000) {
         self.maxMessages = maxMessages
+    }
+
+    /// Sets the session ID auto-stamped on all subsequent posts. Pass `nil` to
+    /// clear (e.g. on `stopAll()`). Messages posted outside of an active session
+    /// — before `start()` or after `stopAll()` — remain unstamped.
+    public func setCurrentSessionID(_ id: UUID?) {
+        currentSessionID = id
     }
 
     /// All messages posted so far.
@@ -18,11 +32,19 @@ public actor MessageChannel {
     }
 
     /// Posts a message to the channel and notifies all subscribers.
+    /// If the message has no `sessionID` set, stamps it with the channel's
+    /// current session (if any). Other context fields — `taskID`, `providerID`,
+    /// `modelID`, `configuration` — are the caller's responsibility and are
+    /// left alone here.
     public func post(_ message: ChannelMessage) {
-        messages.append(message)
+        var stamped = message
+        if stamped.sessionID == nil {
+            stamped.sessionID = currentSessionID
+        }
+        messages.append(stamped)
         trimIfNeeded()
         for subscriber in subscribers.values {
-            subscriber(message)
+            subscriber(stamped)
         }
     }
 

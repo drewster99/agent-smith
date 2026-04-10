@@ -1,4 +1,5 @@
 import Foundation
+import SwiftLLMKit
 
 /// Who a private channel message is addressed to.
 public enum MessageRecipient: Sendable {
@@ -63,15 +64,41 @@ public struct ChannelMessage: Identifiable, Codable, Sendable {
     /// Optional structured metadata (e.g., tool call details).
     public var metadata: [String: AnyCodable]?
 
+    // MARK: - Context stamping (added in Phase 2)
+    // All optional so historical messages decode cleanly. Populated at post time from
+    // the sending/receiving agent's current state; also backfilled on older messages
+    // by joining to nearby UsageRecords during the startup migration.
+
+    /// Task this message was posted in service of, if any. System messages and
+    /// unrelated chatter remain nil.
+    public var taskID: UUID?
+    /// Session ID of the orchestration run during which this message was posted.
+    /// Auto-stamped by `MessageChannel.post` if nil at call time.
+    public var sessionID: UUID?
+    /// Provider ID of the model context this message is associated with. For agent
+    /// messages this is the sending agent's current providerID; for user messages it
+    /// is the receiving agent's; for system/tool-result messages it is the
+    /// originating agent's. Nil when there's no meaningful attribution.
+    public var providerID: String?
+    /// Wire model ID associated with this message (mirror of `providerID` semantics).
+    public var modelID: String?
+    /// Full ModelConfiguration snapshot associated with this message. Like on
+    /// `UsageRecord`, embedded directly so context-size/temperature/cache settings
+    /// survive even if the source config is later deleted or edited.
+    public var configuration: ModelConfiguration?
+
     /// Whether this message targets a specific agent rather than the public channel.
     public var isPrivate: Bool { recipientID != nil }
 
     private enum CodingKeys: String, CodingKey {
         case id, timestamp, sender, recipientID, recipient, recipientRole, content, attachments, metadata
+        case taskID, sessionID, providerID, modelID, configuration
     }
 
     /// Backward-compatible decoding: reads the new `recipient` key, falling back to the
     /// legacy `recipientRole` key found in persisted messages written by older builds.
+    /// Context-stamping fields (taskID, sessionID, providerID, modelID, configuration)
+    /// are all optional; old messages decode them as nil.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -88,6 +115,11 @@ public struct ChannelMessage: Identifiable, Codable, Sendable {
         content = try container.decode(String.self, forKey: .content)
         attachments = try container.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
         metadata = try container.decodeIfPresent([String: AnyCodable].self, forKey: .metadata)
+        taskID = try container.decodeIfPresent(UUID.self, forKey: .taskID)
+        sessionID = try container.decodeIfPresent(UUID.self, forKey: .sessionID)
+        providerID = try container.decodeIfPresent(String.self, forKey: .providerID)
+        modelID = try container.decodeIfPresent(String.self, forKey: .modelID)
+        configuration = try container.decodeIfPresent(ModelConfiguration.self, forKey: .configuration)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -100,6 +132,11 @@ public struct ChannelMessage: Identifiable, Codable, Sendable {
         try container.encode(content, forKey: .content)
         try container.encode(attachments, forKey: .attachments)
         try container.encodeIfPresent(metadata, forKey: .metadata)
+        try container.encodeIfPresent(taskID, forKey: .taskID)
+        try container.encodeIfPresent(sessionID, forKey: .sessionID)
+        try container.encodeIfPresent(providerID, forKey: .providerID)
+        try container.encodeIfPresent(modelID, forKey: .modelID)
+        try container.encodeIfPresent(configuration, forKey: .configuration)
     }
 
     public enum Sender: Codable, Sendable, Hashable {
@@ -127,7 +164,12 @@ public struct ChannelMessage: Identifiable, Codable, Sendable {
         recipient: MessageRecipient? = nil,
         content: String,
         attachments: [Attachment] = [],
-        metadata: [String: AnyCodable]? = nil
+        metadata: [String: AnyCodable]? = nil,
+        taskID: UUID? = nil,
+        sessionID: UUID? = nil,
+        providerID: String? = nil,
+        modelID: String? = nil,
+        configuration: ModelConfiguration? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -137,5 +179,10 @@ public struct ChannelMessage: Identifiable, Codable, Sendable {
         self.content = content
         self.attachments = attachments
         self.metadata = metadata
+        self.taskID = taskID
+        self.sessionID = sessionID
+        self.providerID = providerID
+        self.modelID = modelID
+        self.configuration = configuration
     }
 }

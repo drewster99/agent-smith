@@ -51,7 +51,7 @@ public struct TaskAcknowledgedTool: AgentTool {
             messageKind = "task_acknowledged"
         }
 
-        await context.channel.post(ChannelMessage(
+        await context.post(ChannelMessage(
             sender: .agent(context.agentRole),
             recipientID: smithID,
             recipient: .agent(.smith),

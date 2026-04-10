@@ -119,7 +119,7 @@ public struct CreateTaskTool: AgentTool {
             }
         }
 
-        await context.channel.post(ChannelMessage(
+        await context.post(ChannelMessage(
             sender: .system,
             content: title,
             metadata: meta

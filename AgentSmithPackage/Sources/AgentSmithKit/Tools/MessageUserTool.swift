@@ -32,7 +32,7 @@ public struct MessageUserTool: AgentTool {
             throw ToolCallError.missingRequiredArgument("message")
         }
 
-        await context.channel.post(ChannelMessage(
+        await context.post(ChannelMessage(
             sender: .agent(context.agentRole),
             recipientID: OrchestrationRuntime.userID,
             recipient: .user,

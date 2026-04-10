@@ -170,7 +170,7 @@ public struct SaveMemoryTool: AgentTool {
         consolidated: Bool,
         context: ToolContext
     ) async {
-        await context.channel.post(ChannelMessage(
+        await context.post(ChannelMessage(
             sender: .system,
             content: String(content.prefix(120)),
             metadata: [

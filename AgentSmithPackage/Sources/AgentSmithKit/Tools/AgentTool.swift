@@ -1,4 +1,5 @@
 import Foundation
+import SwiftLLMKit
 
 /// A tool that an agent can invoke via LLM tool calling.
 public protocol AgentTool: Sendable {
@@ -82,6 +83,14 @@ public struct ToolContext: Sendable {
     public let agentRole: AgentRole
     public let channel: MessageChannel
     public let taskStore: TaskStore
+    /// Full snapshot of the ModelConfiguration the owning agent is using at spawn
+    /// time. Used to stamp channel messages with provider/model/config provenance.
+    /// Frozen at context construction — if the agent's config changes mid-run (rare),
+    /// a fresh ToolContext would need to be built.
+    public let currentConfiguration: ModelConfiguration?
+    /// Provider API type (e.g. "anthropic", "openAICompatible") for the owning
+    /// agent's current configuration. Not derivable from ModelConfiguration alone.
+    public let currentProviderType: String?
     /// Callback to request spawning a new Brown+Jones pair. Returns the Brown agent's ID.
     public let spawnBrown: @Sendable () async -> UUID?
     /// Callback to terminate an agent by ID. Second parameter is the caller's agent ID.
@@ -127,6 +136,8 @@ public struct ToolContext: Sendable {
         agentRole: AgentRole,
         channel: MessageChannel,
         taskStore: TaskStore,
+        currentConfiguration: ModelConfiguration? = nil,
+        currentProviderType: String? = nil,
         spawnBrown: @escaping @Sendable () async -> UUID?,
         terminateAgent: @escaping @Sendable (UUID, UUID) async -> Bool,
         abort: @escaping @Sendable (String, AgentRole?) async -> Void,
@@ -149,6 +160,8 @@ public struct ToolContext: Sendable {
         self.agentRole = agentRole
         self.channel = channel
         self.taskStore = taskStore
+        self.currentConfiguration = currentConfiguration
+        self.currentProviderType = currentProviderType
         self.spawnBrown = spawnBrown
         self.terminateAgent = terminateAgent
         self.abort = abort
@@ -166,5 +179,31 @@ public struct ToolContext: Sendable {
         self.autoAdvanceEnabled = autoAdvanceEnabled
         self.recordFileRead = recordFileRead
         self.hasFileBeenRead = hasFileBeenRead
+    }
+
+    /// Posts a message to the channel, auto-stamping it with the owning agent's
+    /// context: `taskID` (looked up via `taskStore.taskForAgent`), `providerID`,
+    /// `modelID`, and `configuration` (from `currentConfiguration`). `sessionID`
+    /// is filled in by `MessageChannel.post` itself. Fields already set on the
+    /// incoming message are left alone — callers can override any stamp by
+    /// pre-populating the field.
+    ///
+    /// Prefer this over `channel.post(...)` directly whenever a `ToolContext`
+    /// is in scope so that every ChannelMessage carries full provenance.
+    public func post(_ message: ChannelMessage) async {
+        var stamped = message
+        if stamped.taskID == nil {
+            stamped.taskID = await taskStore.taskForAgent(agentID: agentID)?.id
+        }
+        if stamped.providerID == nil {
+            stamped.providerID = currentConfiguration?.providerID
+        }
+        if stamped.modelID == nil {
+            stamped.modelID = currentConfiguration?.model
+        }
+        if stamped.configuration == nil {
+            stamped.configuration = currentConfiguration
+        }
+        await channel.post(stamped)
     }
 }

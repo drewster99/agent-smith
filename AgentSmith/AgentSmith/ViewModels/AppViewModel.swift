@@ -385,6 +385,116 @@ final class AppViewModel {
         // Load persisted usage records.
         await usageStore.load()
 
+        // TODO: Remove migration after 05/10/2026
+        // One-time migration: backfill ChannelMessage context (taskID, sessionID,
+        // providerID, modelID, configuration) on historical messages persisted
+        // before those fields existed. For each message with no context stamped,
+        // find the nearest UsageRecord within a 10-second window whose agentRole
+        // matches the message's sender (or recipient for user-to-agent messages)
+        // and inherit its context. Reports coverage stats in four buckets:
+        //   - backfilled: a matching UsageRecord was found and its context copied
+        //   - alreadyStamped: at least one context field was already populated
+        //   - unmatched: had no context, expected an agent, no record within 10s
+        //   - notJoinable: no way to determine agent context (pure system messages,
+        //                  broadcast user messages with no agent recipient)
+        // Idempotent: messages with alreadyStamped context are skipped on re-run.
+        do {
+            let usageRecords = await usageStore.allRecords()
+            // Sort records by timestamp once for early-exit when scanning.
+            // Records are typically already in append order, but we sort defensively.
+            let sortedRecords = usageRecords.sorted { $0.timestamp < $1.timestamp }
+
+            var savedMessages = allPersistedMessages
+            var backfilled = 0
+            var alreadyStamped = 0
+            var unmatched = 0
+            var notJoinable = 0
+            let joinWindowSeconds: TimeInterval = 10
+
+            for i in savedMessages.indices {
+                let m = savedMessages[i]
+
+                // Skip if any context field is already populated (idempotent re-runs).
+                let hasAnyContext = m.taskID != nil
+                    || m.sessionID != nil
+                    || m.providerID != nil
+                    || m.modelID != nil
+                    || m.configuration != nil
+                if hasAnyContext {
+                    alreadyStamped += 1
+                    continue
+                }
+
+                // Determine which agent role's UsageRecord we should match against.
+                let expectedRole: AgentRole?
+                switch m.sender {
+                case .agent(let role):
+                    expectedRole = role
+                case .user:
+                    if case .agent(let role) = m.recipient {
+                        expectedRole = role
+                    } else {
+                        // Broadcast user messages with no agent recipient can't be
+                        // unambiguously attributed to a single agent. Skip the join.
+                        notJoinable += 1
+                        continue
+                    }
+                case .system:
+                    // System messages don't carry agent-scoped context by design.
+                    notJoinable += 1
+                    continue
+                }
+
+                let lowerBound = m.timestamp.addingTimeInterval(-joinWindowSeconds)
+                let upperBound = m.timestamp.addingTimeInterval(joinWindowSeconds)
+                var bestRecord: UsageRecord?
+                var bestDistance = TimeInterval.infinity
+                // Scan is O(n) over the filtered window; acceptable for the
+                // one-shot startup pass even with tens of thousands of records.
+                for record in sortedRecords {
+                    if record.timestamp < lowerBound { continue }
+                    if record.timestamp > upperBound { break }
+                    if let expected = expectedRole, record.agentRole != expected {
+                        continue
+                    }
+                    let dist = abs(record.timestamp.timeIntervalSince(m.timestamp))
+                    if dist < bestDistance {
+                        bestDistance = dist
+                        bestRecord = record
+                    }
+                }
+
+                guard let match = bestRecord else {
+                    unmatched += 1
+                    continue
+                }
+
+                savedMessages[i].taskID = match.taskID
+                savedMessages[i].sessionID = match.sessionID
+                savedMessages[i].providerID = match.providerID
+                savedMessages[i].modelID = match.modelID
+                savedMessages[i].configuration = match.configuration
+                backfilled += 1
+            }
+
+            let total = savedMessages.count
+            let pct: (Int) -> String = { n in
+                guard total > 0 else { return "0.0%" }
+                return String(format: "%.1f%%", Double(n) / Double(total) * 100)
+            }
+            print("[AgentSmith] ChannelMessage context migration: total=\(total), backfilled=\(backfilled) (\(pct(backfilled))), alreadyStamped=\(alreadyStamped) (\(pct(alreadyStamped))), unmatched=\(unmatched) (\(pct(unmatched))), notJoinable=\(notJoinable) (\(pct(notJoinable)))")
+
+            if backfilled > 0 {
+                do {
+                    try await persistenceManager.saveChannelLog(savedMessages)
+                    allPersistedMessages = savedMessages
+                    print("[AgentSmith] ChannelMessage context migration: re-saved channel_log.json with \(backfilled) backfilled messages (\(pct(backfilled)) of total).")
+                } catch {
+                    logger.error("Failed to save migrated channel log: \(error.localizedDescription)")
+                }
+            }
+        }
+
         // Load user model metadata overrides and inject into LLMKitManager.
         do {
             let overrides = try await persistenceManager.loadUserModelOverrides()

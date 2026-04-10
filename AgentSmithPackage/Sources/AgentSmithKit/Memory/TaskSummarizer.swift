@@ -57,6 +57,17 @@ public actor TaskSummarizer {
         self.sessionID = sessionID
     }
 
+    /// Posts a channel message stamped with the summarizer's provider/model/config
+    /// context. `taskID` can be passed for messages tied to a specific task.
+    private func postToChannel(_ message: ChannelMessage, taskID: UUID? = nil) async {
+        var stamped = message
+        if stamped.taskID == nil { stamped.taskID = taskID }
+        if stamped.providerID == nil { stamped.providerID = configuration?.providerID }
+        if stamped.modelID == nil { stamped.modelID = configuration?.model }
+        if stamped.configuration == nil { stamped.configuration = configuration }
+        await channel.post(stamped)
+    }
+
     private static let maxRetries = 3
     private static let retryBackoffSeconds: [Double] = [5, 15, 45]
 
@@ -74,7 +85,7 @@ public actor TaskSummarizer {
         for attempt in 0...Self.maxRetries {
             if attempt > 0 {
                 let delay = Self.retryBackoffSeconds[min(attempt - 1, Self.retryBackoffSeconds.count - 1)]
-                await channel.post(ChannelMessage(
+                await postToChannel(ChannelMessage(
                     sender: .agent(.summarizer),
                     content: "Summarization retry \(attempt)/\(Self.maxRetries) for '\(task.title)' after \(Int(delay))s",
                     metadata: ["isWarning": .bool(true)]
@@ -90,7 +101,7 @@ public actor TaskSummarizer {
                     summary: summary,
                     status: task.status
                 )
-                await channel.post(ChannelMessage(
+                await postToChannel(ChannelMessage(
                     sender: .agent(.summarizer),
                     content: summary,
                     metadata: [
@@ -108,7 +119,7 @@ public actor TaskSummarizer {
         }
 
         let latencyMs = Int(Date().timeIntervalSince(startTime) * 1000)
-        await channel.post(ChannelMessage(
+        await postToChannel(ChannelMessage(
             sender: .agent(.summarizer),
             content: "Task summarization failed for '\(task.title)': \(lastError?.localizedDescription ?? "unknown error")",
             metadata: [
@@ -202,7 +213,7 @@ public actor TaskSummarizer {
             }
         }
 
-        await channel.post(ChannelMessage(
+        await postToChannel(ChannelMessage(
             sender: .agent(.summarizer),
             content: "Memory merge failed: \(lastError?.localizedDescription ?? "unknown error")",
             metadata: ["isError": .bool(true)]

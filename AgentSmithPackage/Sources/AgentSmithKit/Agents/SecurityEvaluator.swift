@@ -125,6 +125,19 @@ public actor SecurityEvaluator {
         history
     }
 
+    /// Posts a channel message stamped with the evaluator's provider/model/config
+    /// context. Use this instead of `channel.post(...)` for any Jones-originated
+    /// message so it carries full provenance for downstream rollups. `taskID`
+    /// can be passed explicitly for messages tied to a specific evaluation.
+    private func postToChannel(_ message: ChannelMessage, taskID: UUID? = nil) async {
+        var stamped = message
+        if stamped.taskID == nil { stamped.taskID = taskID }
+        if stamped.providerID == nil { stamped.providerID = configuration?.providerID }
+        if stamped.modelID == nil { stamped.modelID = configuration?.model }
+        if stamped.configuration == nil { stamped.configuration = configuration }
+        await channel.post(stamped)
+    }
+
     /// Registers a callback fired after each security evaluation is recorded.
     public func setOnEvaluationRecorded(_ handler: @escaping @Sendable (EvaluationRecord) -> Void) {
         onEvaluationRecorded = handler
@@ -253,7 +266,7 @@ public actor SecurityEvaluator {
 
                 // Post error to channel only after several failures.
                 if retryCount >= 3 {
-                    await channel.post(ChannelMessage(
+                    await postToChannel(ChannelMessage(
                         sender: .system,
                         content: "Agent Jones error (\(retryCount)/\(Self.maxRetries)): failed to parse security response",
                         metadata: ["isError": .bool(true), "agentRole": .string(AgentRole.jones.rawValue)]
@@ -271,7 +284,7 @@ public actor SecurityEvaluator {
             // Handle ABORT — trigger system-wide shutdown.
             if !disposition.approved, let msg = disposition.message,
                responseText.trimmingCharacters(in: .whitespacesAndNewlines).uppercased().hasPrefix("ABORT") {
-                await channel.post(ChannelMessage(
+                await postToChannel(ChannelMessage(
                     sender: .system,
                     content: "Security review: ABORT — \(msg)",
                     metadata: [
@@ -295,7 +308,7 @@ public actor SecurityEvaluator {
             if let desc = lastErrorDescription {
                 abortContent += "\nLast error: \(desc)"
             }
-            await channel.post(ChannelMessage(
+            await postToChannel(ChannelMessage(
                 sender: .system,
                 content: abortContent
             ))
@@ -558,7 +571,7 @@ public actor SecurityEvaluator {
             return p
         }()
 
-        await channel.post(ChannelMessage(
+        await postToChannel(ChannelMessage(
             sender: .agent(.jones),
             content: "file_read: \(path)",
             metadata: [

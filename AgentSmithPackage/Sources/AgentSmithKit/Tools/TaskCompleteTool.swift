@@ -68,7 +68,7 @@ public struct TaskCompleteTool: AgentTool {
             message += "\n\nCommentary:\n\(commentary)"
         }
 
-        await context.channel.post(ChannelMessage(
+        await context.post(ChannelMessage(
             sender: .agent(context.agentRole),
             recipientID: smithID,
             recipient: .agent(.smith),

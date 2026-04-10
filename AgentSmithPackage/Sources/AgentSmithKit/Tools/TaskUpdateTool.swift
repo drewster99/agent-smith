@@ -40,7 +40,7 @@ public struct TaskUpdateTool: AgentTool {
 
         // Post Brown's update as clean content — no system guidance embedded in it,
         // so Brown cannot craft text that manipulates the guidance via prompt injection.
-        await context.channel.post(ChannelMessage(
+        await context.post(ChannelMessage(
             sender: .agent(context.agentRole),
             recipientID: smithID,
             recipient: .agent(.smith),
@@ -49,7 +49,7 @@ public struct TaskUpdateTool: AgentTool {
         ))
 
         // Post guidance as a separate system message so it cannot be influenced by Brown's text.
-        await context.channel.post(ChannelMessage(
+        await context.post(ChannelMessage(
             sender: .system,
             recipientID: smithID,
             recipient: .agent(.smith),

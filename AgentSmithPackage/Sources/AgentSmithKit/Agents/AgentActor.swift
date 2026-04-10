@@ -245,11 +245,11 @@ public actor AgentActor {
         }
 
         let role = configuration.role
-        let channel = toolContext.channel
+        let ctx = toolContext
         let agentID = id
         runTask = Task { [weak self] in
             // Announce on the public channel so all agents and the UI know we're alive.
-            await channel.post(ChannelMessage(
+            await ctx.post(ChannelMessage(
                 sender: .agent(role),
                 content: "\(role.displayName) agent \(agentID) is online.",
                 metadata: ["messageKind": .string("agent_online")]
@@ -544,14 +544,14 @@ public actor AgentActor {
                         } else {
                             forceAggressivePrune()
                         }
-                        await toolContext.channel.post(ChannelMessage(
+                        await toolContext.post(ChannelMessage(
                             sender: .system,
                             content: "Context overflow for \(roleName) — context rebuilt (attempt \(consecutiveContextOverflows)/\(Self.maxContextOverflowRetries)).",
                             metadata: ["isError": .bool(true), "agentRole": .string(configuration.role.rawValue)]
                         ))
                         continue  // Retry immediately with smaller context
                     } else {
-                        await toolContext.channel.post(ChannelMessage(
+                        await toolContext.post(ChannelMessage(
                             sender: .system,
                             content: "Agent \(roleName) stopped: context overflow persists after \(Self.maxContextOverflowRetries) rebuild attempts.",
                             metadata: ["isError": .bool(true), "agentRole": .string(configuration.role.rawValue)]
@@ -575,7 +575,7 @@ public actor AgentActor {
                 // Suppress early transient errors (e.g. 429 rate limits) from the channel.
                 // Only start showing errors after 5 consecutive failures.
                 if consecutiveErrors >= 5 {
-                    await toolContext.channel.post(ChannelMessage(
+                    await toolContext.post(ChannelMessage(
                         sender: .system,
                         content: "Agent \(configuration.role.displayName) error (\(consecutiveErrors)/\(Self.maxConsecutiveErrors)): \(error.localizedDescription)",
                         metadata: ["isError": .bool(true), "agentRole": .string(configuration.role.rawValue)]
@@ -583,7 +583,7 @@ public actor AgentActor {
                 }
 
                 if consecutiveErrors >= Self.maxConsecutiveErrors {
-                    await toolContext.channel.post(ChannelMessage(
+                    await toolContext.post(ChannelMessage(
                         sender: .system,
                         content: "Agent \(configuration.role.displayName) stopped after \(Self.maxConsecutiveErrors) consecutive errors.",
                         metadata: ["isError": .bool(true), "agentRole": .string(configuration.role.rawValue)]
@@ -609,7 +609,7 @@ public actor AgentActor {
         // Post text to channel unless this agent's raw LLM output is suppressed.
         // Suppressed text is still stored in conversationHistory and visible in the inspector.
         if let text = response.text, !text.isEmpty, !configuration.suppressesRawTextToChannel {
-            await toolContext.channel.post(ChannelMessage(
+            await toolContext.post(ChannelMessage(
                 sender: .agent(configuration.role),
                 content: text
             ))
@@ -624,7 +624,7 @@ public actor AgentActor {
            response.toolCalls.isEmpty,
            let text = response.text?.trimmingCharacters(in: .whitespacesAndNewlines),
            !text.isEmpty {
-            await toolContext.channel.post(ChannelMessage(
+            await toolContext.post(ChannelMessage(
                 sender: .agent(configuration.role),
                 recipientID: OrchestrationRuntime.userID,
                 recipient: .user,
@@ -656,7 +656,7 @@ public actor AgentActor {
             // Brown (tool-heavy worker) triggers quickly at 6; Smith (conversational orchestrator) at 30.
             let textOnlyLimit = configuration.role == .smith ? 30 : 6
             if consecutiveTextOnlyResponses >= textOnlyLimit {
-                await toolContext.channel.post(ChannelMessage(
+                await toolContext.post(ChannelMessage(
                     sender: .system,
                     content: "Agent \(configuration.role.displayName) returned \(consecutiveTextOnlyResponses) consecutive text-only responses without calling any tools. Terminating — the model may be in a degenerate loop."
                 ))
@@ -684,7 +684,7 @@ public actor AgentActor {
         // a matching tool result, or the LLM API will error on the next request.
         let callsToExecute = Array(toolCalls.prefix(maxToolCallsPerIteration))
         if callsToExecute.count < toolCalls.count {
-            await toolContext.channel.post(ChannelMessage(
+            await toolContext.post(ChannelMessage(
                 sender: .system,
                 content: "Rate limit: dropped \(toolCalls.count - callsToExecute.count) tool calls (max \(maxToolCallsPerIteration) per iteration)."
             ))
@@ -807,7 +807,6 @@ public actor AgentActor {
                     let executionMs: Int
                 }
 
-                let channel = toolContext.channel
                 let role = configuration.role
                 let roleName = configuration.role.displayName
                 let ctx = toolContext
@@ -846,7 +845,7 @@ public actor AgentActor {
                     if shouldSignalEnd { jonesCallback(false) }
 
                     await AgentActor.postSecurityReviewToChannel(
-                        disposition: disposition, call: entry.call, role: role, roleName: roleName, channel: channel
+                        disposition: disposition, call: entry.call, role: role, roleName: roleName, context: ctx
                     )
 
                     let result: String
@@ -861,7 +860,7 @@ public actor AgentActor {
                         }
                         executionMs = Int(Date().timeIntervalSince(executionStart) * 1000)
                         await AgentActor.postToolOutputToChannel(
-                            result: result, call: entry.call, role: role, channel: channel
+                            result: result, call: entry.call, role: role, context: ctx
                         )
                     } else {
                         if let taskID = currentTask?.id {
@@ -975,7 +974,7 @@ public actor AgentActor {
         }
 
         if consecutiveIdenticalToolCalls >= Self.maxConsecutiveIdenticalToolCalls {
-            await toolContext.channel.post(ChannelMessage(
+            await toolContext.post(ChannelMessage(
                 sender: .system,
                 content: "Agent \(configuration.role.displayName) called \(callsToExecute.first?.name ?? "unknown") with identical arguments \(consecutiveIdenticalToolCalls) times in a row. Breaking loop — agent will idle until new input arrives."
             ))
@@ -1062,13 +1061,13 @@ public actor AgentActor {
         // Post approval/denial status.
         await Self.postSecurityReviewToChannel(
             disposition: disposition, call: call, role: configuration.role,
-            roleName: configuration.role.displayName, channel: toolContext.channel
+            roleName: configuration.role.displayName, context: toolContext
         )
 
         if disposition.approved {
             let result = await directExecute(call, tool: tool)
             await Self.postToolOutputToChannel(
-                result: result, call: call, role: configuration.role, channel: toolContext.channel
+                result: result, call: call, role: configuration.role, context: toolContext
             )
             return result
         } else {
@@ -1158,7 +1157,7 @@ public actor AgentActor {
             }
         }
 
-        await toolContext.channel.post(ChannelMessage(
+        await toolContext.post(ChannelMessage(
             sender: .agent(configuration.role),
             content: Self.conciseToolCallSummary(name: call.name, arguments: call.arguments),
             metadata: metadata
@@ -1166,7 +1165,7 @@ public actor AgentActor {
     }
 
     /// Posts a security review status message to the channel. Static so it can be called from `withTaskGroup`.
-    static func postSecurityReviewToChannel(disposition: SecurityDisposition, call: LLMToolCall, role: AgentRole, roleName: String, channel: MessageChannel) async {
+    static func postSecurityReviewToChannel(disposition: SecurityDisposition, call: LLMToolCall, role: AgentRole, roleName: String, context: ToolContext) async {
         let statusContent: String
         let securityDisposition: String
         if disposition.approved && disposition.isAutoApproval {
@@ -1191,7 +1190,7 @@ public actor AgentActor {
         if let msg = disposition.message, !msg.isEmpty {
             reviewMetadata["dispositionMessage"] = .string(msg)
         }
-        await channel.post(ChannelMessage(
+        await context.post(ChannelMessage(
             sender: .system,
             content: statusContent,
             metadata: reviewMetadata
@@ -1202,7 +1201,7 @@ public actor AgentActor {
     ///
     /// The channel message stores only the display-truncated version of the output to avoid
     /// bloating the SwiftUI view layer with megabytes of data (e.g., binary blobs from osascript).
-    static func postToolOutputToChannel(result: String, call: LLMToolCall, role: AgentRole, channel: MessageChannel) async {
+    static func postToolOutputToChannel(result: String, call: LLMToolCall, role: AgentRole, context: ToolContext) async {
         let trimmedResult = result.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedResult.isEmpty else { return }
         let truncated = AgentActor.truncateOutput(trimmedResult, maxLines: 4)
@@ -1225,7 +1224,7 @@ public actor AgentActor {
                 outputMetadata["expandedContent"] = .string(trimmedResult)
             }
         }
-        await channel.post(ChannelMessage(
+        await context.post(ChannelMessage(
             sender: .agent(role),
             content: isTruncated ? truncated : trimmedResult,
             metadata: outputMetadata
@@ -1425,7 +1424,7 @@ public actor AgentActor {
         if !taskEntries.isEmpty {
             bannerMetadata["taskResults"] = .string(taskEntries.joined(separator: "\u{1E}"))
         }
-        await toolContext.channel.post(ChannelMessage(
+        await toolContext.post(ChannelMessage(
             sender: .system,
             content: query,
             metadata: bannerMetadata
@@ -1926,9 +1925,9 @@ public actor AgentActor {
         pushLiveContext()
 
         let roleName = configuration.role.displayName
-        let channel = toolContext.channel
+        let ctx = toolContext
         Task.detached {
-            await channel.post(ChannelMessage(
+            await ctx.post(ChannelMessage(
                 sender: .system,
                 content: "Context pruned for \(roleName): removed \(prunedCount) old messages."
             ))
@@ -1991,9 +1990,9 @@ public actor AgentActor {
         pushLiveContext()
 
         let roleName = configuration.role.displayName
-        let channel = toolContext.channel
+        let ctx = toolContext
         Task.detached {
-            await channel.post(ChannelMessage(
+            await ctx.post(ChannelMessage(
                 sender: .system,
                 content: "Aggressively pruned \(prunedCount) messages for \(roleName) (no running task for rebuild)."
             ))
@@ -2099,10 +2098,10 @@ public actor AgentActor {
         hasUnprocessedInput = true
         pushLiveContext()
 
-        let channel = toolContext.channel
+        let ctx = toolContext
         let prunedLabel = configuration.role.displayName
         Task.detached {
-            await channel.post(ChannelMessage(
+            await ctx.post(ChannelMessage(
                 sender: .system,
                 content: "Context rebuilt for \(prunedLabel) from task state."
             ))

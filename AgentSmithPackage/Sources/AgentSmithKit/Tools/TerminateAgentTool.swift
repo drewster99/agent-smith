@@ -57,7 +57,7 @@ public struct TerminateAgentTool: AgentTool {
 
         let success = await context.terminateAgent(agentID, context.agentID)
         if success {
-            await context.channel.post(ChannelMessage(
+            await context.post(ChannelMessage(
                 sender: .system,
                 content: "Agent \(agentIDString) terminated by \(context.agentRole.displayName): \(reason)"
             ))

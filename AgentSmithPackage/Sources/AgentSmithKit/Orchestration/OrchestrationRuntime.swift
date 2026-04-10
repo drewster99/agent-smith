@@ -205,10 +205,11 @@ public actor OrchestrationRuntime {
         guard !aborted else { return }
 
         // Mint a fresh session ID for this run. Propagated to every agent, evaluator,
-        // and summarizer so their UsageRecords carry it. A separate phase will also
-        // publish it to the MessageChannel for ChannelMessage stamping.
+        // and summarizer so their UsageRecords carry it, and published to the
+        // MessageChannel so every posted message is auto-stamped with the session.
         let sessionID = UUID()
         currentSessionID = sessionID
+        await channel.setCurrentSessionID(sessionID)
 
         let powerMgr = PowerAssertionManager(taskStore: taskStore)
         await powerMgr.start()
@@ -644,6 +645,7 @@ public actor OrchestrationRuntime {
         smith = nil
         smithID = nil
         currentSessionID = nil
+        await channel.setCurrentSessionID(nil)
 
         await channel.post(ChannelMessage(
             sender: .system,
@@ -943,6 +945,8 @@ public actor OrchestrationRuntime {
             agentRole: role,
             channel: channel,
             taskStore: taskStore,
+            currentConfiguration: llmConfigs[role],
+            currentProviderType: providerAPITypes[role]?.rawValue,
             spawnBrown: { [weak self] in
                 guard let self else { return nil }
                 return await self.spawnBrown()

@@ -92,7 +92,7 @@ public struct ReviewWorkTool: AgentTool {
             if let startedAt = completedTask.startedAt, let completedAt = completedTask.completedAt {
                 bannerMetadata["durationSeconds"] = .double(completedAt.timeIntervalSince(startedAt))
             }
-            await context.channel.post(ChannelMessage(
+            await context.post(ChannelMessage(
                 sender: .system,
                 content: completedTask.title,
                 metadata: bannerMetadata
@@ -100,7 +100,7 @@ public struct ReviewWorkTool: AgentTool {
 
             // Deliver Brown's result directly to the user as a Smith message.
             if let result = completedTask.result, !result.isEmpty {
-                await context.channel.post(ChannelMessage(
+                await context.post(ChannelMessage(
                     sender: .agent(context.agentRole),
                     recipientID: OrchestrationRuntime.userID,
                     recipient: .user,
@@ -165,7 +165,7 @@ public struct ReviewWorkTool: AgentTool {
                 content = "Results rejected - changes required on task '\(task.title)': \(feedback)"
             }
 
-            await context.channel.post(ChannelMessage(
+            await context.post(ChannelMessage(
                 sender: .agent(context.agentRole),
                 recipientID: brownID,
                 recipient: .agent(.brown),

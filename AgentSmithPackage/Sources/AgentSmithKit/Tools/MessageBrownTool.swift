@@ -42,7 +42,7 @@ public struct MessageBrownTool: AgentTool {
             return "No active Brown agent found. Use `run_task` to start a task — it will spawn Brown automatically."
         }
 
-        await context.channel.post(ChannelMessage(
+        await context.post(ChannelMessage(
             sender: .agent(context.agentRole),
             recipientID: brownID,
             recipient: .agent(.brown),

@@ -56,7 +56,7 @@ public struct SearchMemoryTool: AgentTool {
         )
 
         if results.isEmpty {
-            await context.channel.post(ChannelMessage(
+            await context.post(ChannelMessage(
                 sender: .system,
                 content: query,
                 metadata: [
@@ -117,7 +117,7 @@ public struct SearchMemoryTool: AgentTool {
         }
 
         // Post a channel banner so memory searches are visible in the transcript.
-        await context.channel.post(ChannelMessage(
+        await context.post(ChannelMessage(
             sender: .system,
             content: query,
             metadata: bannerMetadata
