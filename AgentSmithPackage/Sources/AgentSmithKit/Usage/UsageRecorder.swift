@@ -8,6 +8,7 @@ public struct LLMCallContext: Sendable {
     public let taskID: UUID?
     public let modelID: String
     public let providerType: String
+    public let providerID: String?
     public let configurationID: UUID?
     public let preResetInputTokens: Int?
 
@@ -16,6 +17,7 @@ public struct LLMCallContext: Sendable {
         taskID: UUID?,
         modelID: String,
         providerType: String,
+        providerID: String?,
         configurationID: UUID?,
         preResetInputTokens: Int? = nil
     ) {
@@ -23,6 +25,7 @@ public struct LLMCallContext: Sendable {
         self.taskID = taskID
         self.modelID = modelID
         self.providerType = providerType
+        self.providerID = providerID
         self.configurationID = configurationID
         self.preResetInputTokens = preResetInputTokens
     }
@@ -48,6 +51,7 @@ public enum UsageRecorder {
             taskID: context.taskID,
             modelID: context.modelID,
             providerType: context.providerType,
+            providerID: context.providerID,
             configurationID: context.configurationID,
             inputTokens: usage.inputTokens,
             outputTokens: usage.outputTokens,

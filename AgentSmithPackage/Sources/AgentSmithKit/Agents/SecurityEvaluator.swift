@@ -91,6 +91,7 @@ public actor SecurityEvaluator {
     /// Model metadata for usage records.
     private let modelID: String
     private let providerType: String
+    private let providerID: String?
     private let configurationID: UUID?
 
     public init(
@@ -101,6 +102,7 @@ public actor SecurityEvaluator {
         usageStore: UsageStore? = nil,
         modelID: String = "",
         providerType: String = "",
+        providerID: String? = nil,
         configurationID: UUID? = nil
     ) {
         self.provider = provider
@@ -110,6 +112,7 @@ public actor SecurityEvaluator {
         self.usageStore = usageStore
         self.modelID = modelID
         self.providerType = providerType
+        self.providerID = providerID
         self.configurationID = configurationID
     }
 
@@ -191,6 +194,7 @@ public actor SecurityEvaluator {
                             taskID: taskUUID,
                             modelID: modelID,
                             providerType: providerType,
+                            providerID: providerID,
                             configurationID: configurationID
                         ),
                         latencyMs: callLatencyMs,

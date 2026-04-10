@@ -215,6 +215,7 @@ public actor OrchestrationRuntime {
                 usageStore: usageStore,
                 modelID: summarizerConfig.model,
                 providerType: providerAPITypes[.summarizer]?.rawValue ?? "",
+                providerID: summarizerConfig.providerID,
                 configurationID: summarizerConfig.id
             )
         } else {
@@ -686,6 +687,7 @@ public actor OrchestrationRuntime {
             usageStore: usageStore,
             modelID: jonesConfig?.model ?? "",
             providerType: providerAPITypes[.jones]?.rawValue ?? "",
+            providerID: jonesConfig?.providerID,
             configurationID: jonesConfig?.id
         )
         securityEvaluators[brownID] = evaluator

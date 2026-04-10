@@ -444,6 +444,7 @@ public actor AgentActor {
                             taskID: currentTask?.id,
                             modelID: configuration.llmConfig.model,
                             providerType: configuration.providerAPIType.rawValue,
+                            providerID: configuration.llmConfig.providerID,
                             configurationID: configuration.llmConfig.id,
                             preResetInputTokens: pendingPreResetTokens
                         ),

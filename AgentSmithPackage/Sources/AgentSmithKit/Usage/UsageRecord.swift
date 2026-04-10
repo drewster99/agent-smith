@@ -9,8 +9,16 @@ public struct UsageRecord: Codable, Identifiable, Sendable {
     public let taskID: UUID?
     /// Raw model ID (e.g. "claude-sonnet-4-20250514", "mistral-large-latest").
     public let modelID: String
-    /// Provider type key (e.g. "anthropic", "openAICompatible", "ollama").
+    /// Provider type key (e.g. "anthropic", "openAICompatible", "ollama"). Identifies
+    /// the wire protocol family — too coarse to disambiguate two providers using the
+    /// same protocol (e.g. Anthropic-direct vs. OpenRouter both use "anthropic").
     public let providerType: String
+    /// Stable provider identifier (e.g. "anthropic", "openrouter", a UUID for a custom
+    /// provider). Together with `modelID` this is the lookup key into `ModelInfo` for
+    /// pricing — `providerType` alone is not specific enough. Optional only because
+    /// records persisted before this field was added decode with `nil`; all new records
+    /// populate it.
+    public let providerID: String?
     /// The ModelConfiguration UUID this call used, if known.
     public let configurationID: UUID?
     /// Input (prompt + context) tokens.
@@ -34,6 +42,7 @@ public struct UsageRecord: Codable, Identifiable, Sendable {
         taskID: UUID?,
         modelID: String,
         providerType: String,
+        providerID: String?,
         configurationID: UUID?,
         inputTokens: Int,
         outputTokens: Int,
@@ -48,6 +57,7 @@ public struct UsageRecord: Codable, Identifiable, Sendable {
         self.taskID = taskID
         self.modelID = modelID
         self.providerType = providerType
+        self.providerID = providerID
         self.configurationID = configurationID
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
