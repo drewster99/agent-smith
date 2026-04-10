@@ -29,8 +29,17 @@ final class AgentInspectorStore {
     // MARK: - Push API (called from runtime callbacks)
 
     /// Appends a newly completed LLM turn for the given agent role.
+    ///
+    /// Reassigns through the dictionary key rather than mutating in place via
+    /// `[key, default: []].append(...)`. The Observation framework's per-property
+    /// change tracking on @Observable types reliably fires on subscript-assignment
+    /// (`dict[key] = newValue`) but not always on chained mutating-method calls
+    /// through a default subscript, so SwiftUI views observing `turnsByRole`
+    /// would otherwise miss appends and never re-render the LLM Turns section.
     func appendTurn(_ turn: LLMTurnRecord, for role: AgentRole) {
-        turnsByRole[role, default: []].append(turn)
+        var turns = turnsByRole[role] ?? []
+        turns.append(turn)
+        turnsByRole[role] = turns
         pruneOldTurnSnapshots(for: role)
     }
 
