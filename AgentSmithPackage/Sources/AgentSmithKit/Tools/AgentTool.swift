@@ -193,7 +193,16 @@ public struct ToolContext: Sendable {
     public func post(_ message: ChannelMessage) async {
         var stamped = message
         if stamped.taskID == nil {
-            stamped.taskID = await taskStore.taskForAgent(agentID: agentID)?.id
+            if agentRole == .smith {
+                // Smith orchestrates tasks but isn't in any task's assigneeIDs.
+                // Find the currently active task by status instead.
+                let allTasks = await taskStore.allTasks()
+                stamped.taskID = allTasks.first(where: {
+                    $0.disposition == .active && ($0.status == .running || $0.status == .awaitingReview)
+                })?.id
+            } else {
+                stamped.taskID = await taskStore.taskForAgent(agentID: agentID)?.id
+            }
         }
         if stamped.providerID == nil {
             stamped.providerID = currentConfiguration?.providerID

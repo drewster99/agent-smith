@@ -130,11 +130,13 @@ struct SpendingDashboardView: View {
             }
         }
         .sheet(item: $selectedTaskID) { taskID in
+            let taskCount = aggregator.byTask(filteredRecords).keys.compactMap({ $0 }).count
             TaskCostDetailSheet(
                 taskID: taskID,
                 task: viewModel.tasks.first(where: { $0.id == taskID }),
                 records: filteredRecords.filter { $0.taskID == taskID },
                 allRecordsSummary: currentSummary,
+                taskCountInRange: max(1, taskCount),
                 aggregator: aggregator,
                 providerNames: providerNames
             )
@@ -679,6 +681,9 @@ private struct TaskCostDetailSheet: View {
     let task: AgentTask?
     let records: [UsageRecord]
     let allRecordsSummary: UsageSummary
+    /// Number of distinct tasks in the parent dashboard's filtered time range,
+    /// used to compute "vs average task cost" comparison.
+    let taskCountInRange: Int
     let aggregator: UsageAggregator
     let providerNames: [String: String]
 
@@ -749,9 +754,9 @@ private struct TaskCostDetailSheet: View {
                     }
                 }
 
-                // Comparison to average
-                if allRecordsSummary.callCount > 0 {
-                    let avgTaskCost = allRecordsSummary.totalCostUSD / Double(max(1, aggregator.byTask(records).count))
+                // Comparison to average task cost across the time range
+                if allRecordsSummary.callCount > 0 && taskCountInRange > 0 {
+                    let avgTaskCost = allRecordsSummary.totalCostUSD / Double(taskCountInRange)
                     if avgTaskCost > 0 {
                         let ratio = summary.totalCostUSD / avgTaskCost
                         headerStat(
