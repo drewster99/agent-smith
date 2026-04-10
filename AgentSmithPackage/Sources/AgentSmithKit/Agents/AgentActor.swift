@@ -77,6 +77,16 @@ public actor AgentActor {
     /// Brown (tool-heavy) triggers at 6; Smith (conversational) at 30.
     private var consecutiveTextOnlyResponses = 0
 
+    /// Tracks consecutive completely empty responses (no text AND no tool calls).
+    /// Distinct from text-only: empty means the model produced NOTHING, not even
+    /// narration. For Brown, a three-strike escalation applies:
+    ///   1st: inject a continuation prompt and retry immediately
+    ///   2nd: rebuild context from task state (same recovery as context overflow)
+    ///   3rd: terminate — the model is unable to proceed
+    /// Reset on any non-empty response.
+    private var consecutiveEmptyResponses = 0
+    private static let maxConsecutiveEmptyResponses = 3
+
     /// Tracks consecutive identical tool calls (same name + same normalized arguments).
     /// Catches degenerate loops where the LLM repeatedly calls the same tool with the same
     /// arguments (e.g. task_update spam). Any different tool call or text-only response resets.
@@ -640,8 +650,69 @@ public actor AgentActor {
             lastToolCallSignature = nil
             consecutiveIdenticalToolCalls = 0
 
-            // Text-only response — record and wait for new input
             let hasText = response.text.map { !$0.isEmpty } ?? false
+
+            // --- Empty STOP handling (no text AND no tool calls) ---
+            // Distinct from text-only: the model produced NOTHING. For Brown, escalate
+            // through a three-strike sequence rather than silently going idle.
+            if !hasText {
+                consecutiveEmptyResponses += 1
+                let roleName = configuration.role.displayName
+
+                if configuration.role == .brown {
+                    if consecutiveEmptyResponses >= Self.maxConsecutiveEmptyResponses {
+                        // Strike 3: terminate
+                        await toolContext.post(ChannelMessage(
+                            sender: .system,
+                            content: "\(roleName) returned \(consecutiveEmptyResponses) consecutive empty responses (no text, no tool calls). The model appears unable to proceed. Terminating.",
+                            metadata: ["isError": .bool(true), "agentRole": .string(configuration.role.rawValue)]
+                        ))
+                        await toolContext.onSelfTerminate()
+                        isRunning = false
+                        return
+                    } else if consecutiveEmptyResponses == 2 {
+                        // Strike 2: rebuild context from task state
+                        await toolContext.post(ChannelMessage(
+                            sender: .system,
+                            content: "\(roleName) returned a second consecutive empty response. Attempting context rebuild from task state.",
+                            metadata: ["isWarning": .bool(true), "agentRole": .string(configuration.role.rawValue)]
+                        ))
+                        let rebuilt = await rebuildContextFromTask()
+                        if !rebuilt {
+                            // No running task to rebuild from — fall back to aggressive
+                            // prune and retry. If the model empties again, strike 3 fires.
+                            forceAggressivePrune()
+                        }
+                        // rebuildContextFromTask sets hasUnprocessedInput on success;
+                        // forceAggressivePrune does not (it's normally followed by a
+                        // `continue` in the context-overflow path). Set it explicitly
+                        // so the run loop retries immediately after the prune.
+                        hasUnprocessedInput = true
+                        return
+                    } else {
+                        // Strike 1: inject continuation prompt and retry immediately
+                        await toolContext.post(ChannelMessage(
+                            sender: .system,
+                            content: "\(roleName) returned an empty response (no text, no tool calls). Injecting continuation prompt.",
+                            metadata: ["isWarning": .bool(true), "agentRole": .string(configuration.role.rawValue)]
+                        ))
+                        conversationHistory.append(LLMMessage(
+                            role: .user,
+                            text: "You returned an empty response with no text and no tool calls. This is not acceptable — you must make progress on the task. Use your tools to continue working."
+                        ))
+                        hasUnprocessedInput = true
+                        return
+                    }
+                }
+
+                // Non-Brown agents: fall through to existing text-only handling below,
+                // which will go idle (hasUnprocessedInput = false).
+            } else {
+                // Non-empty response resets the empty counter.
+                consecutiveEmptyResponses = 0
+            }
+
+            // Text-only response — record and wait for new input
             if hasText, let text = response.text {
                 conversationHistory.append(LLMMessage(role: .assistant, text: text))
                 pushLiveContext()
@@ -668,8 +739,7 @@ public actor AgentActor {
             // For orchestrator agents (Smith), a text-only response means "nothing to do" —
             // go idle until new messages arrive. For worker agents (Brown), text with no
             // tool calls means the model is thinking aloud — inject a continuation prompt
-            // so it keeps working. Only do this when there was actual text; an empty
-            // response (no text, no tool calls) is a model error, not thinking aloud.
+            // so it keeps working.
             if configuration.role == .brown && hasText {
                 conversationHistory.append(LLMMessage(role: .user, text: "Continue. Use your tools to make progress on the task."))
             } else {
@@ -679,6 +749,7 @@ public actor AgentActor {
         }
 
         consecutiveTextOnlyResponses = 0
+        consecutiveEmptyResponses = 0
 
         // Cap tool calls before recording to history — every recorded tool call must have
         // a matching tool result, or the LLM API will error on the next request.
