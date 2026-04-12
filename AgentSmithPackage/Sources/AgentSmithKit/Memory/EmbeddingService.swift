@@ -20,9 +20,6 @@ public final class EmbeddingService: Sendable {
     /// Dimension of the embedding vectors (512 for English sentence embeddings).
     public let dimension: Int
 
-    /// Maximum number of sentence embeddings to store per document.
-    private static let maxSentencesPerDocument = 50
-
     /// Minimum character length for a sentence to be worth embedding.
     private static let minSentenceLength = 10
 
@@ -93,9 +90,9 @@ public final class EmbeddingService: Sendable {
     /// Splits text into sentences and embeds each one separately.
     ///
     /// Uses `NLTokenizer(unit: .sentence)` for linguistic sentence boundary detection.
-    /// Filters out sentences shorter than `minSentenceLength` characters and caps at
-    /// `maxSentencesPerDocument`. All vectors are L2-normalized. Tracks nil-vector
-    /// returns in process-wide stats so the silent skip rate can be observed.
+    /// Filters out sentences shorter than `minSentenceLength` characters. All vectors
+    /// are L2-normalized. Tracks nil-vector returns in process-wide stats so the silent
+    /// skip rate can be observed.
     ///
     /// - Parameter text: The text to split and embed.
     /// - Returns: An array of normalized embedding vectors, one per sentence.
@@ -104,15 +101,14 @@ public final class EmbeddingService: Sendable {
         let sentences = Self.splitIntoSentences(text)
         var embeddings: [[Double]] = []
         var localNilCount = 0
-        let attemptedSlice = sentences.prefix(Self.maxSentencesPerDocument)
-        for sentence in attemptedSlice {
+        for sentence in sentences {
             if let vector = embedding.vector(for: sentence) {
                 embeddings.append(Self.l2Normalize(vector))
             } else {
                 localNilCount += 1
             }
         }
-        let attemptedCount = attemptedSlice.count
+        let attemptedCount = sentences.count
         let nilDelta = localNilCount
         if attemptedCount > 0 {
             nilStats.withLock { stats in
