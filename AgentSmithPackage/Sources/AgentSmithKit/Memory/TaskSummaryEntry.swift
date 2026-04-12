@@ -8,11 +8,15 @@ public struct TaskSummaryEntry: Codable, Identifiable, Sendable {
     public let title: String
     /// LLM-generated summary covering problem, outcome, and approach.
     public let summary: String
-    /// Composite text used for generating the embedding vectors.
+    /// Composite text used for generating the embedding vector.
     /// Includes title, description, summary, result, commentary, and updates.
     public let embeddingSourceText: String
-    /// Per-sentence embedding vectors produced by `EmbeddingService.splitAndEmbed`.
-    public let embeddings: [[Double]]
+    /// Single L2-normalized embedding vector for `embeddingSourceText`.
+    /// Empty when loaded from a legacy multi-vector save and awaiting re-embedding.
+    public let embedding: [Float]
+    /// Identifier of the embedding model that produced `embedding`. `nil` for legacy
+    /// entries that predate model-tagging.
+    public let embeddingModelID: String?
     /// Whether the task completed successfully or failed.
     public let status: AgentTask.Status
     /// When the *task* was originally created (taken from `AgentTask.createdAt`).
@@ -27,7 +31,8 @@ public struct TaskSummaryEntry: Codable, Identifiable, Sendable {
         title: String,
         summary: String,
         embeddingSourceText: String,
-        embeddings: [[Double]],
+        embedding: [Float],
+        embeddingModelID: String?,
         status: AgentTask.Status,
         taskCreatedAt: Date,
         createdAt: Date = Date()
@@ -36,16 +41,17 @@ public struct TaskSummaryEntry: Codable, Identifiable, Sendable {
         self.title = title
         self.summary = summary
         self.embeddingSourceText = embeddingSourceText
-        self.embeddings = embeddings
+        self.embedding = embedding
+        self.embeddingModelID = embeddingModelID
         self.status = status
         self.taskCreatedAt = taskCreatedAt
         self.createdAt = createdAt
     }
 
-    /// Backward-compatible decoding: handles old `embedding: [Double]` (single vector),
-    /// new `embeddings: [[Double]]` (multi-sentence), missing `embeddingSourceText`, and
-    /// missing `taskCreatedAt` (legacy entries fall back to the summary `createdAt` until
-    /// the next reembed pass repairs them with the actual task creation date).
+    /// Backward-compatible decoding. New format: `embedding: [Float]` plus
+    /// `embeddingModelID`. Legacy formats (`[[Double]]` multi-vector or `[Double]`
+    /// single-vector) decode as empty `embedding` + nil `embeddingModelID`, which the
+    /// startup migration pass picks up and re-embeds with the current model.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -53,12 +59,12 @@ public struct TaskSummaryEntry: Codable, Identifiable, Sendable {
         summary = try c.decode(String.self, forKey: .summary)
         embeddingSourceText = try c.decodeIfPresent(String.self, forKey: .embeddingSourceText)
             ?? (title + "\n" + summary)
-        if let multi = try? c.decode([[Double]].self, forKey: .embeddings) {
-            embeddings = multi
+        if let v = try? c.decode([Float].self, forKey: .embedding) {
+            embedding = v
         } else {
-            let single = try c.decode([Double].self, forKey: .embeddings)
-            embeddings = [single]
+            embedding = []
         }
+        embeddingModelID = try c.decodeIfPresent(String.self, forKey: .embeddingModelID)
         status = try c.decode(AgentTask.Status.self, forKey: .status)
         let summaryCreatedAt = try c.decode(Date.self, forKey: .createdAt)
         createdAt = summaryCreatedAt
@@ -67,8 +73,7 @@ public struct TaskSummaryEntry: Codable, Identifiable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, summary, embeddingSourceText
-        // Map "embeddings" property to "embedding" JSON key for backward compat
-        case embeddings = "embedding"
+        case embedding, embeddingModelID
         case status, createdAt, taskCreatedAt
     }
 
@@ -78,7 +83,8 @@ public struct TaskSummaryEntry: Codable, Identifiable, Sendable {
         try c.encode(title, forKey: .title)
         try c.encode(summary, forKey: .summary)
         try c.encode(embeddingSourceText, forKey: .embeddingSourceText)
-        try c.encode(embeddings, forKey: .embeddings)
+        try c.encode(embedding, forKey: .embedding)
+        try c.encodeIfPresent(embeddingModelID, forKey: .embeddingModelID)
         try c.encode(status, forKey: .status)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(taskCreatedAt, forKey: .taskCreatedAt)

@@ -1,4 +1,5 @@
 import Foundation
+import SemanticSearch
 
 /// Thread-safe set for tracking files read during an agent session.
 /// Used by FileEditTool to verify a file was read before editing.
@@ -90,14 +91,14 @@ public actor OrchestrationRuntime {
         configurations: [AgentRole: ModelConfiguration],
         providerAPITypes: [AgentRole: ProviderAPIType] = [:],
         agentTuning: [AgentRole: AgentTuningConfig] = [:],
-        embeddingService: EmbeddingService,
+        semanticSearchEngine: SemanticSearchEngine,
         usageStore: UsageStore,
         autoAdvanceEnabled: Bool = true,
         autoRunInterruptedTasks: Bool = false
     ) {
         self.channel = MessageChannel()
         self.taskStore = TaskStore()
-        self.memoryStore = MemoryStore(embeddingService: embeddingService)
+        self.memoryStore = MemoryStore(engine: semanticSearchEngine)
         self.llmProviders = providers
         self.llmConfigs = configurations
         self.providerAPITypes = providerAPITypes

@@ -18,7 +18,7 @@ struct AgentActorTests {
             terminateAgent: { _, _ in false },
             abort: { _, _ in },
             agentRoleForID: { _ in nil },
-            memoryStore: MemoryStore(embeddingService: try EmbeddingService())
+            memoryStore: MemoryStore(engine: SemanticSearchEngine())
         )
     }
 

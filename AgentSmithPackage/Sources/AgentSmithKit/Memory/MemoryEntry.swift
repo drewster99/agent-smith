@@ -5,8 +5,14 @@ public struct MemoryEntry: Codable, Identifiable, Sendable {
     public let id: UUID
     /// The textual content of the memory.
     public let content: String
-    /// Per-sentence embedding vectors produced by `EmbeddingService.splitAndEmbed`.
-    public let embeddings: [[Double]]
+    /// Single L2-normalized embedding vector for the memory's content.
+    /// Empty when the entry was loaded from a legacy multi-vector save and is
+    /// awaiting re-embedding by the startup migration pass.
+    public let embedding: [Float]
+    /// Identifier of the embedding model that produced `embedding`. Used by the
+    /// startup migration pass to detect a model swap and re-embed stale entries.
+    /// `nil` for legacy entries that were saved before model-tagging existed.
+    public let embeddingModelID: String?
     /// Who created this memory.
     public let source: Source
     /// Optional categorization tags.
@@ -51,7 +57,8 @@ public struct MemoryEntry: Codable, Identifiable, Sendable {
     public init(
         id: UUID = UUID(),
         content: String,
-        embeddings: [[Double]],
+        embedding: [Float],
+        embeddingModelID: String?,
         source: Source,
         tags: [String] = [],
         sourceTaskID: UUID? = nil,
@@ -63,7 +70,8 @@ public struct MemoryEntry: Codable, Identifiable, Sendable {
     ) {
         self.id = id
         self.content = content
-        self.embeddings = embeddings
+        self.embedding = embedding
+        self.embeddingModelID = embeddingModelID
         self.source = source
         self.tags = tags
         self.sourceTaskID = sourceTaskID
@@ -74,21 +82,20 @@ public struct MemoryEntry: Codable, Identifiable, Sendable {
         self.lastUpdatedBy = lastUpdatedBy
     }
 
-    /// Backward-compatible decoding: handles both old `embedding: [Double]` (single vector)
-    /// and new `embeddings: [[Double]]` (multi-sentence). Also tolerates pre-existing
-    /// records that lack the new retrieval/update tracking fields, and ignores the legacy
-    /// `lastAccessedAt` field that has been replaced by `lastRetrievedAt`.
+    /// Backward-compatible decoding. The on-disk JSON key for the vector is `"embedding"`.
+    /// New format: `[Float]`. Legacy formats (`[[Double]]` multi-vector and `[Double]`
+    /// single-vector) are decoded as an empty `embedding` and a `nil` `embeddingModelID`,
+    /// which causes the startup migration pass to re-embed them with the current model.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
         content = try c.decode(String.self, forKey: .content)
-        if let multi = try? c.decode([[Double]].self, forKey: .embeddings) {
-            embeddings = multi
+        if let v = try? c.decode([Float].self, forKey: .embedding) {
+            embedding = v
         } else {
-            // Legacy: single vector stored as "embedding" (Float or Double)
-            let single = try c.decode([Double].self, forKey: .embeddings)
-            embeddings = [single]
+            embedding = []
         }
+        embeddingModelID = try c.decodeIfPresent(String.self, forKey: .embeddingModelID)
         source = try c.decode(Source.self, forKey: .source)
         tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
         sourceTaskID = try c.decodeIfPresent(UUID.self, forKey: .sourceTaskID)
@@ -100,9 +107,7 @@ public struct MemoryEntry: Codable, Identifiable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        // Map "embeddings" property to "embedding" JSON key for backward compat.
-        case id, content
-        case embeddings = "embedding"
+        case id, content, embedding, embeddingModelID
         case source, tags, sourceTaskID, createdAt
         case lastRetrievedAt, retrievalCount, lastUpdatedAt, lastUpdatedBy
     }
@@ -111,7 +116,8 @@ public struct MemoryEntry: Codable, Identifiable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
         try c.encode(content, forKey: .content)
-        try c.encode(embeddings, forKey: .embeddings)
+        try c.encode(embedding, forKey: .embedding)
+        try c.encodeIfPresent(embeddingModelID, forKey: .embeddingModelID)
         try c.encode(source, forKey: .source)
         try c.encode(tags, forKey: .tags)
         try c.encodeIfPresent(sourceTaskID, forKey: .sourceTaskID)

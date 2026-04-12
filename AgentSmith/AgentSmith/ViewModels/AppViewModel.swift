@@ -98,6 +98,15 @@ final class AppViewModel {
     /// All stored task summaries, refreshed when the memory store changes.
     var storedTaskSummaries: [TaskSummaryEntry] = []
 
+    /// Semantic search engine, lazily created on first `start()` and reused across
+    /// runtime restarts so we don't reload the MLX model on every Run/Stop cycle.
+    private var semanticSearchEngine: SemanticSearchEngine?
+
+    /// Most recent progress event from `SemanticSearchEngine.prepare()`. `nil` when
+    /// the model is fully ready (after `prepare()` completes) or before the first
+    /// `start()` call. Drives a loading overlay if one is wired in.
+    var embeddingPrepareProgress: PrepareProgress?
+
     let speechController = SpeechController()
 
     private let logger = Logger(subsystem: "com.agentsmith", category: "AppViewModel")
@@ -784,13 +793,32 @@ final class AppViewModel {
             )
         }
 
-        let embeddingService: EmbeddingService
+        // Lazy-init the semantic search engine the first time we start, then reuse
+        // it across restarts so the MLX model isn't reloaded on every Run/Stop cycle.
+        let engine: SemanticSearchEngine
+        if let existing = semanticSearchEngine {
+            engine = existing
+        } else {
+            let created = SemanticSearchEngine()
+            semanticSearchEngine = created
+            engine = created
+        }
+
+        // Drive prepare() to completion before constructing the runtime. prepare() is
+        // idempotent — if the model is already loaded it emits a single .done and
+        // returns immediately, so subsequent restarts pay no cost.
         do {
-            embeddingService = try EmbeddingService()
+            for try await progress in engine.prepare() {
+                embeddingPrepareProgress = progress
+                let pct = Int(progress.fractionCompleted * 100)
+                print("[AgentSmith] Embedding model: \(progress.phase) \(pct)%")
+            }
+            embeddingPrepareProgress = nil
         } catch {
-            let msg = "Failed to initialize embedding service: \(error.localizedDescription)"
+            let msg = "Failed to prepare embedding model: \(error.localizedDescription)"
             print("[AgentSmith] \(msg)")
             startupError = msg
+            embeddingPrepareProgress = nil
             return
         }
 
@@ -799,7 +827,7 @@ final class AppViewModel {
             configurations: configurations,
             providerAPITypes: apiTypes,
             agentTuning: tuning,
-            embeddingService: embeddingService,
+            semanticSearchEngine: engine,
             usageStore: usageStore,
             autoAdvanceEnabled: autoRunNextTask,
             autoRunInterruptedTasks: autoRunInterruptedTasks
@@ -881,18 +909,20 @@ final class AppViewModel {
             if !savedMemories.isEmpty || !savedTaskSummaries.isEmpty {
                 await memoryStore.restore(memories: savedMemories, taskSummaries: savedTaskSummaries)
 
-                // Re-embed all memories and task summaries with multi-sentence
-                // Double-precision vectors. Measures and logs wall-clock time.
+                // Re-embed only entries whose stored model ID doesn't match the
+                // current engine — that way we don't pay the full re-embed cost on
+                // every launch, just when the model has changed (or for legacy
+                // entries that were saved before model-tagging existed).
                 let reembedStart = Date()
 
-                let memCount = try await memoryStore.reembedAllMemories()
+                let memCount = try await memoryStore.reembedStaleMemories()
 
                 let allTasks = await taskStore.allTasks()
-                let taskCount = try await memoryStore.reembedTaskSummariesFromTasks(allTasks)
+                let taskCount = try await memoryStore.reembedStaleTaskSummaries(tasks: allTasks)
 
                 let reembedMs = Int(Date().timeIntervalSince(reembedStart) * 1000)
                 if memCount > 0 || taskCount > 0 {
-                    print("[AgentSmith] Re-embedded \(memCount) memories, \(taskCount) task summaries in \(reembedMs)ms")
+                    print("[AgentSmith] Re-embedded \(memCount) stale memories, \(taskCount) stale task summaries in \(reembedMs)ms")
                 }
             }
         } catch {
