@@ -599,7 +599,7 @@ final class AppViewModel {
             // would be lost on disk while the HWM marks them "settled," causing
             // permanent data loss across restarts. Records older than the HWM are
             // considered permanently checked and won't be re-examined next launch.
-            if saveSucceeded, let latestTimestamp = rawRecords.last?.timestamp {
+            if saveSucceeded, let latestTimestamp = rawRecords.map(\.timestamp).max() {
                 UserDefaults.standard.set(latestTimestamp, forKey: cacheHWMKey)
             }
         } catch {
