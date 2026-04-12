@@ -76,9 +76,9 @@ struct MemoryEditorView: View {
                 // was actually searched (the corpus could change between snapshot and
                 // display, e.g. if a memory is saved during the await).
                 let memDocs = viewModel.storedMemories.count
-                let memVectors = viewModel.storedMemories.reduce(0) { $0 + $1.embeddings.count }
+                let memVectors = viewModel.storedMemories.reduce(0) { $0 + ($1.embedding.isEmpty ? 0 : 1) }
                 let taskDocs = viewModel.storedTaskSummaries.count
-                let taskVectors = viewModel.storedTaskSummaries.reduce(0) { $0 + $1.embeddings.count }
+                let taskVectors = viewModel.storedTaskSummaries.reduce(0) { $0 + ($1.embedding.isEmpty ? 0 : 1) }
 
                 let started = Date()
                 do {
@@ -185,14 +185,17 @@ struct MemoryEditorView: View {
     }
 
     /// Idle-state footer text — describes the loaded corpus when no search is active.
+    /// `embedded` is the count of entries whose stored vector is non-empty (i.e.
+    /// searchable). Stale entries waiting for the migration pass to re-embed them
+    /// have an empty `embedding` and won't contribute to semantic search hits.
     private func formatCorpusStats() -> String {
         let memCount = viewModel.storedMemories.count
-        let memVecs = viewModel.storedMemories.reduce(0) { $0 + $1.embeddings.count }
+        let memEmbedded = viewModel.storedMemories.reduce(0) { $0 + ($1.embedding.isEmpty ? 0 : 1) }
         let taskCount = viewModel.storedTaskSummaries.count
-        let taskVecs = viewModel.storedTaskSummaries.reduce(0) { $0 + $1.embeddings.count }
+        let taskEmbedded = viewModel.storedTaskSummaries.reduce(0) { $0 + ($1.embedding.isEmpty ? 0 : 1) }
         let memLabel = memCount == 1 ? "memory" : "memories"
         let taskLabel = taskCount == 1 ? "task summary" : "task summaries"
-        return "\(memCount) \(memLabel) (\(memVecs) vectors)  •  \(taskCount) \(taskLabel) (\(taskVecs) vectors)"
+        return "\(memCount) \(memLabel) (\(memEmbedded) embedded)  •  \(taskCount) \(taskLabel) (\(taskEmbedded) embedded)"
     }
 
     private func formatStats(_ stats: SearchStats) -> String {

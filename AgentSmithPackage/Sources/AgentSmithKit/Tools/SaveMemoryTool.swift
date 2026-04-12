@@ -35,13 +35,20 @@ public struct SaveMemoryTool: AgentTool {
     ]
 
     /// Minimum semantic cosine similarity for two memories to be considered consolidation
-    /// candidates. Applied to `MemorySearchResult.similarity` (which is the raw semantic
-    /// score), independently of the RRF ranking that orders search results.
-    /// Tag overlap is also required (see guard below).
+    /// candidates. Applied to `MemorySearchResult.similarity` (raw cosine from the Qwen3
+    /// embedding) independently of the RRF ranking. With Qwen3, near-duplicate text sits
+    /// at ≥0.85 — that's the floor we want for an automatic merge. Tag overlap is also
+    /// required (see guard below) so even a high-cosine false positive needs an
+    /// agent-supplied agreement before consolidating.
     private static let consolidationThreshold: Double = 0.85
     /// Loose noise floor for the candidate fetch — anything moderately related is OK
     /// because the strict semantic gate above is what actually decides consolidation.
     private static let consolidationCandidateFloor: Double = 0.5
+    /// How many candidates to pull from `searchMemories` before picking the best raw-cosine
+    /// match. Larger than the user-facing search limit because `searchMemories` orders by
+    /// RRF — the actual highest-cosine candidate can sit outside the first few RRF slots,
+    /// so we need a wider window to find it.
+    private static let consolidationCandidateLimit: Int = 20
 
     public init() {}
 
@@ -74,15 +81,15 @@ public struct SaveMemoryTool: AgentTool {
             }
         }
 
-        // Fetch a small candidate pool with a permissive noise floor, then apply the
-        // strict semantic gate ourselves. The search returns results ordered by RRF
-        // (which mixes lexical overlap), so we can't just take `first` — we need the
-        // first candidate whose raw semantic similarity clears `consolidationThreshold`.
+        // Fetch a wide candidate pool with a permissive noise floor, then pick the
+        // candidate with the *highest raw cosine* over `consolidationThreshold`.
+        // `searchMemories` orders by RRF (which mixes lexical overlap), so taking the
+        // first match would miss higher-cosine candidates buried deeper in RRF order.
         let similarMemories: [MemorySearchResult]
         do {
             similarMemories = try await context.memoryStore.searchMemories(
                 query: content,
-                limit: 5,
+                limit: Self.consolidationCandidateLimit,
                 threshold: Self.consolidationCandidateFloor
             )
         } catch {
@@ -90,10 +97,14 @@ public struct SaveMemoryTool: AgentTool {
             similarMemories = []
         }
 
-        if let match = similarMemories.first(where: { $0.similarity >= Self.consolidationThreshold }) {
-            // Require at least one shared tag before consolidating — pure semantic similarity
-            // from local NLEmbedding is too noisy and can produce false-positive merges
-            // between completely unrelated memories.
+        let bestMatch = similarMemories
+            .filter { $0.similarity >= Self.consolidationThreshold }
+            .max(by: { $0.similarity < $1.similarity })
+
+        if let match = bestMatch {
+            // Require at least one shared tag before consolidating — high cosine alone is
+            // not enough, and the agent-supplied tag agreement gives a second axis of
+            // confirmation before two distinct memories get merged.
             let sharedTags = Set(match.memory.tags).intersection(tags)
             guard !tags.isEmpty, !match.memory.tags.isEmpty, !sharedTags.isEmpty else {
                 return try await saveNew(

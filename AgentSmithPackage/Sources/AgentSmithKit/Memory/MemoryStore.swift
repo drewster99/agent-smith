@@ -27,6 +27,24 @@ public struct TaskSummarySearchResult: Sendable {
     public let rrfScore: Double
 }
 
+/// Errors thrown by `MemoryStore` when the embedding backend returns something we
+/// can't safely store or compare.
+public enum MemoryStoreError: Error, CustomStringConvertible {
+    /// The embedding backend returned an empty vector. Storing it would silently
+    /// disable semantic search for the entry.
+    case emptyEmbedding
+    /// The embedding backend returned a vector containing NaN or infinity. Cosine
+    /// math would propagate non-finite values through scoring and break sort order.
+    case nonFiniteEmbedding
+
+    public var description: String {
+        switch self {
+        case .emptyEmbedding: return "Embedding backend returned an empty vector"
+        case .nonFiniteEmbedding: return "Embedding backend returned a non-finite vector (NaN/inf)"
+        }
+    }
+}
+
 /// Combined search results from both memory and task summary corpora.
 public struct SemanticSearchResults: Sendable {
     public let memories: [MemorySearchResult]
@@ -114,6 +132,7 @@ public actor MemoryStore {
         sourceTaskID: UUID? = nil
     ) async throws -> MemoryEntry {
         let vector = try await engine.embed(content)
+        try Self.validate(embedding: vector)
         let entry = MemoryEntry(
             content: content,
             embedding: vector,
@@ -144,6 +163,7 @@ public actor MemoryStore {
         let newModelID: String?
         if content != nil && content != existing.content {
             newEmbedding = try await engine.embed(newContent)
+            try Self.validate(embedding: newEmbedding)
             newModelID = currentModelID
         } else {
             newEmbedding = existing.embedding
@@ -220,6 +240,7 @@ public actor MemoryStore {
     ) async throws -> TaskSummaryEntry {
         let embeddingText = Self.composeEmbeddingText(task: task, summary: summary)
         let vector = try await engine.embed(embeddingText)
+        try Self.validate(embedding: vector)
         let entry = TaskSummaryEntry(
             id: task.id,
             title: task.title,
@@ -250,11 +271,12 @@ public actor MemoryStore {
     /// without completely shutting out lower-ranked items.
     private static let rrfK: Double = 60
 
-    /// Quality floor used by `searchAll` to drop pure-noise candidates before RRF ranking.
-    /// A document must score at least this much on EITHER signal (semantic OR text) to be
-    /// considered. Calibrated against `NLEmbedding` cosines and may need recalibration now
-    /// that we're on Qwen3.
-    private static let searchAllNoiseFloor: Double = 0.55
+    /// Default noise floor on `MAX(semantic, text)` used by all search entry points.
+    /// A document must clear this on at least one signal to be considered. Tuned for
+    /// Qwen3 cosines (typical unrelated-text scores sit well below 0.10) — matches the
+    /// thresholds the per-corpus searches already used and lets RRF do the actual
+    /// ordering instead of relying on a high hardcoded gate.
+    public static let defaultSearchThreshold: Double = 0.10
 
     /// Common English stopwords stripped from query tokens before text scoring.
     private static let englishStopwords: Set<String> = [
@@ -341,6 +363,17 @@ public actor MemoryStore {
         return ranks
     }
 
+    /// Validates a freshly produced embedding before it's persisted or compared.
+    /// Throws `MemoryStoreError` so callers see a real failure instead of silently
+    /// storing a vector that disables semantic search (empty) or breaks sort
+    /// order (NaN/inf propagating through cosine).
+    static func validate(embedding: [Float]) throws {
+        if embedding.isEmpty { throw MemoryStoreError.emptyEmbedding }
+        for value in embedding where !value.isFinite {
+            throw MemoryStoreError.nonFiniteEmbedding
+        }
+    }
+
     /// Returns true when an entry's stored embedding can be compared to the given
     /// query vector — the model ID matches AND the dimensions agree. Used to skip
     /// stale entries during the migration window before re-embed completes.
@@ -361,6 +394,7 @@ public actor MemoryStore {
     ) async throws -> [MemorySearchResult] {
         let start = Date()
         let queryVector = try await engine.embed(query)
+        try Self.validate(embedding: queryVector)
         let queryTokens = Self.queryTokenSet(from: query)
         let results = searchMemoriesInternal(
             queryVector: queryVector,
@@ -425,6 +459,7 @@ public actor MemoryStore {
     ) async throws -> [TaskSummarySearchResult] {
         let start = Date()
         let queryVector = try await engine.embed(query)
+        try Self.validate(embedding: queryVector)
         let queryTokens = Self.queryTokenSet(from: query)
         let results = searchTaskSummariesInternal(
             queryVector: queryVector,
@@ -483,13 +518,18 @@ public actor MemoryStore {
     }
 
     /// Searches both memories and task summaries jointly using Reciprocal Rank Fusion.
+    /// `threshold` is the noise floor on `MAX(semantic, text)` — same semantics as the
+    /// per-corpus searches. RRF handles the ordering, so this just keeps pure-noise
+    /// candidates out of the rank.
     public func searchAll(
         query: String,
         memoryLimit: Int = 3,
-        taskLimit: Int = 3
+        taskLimit: Int = 3,
+        threshold: Double = MemoryStore.defaultSearchThreshold
     ) async throws -> SemanticSearchResults {
         let start = Date()
         let queryVector = try await engine.embed(query)
+        try Self.validate(embedding: queryVector)
         let queryTokens = Self.queryTokenSet(from: query)
 
         enum CandidateRef {
@@ -508,7 +548,7 @@ public actor MemoryStore {
                 semantic = 0
             }
             let text = Self.textScore(queryTokens: queryTokens, document: entry.content)
-            if max(semantic, text) >= Self.searchAllNoiseFloor {
+            if max(semantic, text) >= threshold {
                 refs.append(.memory(entry))
                 semanticScores.append(semantic)
                 textScores.append(text)
@@ -522,7 +562,7 @@ public actor MemoryStore {
                 semantic = 0
             }
             let text = Self.textScore(queryTokens: queryTokens, document: entry.embeddingSourceText)
-            if max(semantic, text) >= Self.searchAllNoiseFloor {
+            if max(semantic, text) >= threshold {
                 refs.append(.task(entry))
                 semanticScores.append(semantic)
                 textScores.append(text)
@@ -542,14 +582,22 @@ public actor MemoryStore {
 
         let order = (0..<refs.count).sorted { rrfScores[$0] > rrfScores[$1] }
 
-        let cap = min(4, max(memoryLimit, taskLimit) + min(memoryLimit, taskLimit))
         var memoryResults: [MemorySearchResult] = []
         var taskResults: [TaskSummarySearchResult] = []
+        memoryResults.reserveCapacity(memoryLimit)
+        taskResults.reserveCapacity(taskLimit)
         let retrievedAt = Date()
         var trackedAnyRetrieval = false
-        for idx in order.prefix(cap) {
+        // Walk the RRF-sorted candidates and fill each bucket up to its caller-specified
+        // limit. Stop iterating once both buckets are full so we don't waste work, but
+        // keep iterating past full buckets of the *other* type rather than truncating
+        // the global list — this is what makes `memoryLimit` and `taskLimit` mean what
+        // they say independently.
+        for idx in order {
+            if memoryResults.count >= memoryLimit && taskResults.count >= taskLimit { break }
             switch refs[idx] {
             case .memory(let entry):
+                guard memoryResults.count < memoryLimit else { continue }
                 memoryResults.append(MemorySearchResult(
                     memory: entry,
                     similarity: semanticScores[idx],
@@ -563,6 +611,7 @@ public actor MemoryStore {
                     trackedAnyRetrieval = true
                 }
             case .task(let entry):
+                guard taskResults.count < taskLimit else { continue }
                 taskResults.append(TaskSummarySearchResult(
                     summary: entry,
                     similarity: semanticScores[idx],
@@ -582,26 +631,32 @@ public actor MemoryStore {
     // MARK: - Re-embedding
 
     /// Re-embeds memories whose `embeddingModelID` doesn't match the current model.
-    /// Skips entries that are deleted or modified mid-pass. Yields between iterations
-    /// (the actor is released by `await`), so concurrent saves/searches still get
-    /// served while migration is in flight.
+    /// Snapshots all stale entries upfront and feeds them to the engine as a single
+    /// batch so MLX can amortize the forward passes (`engine.embed(batch:)` chunks
+    /// internally at `EngineOptions.maxBatchSize`). Entries that were deleted or had
+    /// their content changed during the embed await are skipped on write-back.
     @discardableResult
     public func reembedStaleMemories() async throws -> Int {
         let target = currentModelID
-        let staleIDs = memories.compactMap { (id, entry) -> UUID? in
-            entry.embeddingModelID == target ? nil : id
+        let snapshots: [(id: UUID, content: String)] = memories.compactMap { (id, entry) in
+            entry.embeddingModelID == target ? nil : (id, entry.content)
+        }
+        guard !snapshots.isEmpty else { return 0 }
+
+        let vectors = try await engine.embed(batch: snapshots.map(\.content))
+        guard vectors.count == snapshots.count else {
+            throw MemoryStoreError.emptyEmbedding
         }
 
         var count = 0
-        for id in staleIDs {
-            guard let snapshot = memories[id], snapshot.embeddingModelID != target else {
-                continue
-            }
-            let vector = try await engine.embed(snapshot.content)
+        for (i, snapshot) in snapshots.enumerated() {
+            let vector = vectors[i]
+            try Self.validate(embedding: vector)
             // After the await, re-check the entry — it may have been deleted or
             // updated under us. Only write back if the entry still exists with the
             // same content we embedded.
-            guard let stillCurrent = memories[id], stillCurrent.content == snapshot.content else {
+            guard let stillCurrent = memories[snapshot.id],
+                  stillCurrent.content == snapshot.content else {
                 continue
             }
             let updated = MemoryEntry(
@@ -618,7 +673,7 @@ public actor MemoryStore {
                 lastUpdatedAt: stillCurrent.lastUpdatedAt,
                 lastUpdatedBy: stillCurrent.lastUpdatedBy
             )
-            memories[id] = updated
+            memories[snapshot.id] = updated
             count += 1
         }
         if count > 0 { onChange?() }
@@ -628,36 +683,75 @@ public actor MemoryStore {
     /// Re-embeds task summaries whose `embeddingModelID` doesn't match the current model.
     /// Pulls fresh task data from the provided `tasks` array so the composite
     /// `embeddingSourceText` includes any updates that landed since the summary was
-    /// originally generated.
+    /// originally generated. Summaries whose underlying `AgentTask` has been deleted
+    /// or archived fall back to embedding `title + summary` so they remain searchable
+    /// rather than being permanently stuck with an empty vector.
     @discardableResult
     public func reembedStaleTaskSummaries(tasks: [AgentTask]) async throws -> Int {
+        struct StaleSnapshot {
+            let id: UUID
+            let title: String
+            let summary: String
+            let embeddingText: String
+            let taskCreatedAt: Date
+        }
+
         let target = currentModelID
         let tasksByID = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0) })
-        let staleIDs = taskSummaries.compactMap { (id, entry) -> UUID? in
-            entry.embeddingModelID == target ? nil : id
+        let snapshots: [StaleSnapshot] = taskSummaries.compactMap { (id, entry) in
+            guard entry.embeddingModelID != target else { return nil }
+            let embeddingText: String
+            let taskCreatedAt: Date
+            if let task = tasksByID[id] {
+                embeddingText = Self.composeEmbeddingText(task: task, summary: entry.summary)
+                taskCreatedAt = task.createdAt
+            } else {
+                // Orphan: the underlying task is gone. Embed what we still have so the
+                // summary stays semantically searchable instead of falling back to
+                // text-only forever.
+                embeddingText = "\(entry.title)\n\(entry.summary)"
+                taskCreatedAt = entry.taskCreatedAt
+            }
+            return StaleSnapshot(
+                id: id,
+                title: entry.title,
+                summary: entry.summary,
+                embeddingText: embeddingText,
+                taskCreatedAt: taskCreatedAt
+            )
+        }
+        guard !snapshots.isEmpty else { return 0 }
+
+        let vectors = try await engine.embed(batch: snapshots.map(\.embeddingText))
+        guard vectors.count == snapshots.count else {
+            throw MemoryStoreError.emptyEmbedding
         }
 
         var count = 0
-        for id in staleIDs {
-            guard let snapshot = taskSummaries[id], snapshot.embeddingModelID != target else {
+        for (i, snapshot) in snapshots.enumerated() {
+            let vector = vectors[i]
+            try Self.validate(embedding: vector)
+            // Re-check after the await: a concurrent `saveTaskSummary` may have replaced
+            // the entry with fresh content stamped with the current model ID. If so,
+            // skip — writing our snapshot back would clobber the newer data.
+            guard let stillCurrent = taskSummaries[snapshot.id],
+                  stillCurrent.embeddingModelID != target,
+                  stillCurrent.summary == snapshot.summary,
+                  stillCurrent.title == snapshot.title else {
                 continue
             }
-            guard let task = tasksByID[id] else { continue }
-            let embeddingText = Self.composeEmbeddingText(task: task, summary: snapshot.summary)
-            let vector = try await engine.embed(embeddingText)
-            guard taskSummaries[id] != nil else { continue }
             let updated = TaskSummaryEntry(
                 id: snapshot.id,
                 title: snapshot.title,
                 summary: snapshot.summary,
-                embeddingSourceText: embeddingText,
+                embeddingSourceText: snapshot.embeddingText,
                 embedding: vector,
                 embeddingModelID: target,
-                status: snapshot.status,
-                taskCreatedAt: task.createdAt,
-                createdAt: snapshot.createdAt
+                status: stillCurrent.status,
+                taskCreatedAt: snapshot.taskCreatedAt,
+                createdAt: stillCurrent.createdAt
             )
-            taskSummaries[id] = updated
+            taskSummaries[snapshot.id] = updated
             count += 1
         }
         if count > 0 { onChange?() }

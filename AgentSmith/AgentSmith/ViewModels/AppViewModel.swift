@@ -903,6 +903,20 @@ final class AppViewModel {
 
         // Restore persisted memories and task summaries into the memory store.
         let memoryStore = await newRuntime.memoryStore
+
+        // Wire memory persistence and UI refresh BEFORE the migration runs so the
+        // re-embedded vectors get persisted to disk in the same launch. Wiring this
+        // after the migration would leave the migration's onChange firings unobserved,
+        // and we'd re-pay the re-embed cost on every cold start until something else
+        // mutated the store.
+        await memoryStore.setOnChange { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.persistMemories(memoryStore: memoryStore)
+                await self.refreshMemories()
+            }
+        }
+
         do {
             let savedMemories = try await persistenceManager.loadMemories()
             let savedTaskSummaries = try await persistenceManager.loadTaskSummaries()
@@ -927,16 +941,6 @@ final class AppViewModel {
             }
         } catch {
             print("[AgentSmith] Failed to load/re-embed memories: \(error)")
-        }
-
-        // Wire memory persistence and UI refresh — save to disk and update published
-        // arrays whenever memories change.
-        await memoryStore.setOnChange { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.persistMemories(memoryStore: memoryStore)
-                await self.refreshMemories()
-            }
         }
 
         // Initial population of the memory arrays for the UI.
