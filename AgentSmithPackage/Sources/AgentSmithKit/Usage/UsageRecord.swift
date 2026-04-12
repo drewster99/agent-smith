@@ -87,6 +87,16 @@ public struct UsageRecord: Codable, Identifiable, Sendable {
     /// session concept existed; new records always populate it.
     public let sessionID: UUID?
 
+    // MARK: - Raw provider usage snapshot
+
+    /// Verbatim JSON of the provider's full usage object as returned by the API
+    /// (Anthropic `usage`, Gemini `usageMetadata`, OpenAI-compatible `usage`,
+    /// or a synthesized object for Ollama). Preserved so future code can recover
+    /// fields the parser doesn't yet know about — reasoning tokens, vendor-specific
+    /// cache categories, etc. — without needing access to ephemeral API logs.
+    /// Optional only for records persisted before this field was added.
+    public let rawUsage: String?
+
     public init(
         id: UUID = UUID(),
         timestamp: Date = Date(),
@@ -109,7 +119,8 @@ public struct UsageRecord: Codable, Identifiable, Sendable {
         toolCallArgumentsChars: Int? = nil,
         totalToolExecutionMs: Int? = nil,
         totalToolResultChars: Int? = nil,
-        sessionID: UUID? = nil
+        sessionID: UUID? = nil,
+        rawUsage: String? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -136,6 +147,7 @@ public struct UsageRecord: Codable, Identifiable, Sendable {
         self.totalToolExecutionMs = totalToolExecutionMs
         self.totalToolResultChars = totalToolResultChars
         self.sessionID = sessionID
+        self.rawUsage = rawUsage
     }
 
     /// Creates a copy of this record with specific fields replaced. Used by startup
@@ -149,8 +161,10 @@ public struct UsageRecord: Codable, Identifiable, Sendable {
         configuration: ModelConfiguration?? = nil,
         configurationID: UUID?? = nil,
         cacheReadTokens: Int? = nil,
+        cacheWriteTokens: Int? = nil,
         toolCallCount: Int?? = nil,
-        toolCallNames: [String]?? = nil
+        toolCallNames: [String]?? = nil,
+        rawUsage: String?? = nil
     ) -> UsageRecord {
         // When a new configuration is provided without an explicit configurationID,
         // pass nil so the init's auto-derive logic (`configurationID ?? configuration?.id`)
@@ -176,7 +190,7 @@ public struct UsageRecord: Codable, Identifiable, Sendable {
             inputTokens: inputTokens,
             outputTokens: outputTokens,
             cacheReadTokens: cacheReadTokens ?? self.cacheReadTokens,
-            cacheWriteTokens: cacheWriteTokens,
+            cacheWriteTokens: cacheWriteTokens ?? self.cacheWriteTokens,
             latencyMs: latencyMs,
             preResetInputTokens: preResetInputTokens,
             outputCharCount: outputCharCount,
@@ -185,7 +199,8 @@ public struct UsageRecord: Codable, Identifiable, Sendable {
             toolCallArgumentsChars: toolCallArgumentsChars,
             totalToolExecutionMs: totalToolExecutionMs,
             totalToolResultChars: totalToolResultChars,
-            sessionID: sessionID
+            sessionID: sessionID,
+            rawUsage: rawUsage ?? self.rawUsage
         )
     }
 }

@@ -51,7 +51,7 @@ public struct LLMCallContext: Sendable {
 /// All LLM callers should use this after every `provider.send()` call to ensure
 /// consistent usage tracking across the entire app.
 public enum UsageRecorder {
-    /// Records usage from an LLM response, if token usage data is present.
+    /// Records usage from an LLM response, if token usage data is present.final 
     ///
     /// No-op if `response.usage` is nil (e.g. local models that don't report tokens).
     public static func record(
@@ -87,7 +87,8 @@ public enum UsageRecorder {
             toolCallArgumentsChars: toolCallArgumentsChars,
             totalToolExecutionMs: context.totalToolExecutionMs,
             totalToolResultChars: context.totalToolResultChars,
-            sessionID: context.sessionID
+            sessionID: context.sessionID,
+            rawUsage: usage.rawUsage
         ))
     }
 }

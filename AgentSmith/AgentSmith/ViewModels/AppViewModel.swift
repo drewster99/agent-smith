@@ -460,35 +460,66 @@ final class AppViewModel {
                 }
             }
 
-            // --- Pass 4: Cache token backfill from API response logs ---
-            // TODO: Remove after 05/10/2026 (along with UserDefaults key "cacheTokenBackfillV1Completed")
+            // --- Pass 4: Cache token backfill (incremental, high-water-mark based) ---
             // Gemini and OpenAI-compatible providers didn't parse cache token fields
-            // until now. Scan response logs to recover cacheReadTokens for historical
-            // records. Guarded by a UserDefaults flag because cacheReadTokens is a
-            // non-optional Int (0 could be genuine), so we can't detect "needs backfill"
-            // from the data alone.
+            // until recently. Two sources to recover from, tried in order:
+            //   1. rawUsage field on the record itself — preferred, always correct,
+            //      available for records written after the rawUsage field was added.
+            //   2. API response logs in $TMPDIR/AgentSmith-LLM-Logs/ — fallback, since
+            //      the OS periodically cleans $TMPDIR.
+            // Incremental: tracks a high-water-mark timestamp so each launch only
+            // re-examines records newer than the last successful run. Self-healing
+            // if the app is upgraded mid-stream — unlike the prior boolean-flag guard
+            // which locked out further backfills after one run.
             var cacheBackfilled = 0
-            let cacheBackfillKey = "cacheTokenBackfillV1Completed"
-            if !UserDefaults.standard.bool(forKey: cacheBackfillKey) {
-                // All ProviderAPIType cases that use OpenAICompatibleProvider:
-                let openAICompatibleTypes: Set<String> = [
-                    "openAICompatible", "lmStudio", "mistral", "huggingFace",
-                    "xAI", "zAI", "metaLlama", "alibabaCloud", "openRouter"
-                ]
-                let candidateIndices = rawRecords.indices.filter { i in
+            let cacheHWMKey = "cacheTokenBackfillHighWaterMark"
+            let previousHWM = UserDefaults.standard.object(forKey: cacheHWMKey) as? Date ?? .distantPast
+            // All ProviderAPIType cases that use OpenAICompatibleProvider:
+            let openAICompatibleTypes: Set<String> = [
+                "openAICompatible", "lmStudio", "mistral", "huggingFace",
+                "xAI", "zAI", "metaLlama", "alibabaCloud", "openRouter"
+            ]
+            let candidateIndices = rawRecords.indices.filter { i in
+                let r = rawRecords[i]
+                return (r.providerType == "gemini" || openAICompatibleTypes.contains(r.providerType))
+                    && r.cacheReadTokens == 0
+                    && r.timestamp > previousHWM
+            }
+
+            if !candidateIndices.isEmpty {
+                // Strategy 1: recover from rawUsage on the record itself.
+                var rawUsageBackfilled = 0
+                var unresolvedIndices: [Int] = []
+                for i in candidateIndices {
                     let r = rawRecords[i]
-                    return (r.providerType == "gemini" || openAICompatibleTypes.contains(r.providerType))
-                        && r.cacheReadTokens == 0
+                    // try? justified: rawUsage is best-effort archival data. If a
+                    // record's stored JSON is corrupt, empty, or otherwise unparseable,
+                    // fall through to the log-file fallback (Strategy 2). Throwing
+                    // here would abort the entire migration over one bad record.
+                    guard let rawUsage = r.rawUsage,
+                          let data = rawUsage.data(using: .utf8),
+                          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                        unresolvedIndices.append(i)
+                        continue
+                    }
+                    let cacheRead = Self.extractCacheRead(from: obj, providerType: r.providerType)
+                    if cacheRead > 0 {
+                        rawRecords[i] = r.replacing(cacheReadTokens: cacheRead)
+                        rawUsageBackfilled += 1
+                    }
+                    // Either way, this record had rawUsage — don't fall back to logs for it.
                 }
-                if candidateIndices.isEmpty {
-                    // No Gemini/OpenAI records with zero cache tokens — nothing to
-                    // backfill now or ever. Set the flag to skip the scan on future launches.
-                    UserDefaults.standard.set(true, forKey: cacheBackfillKey)
-                } else if logDirExists {
+                cacheBackfilled += rawUsageBackfilled
+                if rawUsageBackfilled > 0 {
+                    print("[AgentSmith] Migration pass 4 (cache tokens, rawUsage): backfilled \(rawUsageBackfilled) records.")
+                }
+
+                // Strategy 2: fall back to log file scan for the remaining records.
+                if !unresolvedIndices.isEmpty, logDirExists {
                     struct CacheLogEntry { let mtime: TimeInterval; let cacheReadTokens: Int }
                     var logEntries: [CacheLogEntry] = []
-                    // try? justified: same rationale as pass 3 — temp directory files
-                    // may be missing, partially written, or have stale metadata.
+                    // try? justified: temp directory files may be missing, partially
+                    // written, or have stale metadata.
                     let logFiles = (try? fm.contentsOfDirectory(at: logDir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
                     for file in logFiles where file.lastPathComponent.hasSuffix("_response.json") {
                         let name = file.lastPathComponent
@@ -516,10 +547,11 @@ final class AppViewModel {
                     }
                     logEntries.sort { $0.mtime < $1.mtime }
                     let logMtimes = logEntries.map(\.mtime)
-                    print("[AgentSmith] Migration pass 4 (cache tokens): indexed \(logEntries.count) Gemini/OpenAI response logs.")
+                    print("[AgentSmith] Migration pass 4 (cache tokens, logs): indexed \(logEntries.count) Gemini/OpenAI response logs, trying \(unresolvedIndices.count) candidates.")
 
+                    var logBackfilled = 0
                     let matchWindow: TimeInterval = 10
-                    for i in candidateIndices {
+                    for i in unresolvedIndices {
                         let ts = rawRecords[i].timestamp.timeIntervalSinceReferenceDate
                         var lo = logMtimes.startIndex
                         var hi = logMtimes.endIndex
@@ -537,34 +569,38 @@ final class AppViewModel {
                             idx += 1
                         }
                         guard bestIdx >= 0, logEntries[bestIdx].cacheReadTokens > 0 else { continue }
-                        let matched = logEntries[bestIdx]
                         rawRecords[i] = rawRecords[i].replacing(
-                            cacheReadTokens: matched.cacheReadTokens
+                            cacheReadTokens: logEntries[bestIdx].cacheReadTokens
                         )
-                        cacheBackfilled += 1
+                        logBackfilled += 1
                     }
-                    totalModified += cacheBackfilled
-                    if cacheBackfilled > 0 {
-                        print("[AgentSmith] Migration pass 4 (cache tokens): backfilled \(cacheBackfilled) records.")
+                    cacheBackfilled += logBackfilled
+                    if logBackfilled > 0 {
+                        print("[AgentSmith] Migration pass 4 (cache tokens, logs): backfilled \(logBackfilled) records.")
                     }
-                    // Only mark complete when logs were actually available to scan.
-                    // If the OS cleaned $TMPDIR before this launch, we want to retry
-                    // on the next launch when logs may have been regenerated.
-                    UserDefaults.standard.set(true, forKey: cacheBackfillKey)
-                } else {
-                    // candidates exist but log directory is missing
-                    print("[AgentSmith] Migration pass 4 (cache tokens): log directory not found; will retry next launch.")
                 }
             }
+            totalModified += cacheBackfilled
 
             // Single save for all four passes
+            var saveSucceeded = true
             if totalModified > 0 {
                 do {
                     try await persistenceManager.saveUsageRecords(rawRecords)
                     print("[AgentSmith] UsageRecord migrations: saved \(totalModified) total modified records (config=\(configBackfilled), smith=\(smithBackfilled), toolCalls=\(toolCallBackfilled), cache=\(cacheBackfilled)).")
                 } catch {
                     logger.error("Failed to save migrated usage records: \(error.localizedDescription)")
+                    saveSucceeded = false
                 }
+            }
+
+            // Advance the high-water-mark to the most recent record's timestamp,
+            // but only if the save succeeded — otherwise the in-memory backfills
+            // would be lost on disk while the HWM marks them "settled," causing
+            // permanent data loss across restarts. Records older than the HWM are
+            // considered permanently checked and won't be re-examined next launch.
+            if saveSucceeded, let latestTimestamp = rawRecords.last?.timestamp {
+                UserDefaults.standard.set(latestTimestamp, forKey: cacheHWMKey)
             }
         } catch {
             logger.error("Failed to load usage records for migration: \(error.localizedDescription)")
@@ -572,6 +608,12 @@ final class AppViewModel {
 
         // Load persisted usage records.
         await usageStore.load()
+
+        // Diagnostic: warn if any cache-supporting provider has 0% cache hit rate
+        // across a meaningful sample of recent records. A regression where the
+        // provider layer silently stops parsing a token field shows up here as a
+        // canary before users notice missing data in the dashboard.
+        await runUsageHealthCheck()
 
         // TODO: Remove migration after 05/10/2026
         // One-time migration: backfill ChannelMessage context (taskID, sessionID,
@@ -1444,5 +1486,63 @@ final class AppViewModel {
             return utType.preferredMIMEType ?? "application/octet-stream"
         }
         return "application/octet-stream"
+    }
+
+    /// Extracts the cache-read token count from a provider's raw usage object.
+    /// Knows the per-provider field naming so the migration can recover cache
+    /// data from `UsageRecord.rawUsage` without reaching for log files.
+    /// Returns 0 if the field isn't present (which is a valid value).
+    static func extractCacheRead(from usageObject: [String: Any], providerType: String) -> Int {
+        if providerType == "gemini" {
+            return usageObject["cachedContentTokenCount"] as? Int ?? 0
+        }
+        // OpenAI-compatible: cached_tokens lives inside prompt_tokens_details
+        if let details = usageObject["prompt_tokens_details"] as? [String: Any] {
+            return details["cached_tokens"] as? Int ?? 0
+        }
+        return 0
+    }
+
+    /// Sanity-checks recently-recorded usage data and logs warnings for patterns
+    /// that suggest the provider layer is silently dropping fields. Specifically,
+    /// flags providers known to support prompt caching (Anthropic, Gemini, OpenAI-
+    /// compatible families) that show 0% cache hit rate across a meaningful sample
+    /// of recent calls — the signature of a parser regression. A non-fatal canary;
+    /// makes no UI changes, only writes to the console.
+    private func runUsageHealthCheck() async {
+        let allRecords = await usageStore.allRecords()
+        let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60) // last 7 days
+        let recent = allRecords.filter { $0.timestamp >= cutoff }
+        guard recent.count >= 20 else { return }
+
+        // Providers known to support and report prompt caching.
+        let cacheCapableProviders: Set<String> = [
+            "anthropic", "gemini",
+            "openAICompatible", "lmStudio", "mistral", "huggingFace",
+            "xAI", "zAI", "metaLlama", "alibabaCloud", "openRouter"
+        ]
+
+        var byProvider: [String: (calls: Int, totalInput: Int, totalCacheRead: Int, withRawUsage: Int)] = [:]
+        for record in recent where cacheCapableProviders.contains(record.providerType) {
+            // Only count "large" calls — small calls (e.g. summarizer) often don't
+            // cache anything legitimately, which would dilute the signal.
+            guard record.inputTokens >= 5000 else { continue }
+            var entry = byProvider[record.providerType] ?? (0, 0, 0, 0)
+            entry.calls += 1
+            entry.totalInput += record.inputTokens
+            entry.totalCacheRead += record.cacheReadTokens
+            if record.rawUsage != nil { entry.withRawUsage += 1 }
+            byProvider[record.providerType] = entry
+        }
+
+        for (provider, stats) in byProvider where stats.calls >= 20 {
+            let hitRate = Double(stats.totalCacheRead) / Double(stats.totalInput)
+            let rawUsageCoverage = Double(stats.withRawUsage) / Double(stats.calls)
+            if hitRate == 0 {
+                logger.warning("Usage health: provider \(provider) shows 0% cache hit rate across \(stats.calls) recent large calls (\(stats.totalInput) input tokens). Possible parser regression — verify the provider layer still extracts cache token fields. rawUsage coverage: \(Int(rawUsageCoverage * 100))%")
+            } else {
+                logger.info("Usage health: provider \(provider) cache hit rate \(String(format: "%.1f%%", hitRate * 100)) across \(stats.calls) recent calls. rawUsage coverage: \(Int(rawUsageCoverage * 100))%")
+            }
+        }
     }
 }
