@@ -333,8 +333,24 @@ final class AppViewModel {
             }
 
             // --- Pass 2: Smith taskID backfill ---
+            // Two strategies for attributing Smith's nil-taskID records:
+            //   (a) Session-based: find the first task that was attributed in the same
+            //       session and assign all nil-taskID records in that session to it.
+            //       This correctly captures pre-task planning calls.
+            //   (b) Timestamp-window fallback: for records without a sessionID (older
+            //       data), match against each task's startedAt...completedAt window.
             var smithBackfilled = 0
-            if rawRecords.contains(where: { $0.agentRole == .smith && $0.taskID == nil }) {
+            if rawRecords.contains(where: { $0.taskID == nil }) {
+                // Build a map: sessionID → first taskID that appears in that session.
+                var firstTaskBySession: [UUID: UUID] = [:]
+                for record in rawRecords {
+                    guard let sessionID = record.sessionID, let taskID = record.taskID else { continue }
+                    if firstTaskBySession[sessionID] == nil {
+                        firstTaskBySession[sessionID] = taskID
+                    }
+                }
+
+                // Timestamp-window fallback for records without sessionID.
                 struct TaskWindow { let taskID: UUID; let start: Date; let end: Date }
                 var windows: [TaskWindow] = []
                 for task in tasks {
@@ -343,11 +359,20 @@ final class AppViewModel {
                 }
                 windows.sort { $0.start < $1.start }
 
-                for i in rawRecords.indices where rawRecords[i].agentRole == .smith && rawRecords[i].taskID == nil {
+                for i in rawRecords.indices where rawRecords[i].taskID == nil {
+                    // Strategy (a): session-based
+                    if let sessionID = rawRecords[i].sessionID,
+                       let taskID = firstTaskBySession[sessionID] {
+                        rawRecords[i] = rawRecords[i].replacing(taskID: taskID)
+                        smithBackfilled += 1
+                        continue
+                    }
+                    // Strategy (b): timestamp-window fallback (no sessionID)
                     let ts = rawRecords[i].timestamp
-                    guard let match = windows.last(where: { ts >= $0.start && ts <= $0.end }) else { continue }
-                    rawRecords[i] = rawRecords[i].replacing(taskID: match.taskID)
-                    smithBackfilled += 1
+                    if let match = windows.last(where: { ts >= $0.start && ts <= $0.end }) {
+                        rawRecords[i] = rawRecords[i].replacing(taskID: match.taskID)
+                        smithBackfilled += 1
+                    }
                 }
             }
             totalModified += smithBackfilled

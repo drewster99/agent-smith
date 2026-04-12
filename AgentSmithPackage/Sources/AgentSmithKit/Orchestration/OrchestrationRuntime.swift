@@ -170,7 +170,15 @@ public actor OrchestrationRuntime {
             // Capture the most recent user message before stopping — it may contain
             // permissions or instructions that would be lost across the restart.
             let lastUserMessage = await self.captureLastUserMessage()
+            // Capture session ID before stopAll() clears it — needed to attribute
+            // Smith's pre-task planning calls to the task they produced.
+            let priorSessionID = await self.currentSessionID
             await self.stopAll()
+            // Backfill nil-taskID records from the prior session onto the new task.
+            // All agent loops have exited by now, so every record has been written.
+            if let priorSessionID {
+                await self.usageStore.backfillTaskID(taskID, forSession: priorSessionID)
+            }
             await self.start(resumingTaskID: taskID, lastUserMessage: lastUserMessage)
         }
     }

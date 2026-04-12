@@ -555,7 +555,9 @@ struct SpendingDashboardView: View {
 
     private var taskLedger: some View {
         let taskLookup = Dictionary(uniqueKeysWithValues: viewModel.tasks.map { ($0.id, $0) })
-        let byTask = aggregator.byTask(filteredRecords)
+        let grouped = aggregator.byTask(filteredRecords)
+        let planningSummary = grouped[nil]
+        let byTask = grouped
             .compactMap { k, v -> (UUID, String, UsageSummary)? in
                 guard let k else { return nil }
                 let title = taskLookup[k]?.title ?? "Task \(k.uuidString.prefix(8))"
@@ -567,7 +569,7 @@ struct SpendingDashboardView: View {
             Text("Tasks")
                 .font(AppFonts.sectionHeader)
 
-            if byTask.isEmpty {
+            if byTask.isEmpty && planningSummary == nil {
                 Text("No task data in selected range")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -594,6 +596,12 @@ struct SpendingDashboardView: View {
                         .background(hoveredTaskID == taskID ? Color.accentColor.opacity(0.08) : Color.clear)
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                         .onHover { hovering in hoveredTaskID = hovering ? taskID : nil }
+                }
+
+                // Show unattributed planning overhead (Smith calls before any task existed)
+                if let planningSummary, planningSummary.callCount > 0 {
+                    taskRow(title: "Planning overhead", summary: planningSummary)
+                        .foregroundStyle(.secondary)
                 }
             }
         }

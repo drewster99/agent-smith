@@ -61,6 +61,22 @@ public actor UsageStore {
         records.filter { $0.agentRole == role }
     }
 
+    /// Retroactively assigns a task ID to all records in the given session that
+    /// currently have no task attribution. Used when Smith's pre-task planning
+    /// calls should be charged to the task they ultimately produced.
+    public func backfillTaskID(_ taskID: UUID, forSession sessionID: UUID) {
+        var changed = false
+        records = records.map { record in
+            guard record.sessionID == sessionID, record.taskID == nil else { return record }
+            changed = true
+            return record.replacing(taskID: .some(taskID))
+        }
+        if changed {
+            scheduleFlush()
+            logger.info("Backfilled task \(taskID.uuidString.prefix(8)) onto unattributed session records")
+        }
+    }
+
     // MARK: - Private
 
     private func scheduleFlush() {
