@@ -420,6 +420,14 @@ private struct MessageRow: View {
     /// Maximum characters for tool output before the view layer truncates.
     private static let outputTruncationLimit = 500
 
+    /// When collapsed, tool output preview is suppressed unless the first line starts
+    /// with "error" (case-insensitive). Returns that line for display, or nil.
+    private func collapsedErrorPreview(_ content: String) -> String? {
+        let firstLine = content.components(separatedBy: .newlines).first ?? content
+        let trimmed = firstLine.trimmingCharacters(in: .whitespaces)
+        return trimmed.lowercased().hasPrefix("error") ? firstLine : nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             // Sender header: name, timestamp, and private indicator if applicable
@@ -628,7 +636,8 @@ private struct MessageRow: View {
             DiffView(lines: diffLines)
         }
 
-        // Tool output: first line always shown (selectable); full content when expanded
+        // Tool output: suppressed when collapsed unless first line begins with "error".
+        // Full content is revealed on expand.
         if let output = toolOutputMessage {
             if isExpanded {
                 Text(output.content)
@@ -637,9 +646,8 @@ private struct MessageRow: View {
                     .padding(.leading, 12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
-            } else {
-                let firstLine = output.content.components(separatedBy: .newlines).first ?? output.content
-                Text(firstLine)
+            } else if let errorLine = collapsedErrorPreview(output.content) {
+                Text(errorLine)
                     .font(AppFonts.channelBody.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -658,14 +666,16 @@ private struct MessageRow: View {
         return "\(index + 1)/\(count)"
     }
 
-    /// Whether the tool output has more content than the first line.
+    /// Whether the collapsed view is hiding any output content that expanding would reveal.
+    /// Drives the "(show more)" affordance on the tool call line.
     private var toolOutputHasMore: Bool {
-        guard let output = toolOutputMessage else { return false }
-        // file_read always hides its content by default, so any non-empty output
-        // means there is "more" to reveal.
-        if isFileRead { return !output.content.isEmpty }
-        return output.content.contains(where: \.isNewline)
-            || output.content.count > Self.outputTruncationLimit
+        guard let output = toolOutputMessage, !output.content.isEmpty else { return false }
+        // When collapsed we show either nothing or a single error line. If that error
+        // line is the entire output, there is nothing more to reveal.
+        if let errorLine = collapsedErrorPreview(output.content) {
+            return output.content.count > errorLine.count
+        }
+        return true
     }
 
     /// Whether this tool call is `file_read` — its output is raw file content that
@@ -779,9 +789,8 @@ private struct MessageRow: View {
             DiffView(oldContent: oldString, newContent: newString)
         }
 
-        // Tool output: first line always shown (selectable); full content when expanded.
-        // Exception: file_read hides its output entirely when collapsed, since the "first line"
-        // is raw file data (typically "     1  ...") that clutters the channel.
+        // Tool output: suppressed when collapsed unless first line begins with "error".
+        // Full content is revealed on expand.
         if let output = toolOutputMessage {
             if isExpanded {
                 let fullText: String = {
@@ -796,9 +805,8 @@ private struct MessageRow: View {
                     .padding(.leading, 12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
-            } else if !isFileRead {
-                let firstLine = output.content.components(separatedBy: .newlines).first ?? output.content
-                Text(firstLine)
+            } else if !isFileRead, let errorLine = collapsedErrorPreview(output.content) {
+                Text(errorLine)
                     .font(AppFonts.channelBody.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
