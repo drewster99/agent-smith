@@ -4,10 +4,17 @@ import SwiftLLMKit
 import UniformTypeIdentifiers
 import os
 
-/// Bridges the orchestration runtime to the SwiftUI UI.
+/// Bridges one session's orchestration runtime to the SwiftUI UI.
+///
+/// Each session (tab/window) owns its own `AppViewModel`, which owns its own
+/// `OrchestrationRuntime`, `TaskStore`, channel log, and attachments. Shared app-level
+/// state (LLM catalog, speech, billing, memories) lives on `SharedAppState`.
 @Observable
 @MainActor
 final class AppViewModel {
+    let session: Session
+    let shared: SharedAppState
+
     var messages: [ChannelMessage] = []
     var tasks: [AgentTask] = []
     /// Whether the user has restored the persisted history into the transcript.
@@ -20,43 +27,25 @@ final class AppViewModel {
     }
     /// Set when a task action (archive, delete) is blocked; drives the error alert.
     var taskActionError: String? = nil
-    /// Set when a load/decode operation fails during startup; drives the error alert.
-    var startupError: String?
-    /// Set to true after `loadPersistedState()` finishes. Drives the startup validation check.
+    /// Set to true after `loadPersistedState()` finishes for this session.
     var hasLoadedPersistedState = false
-    /// The user's preferred nickname, shown in the UI and injected into system prompts.
-    var nickname: String = ""
-    /// Whether to auto-start when all agent configs are valid on launch.
-    var autoStartEnabled: Bool = {
-        // Default to true if never set
-        if UserDefaults.standard.object(forKey: "autoStartEnabled") == nil { return true }
-        return UserDefaults.standard.bool(forKey: "autoStartEnabled")
-    }() {
-        didSet { UserDefaults.standard.set(autoStartEnabled, forKey: "autoStartEnabled") }
-    }
     /// Whether Smith automatically runs the next pending task after completing one.
-    var autoRunNextTask: Bool = {
-        if UserDefaults.standard.object(forKey: "autoRunNextTask") == nil { return true }
-        return UserDefaults.standard.bool(forKey: "autoRunNextTask")
-    }() {
+    var autoRunNextTask: Bool = true {
         didSet {
-            UserDefaults.standard.set(autoRunNextTask, forKey: "autoRunNextTask")
+            persistSessionStateAsync()
             Task { await runtime?.setAutoAdvance(autoRunNextTask) }
         }
     }
     /// Whether interrupted tasks are automatically resumed on launch.
-    var autoRunInterruptedTasks: Bool = {
-        if UserDefaults.standard.object(forKey: "autoRunInterruptedTasks") == nil { return false }
-        return UserDefaults.standard.bool(forKey: "autoRunInterruptedTasks")
-    }() {
-        didSet { UserDefaults.standard.set(autoRunInterruptedTasks, forKey: "autoRunInterruptedTasks") }
+    var autoRunInterruptedTasks: Bool = false {
+        didSet { persistSessionStateAsync() }
     }
     var isRunning = false
     var isAborted = false
     var abortReason = ""
     var inputText = ""
     var pendingAttachments: [Attachment] = []
-    /// History of sent messages for up/down arrow recall.
+    /// History of sent messages for up/down arrow recall (per-tab).
     private var messageHistory: [String] = []
     /// Current position in message history (-1 = not browsing, 0 = most recent).
     private var historyIndex = -1
@@ -71,162 +60,107 @@ final class AppViewModel {
     var showInspector = false
     /// Dedicated observable store for inspector data, updated via push callbacks.
     let inspectorStore = AgentInspectorStore()
-    /// Current idle poll intervals for each agent role (seconds).
+
+    /// Per-session idle poll intervals for each agent role (seconds).
     var agentPollIntervals: [AgentRole: TimeInterval] = [
         .smith: 20, .brown: 25, .jones: 13
-    ]
-    /// Maximum tool calls per LLM response for each agent role.
+    ] {
+        didSet { persistSessionStateAsync() }
+    }
+    /// Per-session maximum tool calls per LLM response for each agent role.
     var agentMaxToolCalls: [AgentRole: Int] = [
         .smith: 100, .brown: 100, .jones: 100
-    ]
-    /// Message debounce intervals for each agent role (seconds).
+    ] {
+        didSet { persistSessionStateAsync() }
+    }
+    /// Per-session message debounce intervals for each agent role (seconds).
     var agentMessageDebounceIntervals: [AgentRole: TimeInterval] = [
         .smith: 1, .brown: 1, .jones: 1
-    ]
-
-    /// SwiftLLMKit instance managing providers, models, and configurations.
-    let llmKit = LLMKitManager(
-        appIdentifier: Bundle.main.bundleIdentifier ?? "com.agentsmith",
-        keychainServicePrefix: "com.agentsmith.SwiftLLMKit"
-    )
-
-    /// Maps each agent role to a `ModelConfiguration.id`.
-    var agentAssignments: [AgentRole: UUID] = [:]
-
-    /// All stored memories, refreshed when the memory store changes.
-    var storedMemories: [MemoryEntry] = []
-    /// All stored task summaries, refreshed when the memory store changes.
-    var storedTaskSummaries: [TaskSummaryEntry] = []
-
-    /// Semantic search engine, lazily created on first `start()` and reused across
-    /// runtime restarts so we don't reload the MLX model on every Run/Stop cycle.
-    private var semanticSearchEngine: SemanticSearchEngine?
-
-    /// Most recent progress event from `SemanticSearchEngine.prepare()`. `nil` when
-    /// the model is fully ready (after `prepare()` completes) or before the first
-    /// `start()` call. Drives a loading overlay if one is wired in.
-    var embeddingPrepareProgress: PrepareProgress?
-
-    let speechController = SpeechController()
+    ] {
+        didSet { persistSessionStateAsync() }
+    }
+    /// Per-session: maps each agent role to a `ModelConfiguration.id`.
+    var agentAssignments: [AgentRole: UUID] = [:] {
+        didSet { persistSessionStateAsync() }
+    }
+    /// Per-session tool allowlist. Missing/true = enabled. Currently no UI; data model only.
+    var toolsEnabled: [String: Bool] = [:] {
+        didSet { persistSessionStateAsync() }
+    }
 
     private let logger = Logger(subsystem: "com.agentsmith", category: "AppViewModel")
     private var runtime: OrchestrationRuntime?
     /// Kept alive independently of `runtime` so task operations work even when agents aren't running.
     private var taskStore: TaskStore?
     private var channelStreamTask: Task<Void, Never>?
-    private var persistenceManager: PersistenceManager
-    /// Persistent token usage analytics store.
-    private(set) var usageStore: UsageStore
+    let persistenceManager: PersistenceManager
     /// Full message history — a superset of `messages`. Never cleared; always written to disk.
     private var allPersistedMessages: [ChannelMessage] = []
 
-    init() {
-        let pm = PersistenceManager()
-        self.persistenceManager = pm
-        self.usageStore = UsageStore(persistence: pm)
+    init(session: Session, shared: SharedAppState) {
+        self.session = session
+        self.shared = shared
+        self.persistenceManager = PersistenceManager(sessionID: session.id)
     }
 
     // MARK: - Lifecycle
 
-    /// Loads persisted messages, tasks, and LLM configs from disk. Call on app launch.
+    /// Loads session-scoped persisted state. Call when the view model is first created.
+    /// The shared app state (llmKit, memories, usage) is loaded separately by `SharedAppState.loadPersistedState()`.
     func loadPersistedState() async {
-        // Load nickname early so display names and prompts pick it up.
-        nickname = UserDefaults.standard.string(forKey: "userNickname") ?? ""
-        AgentRole.userNickname = nickname
+        // Apply default tunings from shared (bundled defaults) so UI sliders start at something sensible.
+        agentPollIntervals = shared.defaultAgentPollIntervals
+        agentMaxToolCalls = shared.defaultAgentMaxToolCalls
+        agentMessageDebounceIntervals = shared.defaultAgentMessageDebounceIntervals
 
-        // Configure verbose logging for SwiftLLMKit services and providers
-        LLMRequestLogger.logDirectoryName = "AgentSmith-LLM-Logs"
-        llmKit.verboseLogging = true
-        ModelFetchService.verboseLogging = true
-        ModelMetadataService.verboseLogging = true
-
-        // Load SwiftLLMKit state (providers, configs, cached models)
-        llmKit.load()
-
-        // Load bundled defaults — these provide baseline values for tuning and speech.
+        // Load per-session settings (assignments, tunings, flags) if they exist.
         do {
-            let bundled = try DefaultsLoader.loadBundledDefaults()
-            for (role, tuning) in bundled.agentTuning {
-                agentPollIntervals[role] = tuning.pollInterval
-                agentMaxToolCalls[role] = tuning.maxToolCalls
-                agentMessageDebounceIntervals[role] = tuning.messageDebounceInterval
-            }
-            speechController.applyBundledDefaults(bundled.speech)
-
-            // Apply bundled provider/config/assignment defaults exactly once on a fresh
-            // install. We can't use `llmKit.providers.isEmpty` (built-in providers are
-            // seeded on every load) or `llmKit.configurations.isEmpty` (the user might
-            // have intentionally deleted all their configs and we'd silently re-create
-            // them on next launch). A UserDefaults sentinel is the canonical pattern.
-            let didBootstrapKey = "didBootstrapBundledDefaults"
-            if !UserDefaults.standard.bool(forKey: didBootstrapKey) {
-                for provider in bundled.providers {
-                    let apiKey = bundled.providerAPIKeys[provider.id] ?? ""
-                    try llmKit.addProvider(provider, apiKey: apiKey)
+            if let state = try await persistenceManager.loadSessionState() {
+                if !state.agentAssignments.isEmpty {
+                    agentAssignments = state.agentAssignments
                 }
-                for config in bundled.modelConfigurations {
-                    llmKit.addConfiguration(config)
+                if !state.agentPollIntervals.isEmpty {
+                    agentPollIntervals = state.agentPollIntervals
                 }
-                agentAssignments = bundled.agentAssignments
-                UserDefaults.standard.set(true, forKey: didBootstrapKey)
+                if !state.agentMaxToolCalls.isEmpty {
+                    agentMaxToolCalls = state.agentMaxToolCalls
+                }
+                if !state.agentMessageDebounceIntervals.isEmpty {
+                    agentMessageDebounceIntervals = state.agentMessageDebounceIntervals
+                }
+                toolsEnabled = state.toolsEnabled
+                autoRunNextTask = state.autoRunNextTask
+                autoRunInterruptedTasks = state.autoRunInterruptedTasks
+            } else {
+                // No per-session state — fall back to the shared default assignments (from
+                // bundled defaults). New sessions get this the first time they're opened.
+                agentAssignments = shared.defaultAgentAssignments
             }
         } catch {
-            let msg = "No bundled defaults (using hardcoded): \(error)"
-            print("[AgentSmith] \(msg)")
-            startupError = msg
-        }
-
-        // Load persisted message input history
-        messageHistory = UserDefaults.standard.stringArray(forKey: "messageHistory") ?? []
-
-        // Load persisted agent assignments
-        if let saved = UserDefaults.standard.data(forKey: "agentAssignments") {
-            do {
-                agentAssignments = try JSONDecoder().decode([AgentRole: UUID].self, from: saved)
-            } catch {
-                // Migration: before CodingKeyRepresentable conformance, [AgentRole: UUID]
-                // was encoded as an alternating array ["smith", "uuid", "brown", "uuid", ...].
-                // Try to parse that format and re-save in the new dictionary format.
-                do {
-                    let array = try JSONDecoder().decode([String].self, from: saved)
-                    var migrated: [AgentRole: UUID] = [:]
-                    for i in stride(from: 0, to: array.count - 1, by: 2) {
-                        if let role = AgentRole(rawValue: array[i]),
-                           let uuid = UUID(uuidString: array[i + 1]) {
-                            migrated[role] = uuid
-                        }
-                    }
-                    agentAssignments = migrated
-                    print("[AgentSmith] Migrated agent assignments from legacy array format")
-                    persistAgentAssignments()
-                } catch {
-                    let msg = "Failed to decode agent assignments: \(error)"
-                    print("[AgentSmith] \(msg)")
-                    startupError = msg
-                }
-            }
+            logger.error("Failed to load session state: \(error.localizedDescription)")
+            agentAssignments = shared.defaultAgentAssignments
         }
 
         // Prune stale assignments that reference configurations that no longer exist.
-        let validConfigIDs = Set(llmKit.configurations.map(\.id))
+        let validConfigIDs = Set(shared.llmKit.configurations.map(\.id))
         for (role, configID) in agentAssignments {
             if !validConfigIDs.contains(configID) {
                 agentAssignments[role] = nil
-                print("[AgentSmith] Cleared stale agent assignment for \(role.rawValue) → \(configID)")
+                print("[AgentSmith] Cleared stale assignment in session \(session.name) for \(role.rawValue) → \(configID)")
             }
         }
 
+        // Load message history for up-arrow recall (per-session).
+        if let data = UserDefaults.standard.data(forKey: sessionHistoryKey),
+           let history = try? JSONDecoder().decode([String].self, from: data) {
+            messageHistory = history
+        }
+
+        // Load channel log.
         do {
             var savedMessages = try await persistenceManager.loadChannelLog()
-            // One-time migration: strip `fileWriteOldContent` and `fileWriteContent`
-            // metadata from historical tool_request rows. Prior versions of
-            // AgentActor.postToolRequestToChannel captured the full pre- and
-            // post-write file contents into channel metadata for the inline diff
-            // view. We now precompute the diff and store only the resulting
-            // `[DiffLine]` array in `fileWriteDiff` — so the old raw content is
-            // dead weight inflating channel_log.json. Strip it here so the file
-            // shrinks on the next save. Idempotent: if no stale keys are found,
-            // nothing is re-saved.
+            // One-time migration: strip file_write diff metadata. See previous implementation
+            // for rationale — this was a data-format cleanup that's idempotent on rerun.
             var strippedCount = 0
             for i in savedMessages.indices {
                 guard var md = savedMessages[i].metadata else { continue }
@@ -238,17 +172,8 @@ final class AppViewModel {
                     strippedCount += 1
                 }
             }
-            // Re-save inline (not via a detached task) BEFORE assigning the loaded
-            // array to `allPersistedMessages`. The alternative — firing the save
-            // via Task.detached — races with any subsequent `persistMessages()`
-            // that might append a new message after load: PersistenceManager is
-            // an actor so both saves serialize, but actor enqueue order isn't
-            // guaranteed to match the caller-side scheduling order, so the
-            // migration write could clobber a newer write. Awaiting here means
-            // anything posted after load is guaranteed to see the migrated
-            // baseline and save on top of it.
             if strippedCount > 0 {
-                print("[AgentSmith] Stripped stale file_write diff metadata from \(strippedCount) message(s); re-saving channel log.")
+                print("[AgentSmith] Stripped stale file_write diff metadata from \(strippedCount) message(s) in session \(session.name); re-saving channel log.")
                 do {
                     try await persistenceManager.saveChannelLog(savedMessages)
                 } catch {
@@ -260,13 +185,12 @@ final class AppViewModel {
         } catch {
             let msg = "Failed to load channel log: \(error)"
             print("[AgentSmith] \(msg)")
-            startupError = msg
+            shared.startupError = msg
         }
 
+        // Load tasks with status corrections.
         do {
             var savedTasks = try await persistenceManager.loadTasks()
-            // Mark any tasks that were running when the app last exited as interrupted.
-            // The runtime handles auto-resuming interrupted tasks if that setting is enabled.
             var anyStatusChanged = false
             for i in savedTasks.indices {
                 if savedTasks[i].status == .running {
@@ -275,7 +199,6 @@ final class AppViewModel {
                     anyStatusChanged = true
                 }
             }
-            // Archive any completed tasks that have been sitting for more than 4 hours.
             let cutoff = Date().addingTimeInterval(-4 * 3600)
             var anyArchived = false
             for i in savedTasks.indices {
@@ -289,9 +212,6 @@ final class AppViewModel {
             tasks = savedTasks
             if anyArchived || anyStatusChanged { persistTasks() }
 
-            // Populate a standalone task store immediately so task operations (archive, delete, etc.)
-            // work even before the user starts the runtime. start() will replace this with the
-            // runtime's store once the system is running.
             let standaloneStore = TaskStore()
             taskStore = standaloneStore
             await standaloneStore.restore(savedTasks)
@@ -306,479 +226,38 @@ final class AppViewModel {
         } catch {
             let msg = "Failed to load tasks: \(error)"
             print("[AgentSmith] \(msg)")
-            startupError = msg
+            shared.startupError = msg
         }
-
-        // TODO: Remove all four migrations after 05/10/2026
-        // Combined one-shot migration pass over UsageRecords. Loads once, runs four
-        // idempotent backfills in sequence, saves once at the end if anything changed.
-        // 1. Configuration: backfill providerID + full ModelConfiguration snapshot
-        // 2. Smith taskID: match Smith records to the task active at their timestamp
-        // 3. Tool calls: match records to API response logs for toolCallNames
-        // 4. Cache tokens: backfill cacheReadTokens for Gemini/OpenAI records from logs
-        do {
-            var rawRecords = try await persistenceManager.loadUsageRecords()
-            var totalModified = 0
-
-            // --- Pass 1: Configuration backfill ---
-            var configBackfilled = 0
-            for i in rawRecords.indices {
-                let record = rawRecords[i]
-                if record.providerID != nil && record.configuration != nil { continue }
-                guard let configID = record.configurationID,
-                      let config = llmKit.configurations.first(where: { $0.id == configID }),
-                      let provider = llmKit.providers.first(where: { $0.id == config.providerID }),
-                      provider.apiType.rawValue == record.providerType else { continue }
-                rawRecords[i] = record.replacing(
-                    providerID: config.providerID,
-                    configuration: config,
-                    configurationID: configID
-                )
-                configBackfilled += 1
-            }
-            totalModified += configBackfilled
-            if configBackfilled > 0 {
-                print("[AgentSmith] Migration pass 1 (configuration): backfilled \(configBackfilled) records.")
-            }
-
-            // --- Pass 2: Smith taskID backfill ---
-            // Two strategies for attributing Smith's nil-taskID records:
-            //   (a) Session-based: find the first task that was attributed in the same
-            //       session and assign all nil-taskID records in that session to it.
-            //       This correctly captures pre-task planning calls.
-            //   (b) Timestamp-window fallback: for records without a sessionID (older
-            //       data), match against each task's startedAt...completedAt window.
-            var smithBackfilled = 0
-            if rawRecords.contains(where: { $0.taskID == nil }) {
-                // Build a map: sessionID → first taskID that appears in that session.
-                var firstTaskBySession: [UUID: UUID] = [:]
-                for record in rawRecords {
-                    guard let sessionID = record.sessionID, let taskID = record.taskID else { continue }
-                    if firstTaskBySession[sessionID] == nil {
-                        firstTaskBySession[sessionID] = taskID
-                    }
-                }
-
-                // Timestamp-window fallback for records without sessionID.
-                struct TaskWindow { let taskID: UUID; let start: Date; let end: Date }
-                var windows: [TaskWindow] = []
-                for task in tasks {
-                    guard let started = task.startedAt else { continue }
-                    windows.append(TaskWindow(taskID: task.id, start: started, end: task.completedAt ?? task.updatedAt))
-                }
-                windows.sort { $0.start < $1.start }
-
-                for i in rawRecords.indices where rawRecords[i].taskID == nil {
-                    // Strategy (a): session-based
-                    if let sessionID = rawRecords[i].sessionID,
-                       let taskID = firstTaskBySession[sessionID] {
-                        rawRecords[i] = rawRecords[i].replacing(taskID: taskID)
-                        smithBackfilled += 1
-                        continue
-                    }
-                    // Strategy (b): timestamp-window fallback (no sessionID)
-                    let ts = rawRecords[i].timestamp
-                    if let match = windows.last(where: { ts >= $0.start && ts <= $0.end }) {
-                        rawRecords[i] = rawRecords[i].replacing(taskID: match.taskID)
-                        smithBackfilled += 1
-                    }
-                }
-            }
-            totalModified += smithBackfilled
-            if smithBackfilled > 0 {
-                print("[AgentSmith] Migration pass 2 (Smith taskID): backfilled \(smithBackfilled) records.")
-            }
-
-            // Passes 3 and 4 scan $TMPDIR/AgentSmith-LLM-Logs/ response files.
-            // Shared log directory reference — used by both passes.
-            let logDir = FileManager.default.temporaryDirectory.appendingPathComponent("AgentSmith-LLM-Logs")
-            let fm = FileManager.default
-            let logDirExists = fm.fileExists(atPath: logDir.path)
-
-            // --- Pass 3: Tool call backfill from API response logs ---
-            var toolCallBackfilled = 0
-            if rawRecords.contains(where: { $0.toolCallNames == nil }) {
-                if logDirExists {
-                    struct LogEntry { let mtime: TimeInterval; let toolNames: [String] }
-                    var logEntries: [LogEntry] = []
-                    // try? justified: log files live in $TMPDIR and may be partially
-                    // written, cleaned up by the OS, or have stale metadata. Skipping
-                    // unreadable files is the correct degradation for a best-effort backfill.
-                    let logFiles = (try? fm.contentsOfDirectory(at: logDir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-                    for file in logFiles where file.lastPathComponent.hasSuffix("_response.json") {
-                        guard let attrs = try? fm.attributesOfItem(atPath: file.path),
-                              let mdate = attrs[.modificationDate] as? Date,
-                              let data = try? Data(contentsOf: file),
-                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-                        var names: [String] = []
-                        if let choices = json["choices"] as? [[String: Any]] {
-                            for choice in choices {
-                                for tc in ((choice["message"] as? [String: Any])?["tool_calls"] as? [[String: Any]]) ?? [] {
-                                    if let name = (tc["function"] as? [String: Any])?["name"] as? String { names.append(name) }
-                                }
-                            }
-                        } else if let content = json["content"] as? [[String: Any]] {
-                            for block in content where block["type"] as? String == "tool_use" {
-                                if let name = block["name"] as? String { names.append(name) }
-                            }
-                        } else if let candidates = json["candidates"] as? [[String: Any]] {
-                            for cand in candidates {
-                                for part in ((cand["content"] as? [String: Any])?["parts"] as? [[String: Any]]) ?? [] {
-                                    if let fc = part["functionCall"] as? [String: Any], let name = fc["name"] as? String { names.append(name) }
-                                }
-                            }
-                        }
-                        logEntries.append(LogEntry(mtime: mdate.timeIntervalSinceReferenceDate, toolNames: names))
-                    }
-                    logEntries.sort { $0.mtime < $1.mtime }
-                    let logMtimes = logEntries.map(\.mtime)
-                    print("[AgentSmith] Migration pass 3 (tool calls): indexed \(logEntries.count) response logs.")
-
-                    let matchWindow: TimeInterval = 10
-                    for i in rawRecords.indices where rawRecords[i].toolCallNames == nil {
-                        let ts = rawRecords[i].timestamp.timeIntervalSinceReferenceDate
-                        var lo = logMtimes.startIndex
-                        var hi = logMtimes.endIndex
-                        while lo < hi {
-                            let mid = lo + (hi - lo) / 2
-                            if logMtimes[mid] < ts - matchWindow { lo = mid + 1 } else { hi = mid }
-                        }
-                        var bestDist = TimeInterval.infinity
-                        var bestIdx = -1
-                        var idx = lo
-                        while idx < logEntries.count {
-                            let d = abs(logEntries[idx].mtime - ts)
-                            if logEntries[idx].mtime > ts + matchWindow { break }
-                            if d < bestDist { bestDist = d; bestIdx = idx }
-                            idx += 1
-                        }
-                        guard bestIdx >= 0 else { continue }
-                        let matched = logEntries[bestIdx]
-                        rawRecords[i] = rawRecords[i].replacing(
-                            toolCallCount: matched.toolNames.count,
-                            toolCallNames: matched.toolNames
-                        )
-                        toolCallBackfilled += 1
-                    }
-                    totalModified += toolCallBackfilled
-                    if toolCallBackfilled > 0 {
-                        print("[AgentSmith] Migration pass 3 (tool calls): backfilled \(toolCallBackfilled) records.")
-                    }
-                } else {
-                    print("[AgentSmith] Migration pass 3 (tool calls): log directory not found; skipping.")
-                }
-            }
-
-            // --- Pass 4: Cache token backfill (incremental, high-water-mark based) ---
-            // Gemini and OpenAI-compatible providers didn't parse cache token fields
-            // until recently. Two sources to recover from, tried in order:
-            //   1. rawUsage field on the record itself — preferred, always correct,
-            //      available for records written after the rawUsage field was added.
-            //   2. API response logs in $TMPDIR/AgentSmith-LLM-Logs/ — fallback, since
-            //      the OS periodically cleans $TMPDIR.
-            // Incremental: tracks a high-water-mark timestamp so each launch only
-            // re-examines records newer than the last successful run. Self-healing
-            // if the app is upgraded mid-stream — unlike the prior boolean-flag guard
-            // which locked out further backfills after one run.
-            var cacheBackfilled = 0
-            let cacheHWMKey = "cacheTokenBackfillHighWaterMark"
-            let previousHWM = UserDefaults.standard.object(forKey: cacheHWMKey) as? Date ?? .distantPast
-            // All ProviderAPIType cases that use OpenAICompatibleProvider:
-            let openAICompatibleTypes: Set<String> = [
-                "openAICompatible", "lmStudio", "mistral", "huggingFace",
-                "xAI", "zAI", "metaLlama", "alibabaCloud", "openRouter"
-            ]
-            let candidateIndices = rawRecords.indices.filter { i in
-                let r = rawRecords[i]
-                return (r.providerType == "gemini" || openAICompatibleTypes.contains(r.providerType))
-                    && r.cacheReadTokens == 0
-                    && r.timestamp > previousHWM
-            }
-
-            if !candidateIndices.isEmpty {
-                // Strategy 1: recover from rawUsage on the record itself.
-                var rawUsageBackfilled = 0
-                var unresolvedIndices: [Int] = []
-                for i in candidateIndices {
-                    let r = rawRecords[i]
-                    // try? justified: rawUsage is best-effort archival data. If a
-                    // record's stored JSON is corrupt, empty, or otherwise unparseable,
-                    // fall through to the log-file fallback (Strategy 2). Throwing
-                    // here would abort the entire migration over one bad record.
-                    guard let rawUsage = r.rawUsage,
-                          let data = rawUsage.data(using: .utf8),
-                          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                        unresolvedIndices.append(i)
-                        continue
-                    }
-                    let cacheRead = Self.extractCacheRead(from: obj, providerType: r.providerType)
-                    if cacheRead > 0 {
-                        rawRecords[i] = r.replacing(cacheReadTokens: cacheRead)
-                        rawUsageBackfilled += 1
-                    }
-                    // Either way, this record had rawUsage — don't fall back to logs for it.
-                }
-                cacheBackfilled += rawUsageBackfilled
-                if rawUsageBackfilled > 0 {
-                    print("[AgentSmith] Migration pass 4 (cache tokens, rawUsage): backfilled \(rawUsageBackfilled) records.")
-                }
-
-                // Strategy 2: fall back to log file scan for the remaining records.
-                if !unresolvedIndices.isEmpty, logDirExists {
-                    struct CacheLogEntry { let mtime: TimeInterval; let cacheReadTokens: Int }
-                    var logEntries: [CacheLogEntry] = []
-                    // try? justified: temp directory files may be missing, partially
-                    // written, or have stale metadata.
-                    let logFiles = (try? fm.contentsOfDirectory(at: logDir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-                    for file in logFiles where file.lastPathComponent.hasSuffix("_response.json") {
-                        let name = file.lastPathComponent
-                        // Log filenames contain the provider adapter class name (e.g. "_Gemini_",
-                        // "_OpenAI_"). This is a convention set by the LLM logging layer — if
-                        // adapter naming changes, this filter must be updated accordingly.
-                        guard name.contains("_Gemini_") || name.contains("_OpenAI_") else { continue }
-                        guard let attrs = try? fm.attributesOfItem(atPath: file.path),
-                              let mdate = attrs[.modificationDate] as? Date,
-                              let data = try? Data(contentsOf: file),
-                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-
-                        var cacheRead = 0
-                        if name.contains("_Gemini_") {
-                            if let meta = json["usageMetadata"] as? [String: Any] {
-                                cacheRead = meta["cachedContentTokenCount"] as? Int ?? 0
-                            }
-                        } else {
-                            if let usage = json["usage"] as? [String: Any],
-                               let details = usage["prompt_tokens_details"] as? [String: Any] {
-                                cacheRead = details["cached_tokens"] as? Int ?? 0
-                            }
-                        }
-                        logEntries.append(CacheLogEntry(mtime: mdate.timeIntervalSinceReferenceDate, cacheReadTokens: cacheRead))
-                    }
-                    logEntries.sort { $0.mtime < $1.mtime }
-                    let logMtimes = logEntries.map(\.mtime)
-                    print("[AgentSmith] Migration pass 4 (cache tokens, logs): indexed \(logEntries.count) Gemini/OpenAI response logs, trying \(unresolvedIndices.count) candidates.")
-
-                    var logBackfilled = 0
-                    let matchWindow: TimeInterval = 10
-                    for i in unresolvedIndices {
-                        let ts = rawRecords[i].timestamp.timeIntervalSinceReferenceDate
-                        var lo = logMtimes.startIndex
-                        var hi = logMtimes.endIndex
-                        while lo < hi {
-                            let mid = lo + (hi - lo) / 2
-                            if logMtimes[mid] < ts - matchWindow { lo = mid + 1 } else { hi = mid }
-                        }
-                        var bestDist = TimeInterval.infinity
-                        var bestIdx = -1
-                        var idx = lo
-                        while idx < logEntries.count {
-                            let d = abs(logEntries[idx].mtime - ts)
-                            if logEntries[idx].mtime > ts + matchWindow { break }
-                            if d < bestDist { bestDist = d; bestIdx = idx }
-                            idx += 1
-                        }
-                        guard bestIdx >= 0, logEntries[bestIdx].cacheReadTokens > 0 else { continue }
-                        rawRecords[i] = rawRecords[i].replacing(
-                            cacheReadTokens: logEntries[bestIdx].cacheReadTokens
-                        )
-                        logBackfilled += 1
-                    }
-                    cacheBackfilled += logBackfilled
-                    if logBackfilled > 0 {
-                        print("[AgentSmith] Migration pass 4 (cache tokens, logs): backfilled \(logBackfilled) records.")
-                    }
-                }
-            }
-            totalModified += cacheBackfilled
-
-            // Single save for all four passes
-            var saveSucceeded = true
-            if totalModified > 0 {
-                do {
-                    try await persistenceManager.saveUsageRecords(rawRecords)
-                    print("[AgentSmith] UsageRecord migrations: saved \(totalModified) total modified records (config=\(configBackfilled), smith=\(smithBackfilled), toolCalls=\(toolCallBackfilled), cache=\(cacheBackfilled)).")
-                } catch {
-                    logger.error("Failed to save migrated usage records: \(error.localizedDescription)")
-                    saveSucceeded = false
-                }
-            }
-
-            // Advance the high-water-mark to the most recent record's timestamp,
-            // but only if the save succeeded — otherwise the in-memory backfills
-            // would be lost on disk while the HWM marks them "settled," causing
-            // permanent data loss across restarts. Records older than the HWM are
-            // considered permanently checked and won't be re-examined next launch.
-            if saveSucceeded, let latestTimestamp = rawRecords.map(\.timestamp).max() {
-                UserDefaults.standard.set(latestTimestamp, forKey: cacheHWMKey)
-            }
-        } catch {
-            logger.error("Failed to load usage records for migration: \(error.localizedDescription)")
-        }
-
-        // Load persisted usage records.
-        await usageStore.load()
-
-        // Diagnostic: warn if any cache-supporting provider has 0% cache hit rate
-        // across a meaningful sample of recent records. A regression where the
-        // provider layer silently stops parsing a token field shows up here as a
-        // canary before users notice missing data in the dashboard.
-        await runUsageHealthCheck()
-
-        // TODO: Remove migration after 05/10/2026
-        // One-time migration: backfill ChannelMessage context (taskID, sessionID,
-        // providerID, modelID, configuration) on historical messages persisted
-        // before those fields existed. For each message with no context stamped,
-        // find the nearest UsageRecord within a 10-second window whose agentRole
-        // matches the message's sender (or recipient for user-to-agent messages)
-        // and inherit its context. Reports coverage stats in four buckets:
-        //   - backfilled: a matching UsageRecord was found and its context copied
-        //   - alreadyStamped: at least one context field was already populated
-        //   - unmatched: had no context, expected an agent, no record within 10s
-        //   - notJoinable: no way to determine agent context (pure system messages,
-        //                  broadcast user messages with no agent recipient)
-        // Idempotent: messages with alreadyStamped context are skipped on re-run.
-        do {
-            let usageRecords = await usageStore.allRecords()
-            // Sort records by timestamp once for early-exit when scanning.
-            // Records are typically already in append order, but we sort defensively.
-            let sortedRecords = usageRecords.sorted { $0.timestamp < $1.timestamp }
-
-            var savedMessages = allPersistedMessages
-            var backfilled = 0
-            var alreadyStamped = 0
-            var unmatched = 0
-            var notJoinable = 0
-            let joinWindowSeconds: TimeInterval = 10
-
-            for i in savedMessages.indices {
-                let m = savedMessages[i]
-
-                // Skip if any context field is already populated (idempotent re-runs).
-                let hasAnyContext = m.taskID != nil
-                    || m.sessionID != nil
-                    || m.providerID != nil
-                    || m.modelID != nil
-                    || m.configuration != nil
-                if hasAnyContext {
-                    alreadyStamped += 1
-                    continue
-                }
-
-                // Determine which agent role's UsageRecord we should match against.
-                let expectedRole: AgentRole?
-                switch m.sender {
-                case .agent(let role):
-                    expectedRole = role
-                case .user:
-                    if case .agent(let role) = m.recipient {
-                        expectedRole = role
-                    } else {
-                        // Broadcast user messages with no agent recipient can't be
-                        // unambiguously attributed to a single agent. Skip the join.
-                        notJoinable += 1
-                        continue
-                    }
-                case .system:
-                    // System messages don't carry agent-scoped context by design.
-                    notJoinable += 1
-                    continue
-                }
-
-                let lowerBound = m.timestamp.addingTimeInterval(-joinWindowSeconds)
-                let upperBound = m.timestamp.addingTimeInterval(joinWindowSeconds)
-                var bestRecord: UsageRecord?
-                var bestDistance = TimeInterval.infinity
-                // Scan is O(n) over the filtered window; acceptable for the
-                // one-shot startup pass even with tens of thousands of records.
-                for record in sortedRecords {
-                    if record.timestamp < lowerBound { continue }
-                    if record.timestamp > upperBound { break }
-                    if let expected = expectedRole, record.agentRole != expected {
-                        continue
-                    }
-                    let dist = abs(record.timestamp.timeIntervalSince(m.timestamp))
-                    if dist < bestDistance {
-                        bestDistance = dist
-                        bestRecord = record
-                    }
-                }
-
-                guard let match = bestRecord else {
-                    unmatched += 1
-                    continue
-                }
-
-                savedMessages[i].taskID = match.taskID
-                savedMessages[i].sessionID = match.sessionID
-                savedMessages[i].providerID = match.providerID
-                savedMessages[i].modelID = match.modelID
-                savedMessages[i].configuration = match.configuration
-                backfilled += 1
-            }
-
-            let total = savedMessages.count
-            let pct: (Int) -> String = { n in
-                guard total > 0 else { return "0.0%" }
-                return String(format: "%.1f%%", Double(n) / Double(total) * 100)
-            }
-            print("[AgentSmith] ChannelMessage context migration: total=\(total), backfilled=\(backfilled) (\(pct(backfilled))), alreadyStamped=\(alreadyStamped) (\(pct(alreadyStamped))), unmatched=\(unmatched) (\(pct(unmatched))), notJoinable=\(notJoinable) (\(pct(notJoinable)))")
-
-            if backfilled > 0 {
-                do {
-                    try await persistenceManager.saveChannelLog(savedMessages)
-                    allPersistedMessages = savedMessages
-                    print("[AgentSmith] ChannelMessage context migration: re-saved channel_log.json with \(backfilled) backfilled messages (\(pct(backfilled)) of total).")
-                } catch {
-                    logger.error("Failed to save migrated channel log: \(error.localizedDescription)")
-                }
-            }
-        }
-
-        // Load user model metadata overrides and inject into LLMKitManager.
-        do {
-            let overrides = try await persistenceManager.loadUserModelOverrides()
-            if !overrides.isEmpty {
-                llmKit.setUserOverrides(overrides)
-            }
-        } catch {
-            logger.error("Failed to load user model overrides: \(error.localizedDescription)")
-        }
-
-        // Refresh model catalog (YYYYMMDD-gated)
-        await llmKit.refreshIfNeeded()
-        llmKit.validateConfigurations()
 
         hasLoadedPersistedState = true
     }
 
-    /// Starts the system with current LLM configs.
+    /// Starts this session's runtime with its per-session agent assignments.
     func start() async {
         guard !isRunning else { return }
         guard !isAborted else { return }
 
-        // Validate that all required roles have assignments before starting.
         let missingRoles = AgentRole.requiredRoles.filter { agentAssignments[$0] == nil }
         if !missingRoles.isEmpty {
             let names = missingRoles.map(\.displayName).joined(separator: ", ")
-            startupError = "Cannot start — missing configuration for: \(names)"
+            shared.startupError = "Cannot start — missing configuration for: \(names)"
             return
         }
 
-        // Resolve agent assignments into providers and configurations.
         var providers: [AgentRole: any LLMProvider] = [:]
         var configurations: [AgentRole: ModelConfiguration] = [:]
         var apiTypes: [AgentRole: ProviderAPIType] = [:]
         for role in AgentRole.allCases {
             guard let configID = agentAssignments[role] else { continue }
             do {
-                providers[role] = try llmKit.makeProvider(for: configID)
+                providers[role] = try shared.llmKit.makeProvider(for: configID)
             } catch {
-                startupError = "Failed to create provider for \(role.displayName): \(error.localizedDescription)"
+                shared.startupError = "Failed to create provider for \(role.displayName): \(error.localizedDescription)"
                 return
             }
-            if let modelConfig = llmKit.configurations.first(where: { $0.id == configID }) {
+            if let modelConfig = shared.llmKit.configurations.first(where: { $0.id == configID }) {
                 configurations[role] = modelConfig
-                if let modelProvider = llmKit.providers.first(where: { $0.id == modelConfig.providerID }) {
+                if let modelProvider = shared.llmKit.providers.first(where: { $0.id == modelConfig.providerID }) {
                     apiTypes[role] = modelProvider.apiType
                 }
             }
@@ -793,32 +272,25 @@ final class AppViewModel {
             )
         }
 
-        // Lazy-init the semantic search engine the first time we start, then reuse
-        // it across restarts so the MLX model isn't reloaded on every Run/Stop cycle.
+        // Prepare the shared semantic engine (idempotent — only pays cost on first start across all sessions).
         let engine: SemanticSearchEngine
-        if let existing = semanticSearchEngine {
-            engine = existing
-        } else {
-            let created = SemanticSearchEngine()
-            semanticSearchEngine = created
-            engine = created
-        }
-
-        // Drive prepare() to completion before constructing the runtime. prepare() is
-        // idempotent — if the model is already loaded it emits a single .done and
-        // returns immediately, so subsequent restarts pay no cost.
         do {
-            for try await progress in engine.prepare() {
-                embeddingPrepareProgress = progress
-                let pct = Int(progress.fractionCompleted * 100)
-                print("[AgentSmith] Embedding model: \(progress.phase) \(pct)%")
-            }
-            embeddingPrepareProgress = nil
+            engine = try await shared.ensureSemanticEngine()
         } catch {
             let msg = "Failed to prepare embedding model: \(error.localizedDescription)"
             print("[AgentSmith] \(msg)")
-            startupError = msg
-            embeddingPrepareProgress = nil
+            shared.startupError = msg
+            return
+        }
+
+        // Ensure shared memory store is loaded (runs re-embedding migrations exactly once).
+        let sharedMemoryStore: MemoryStore
+        do {
+            sharedMemoryStore = try await shared.ensureMemoryStore()
+        } catch {
+            let msg = "Failed to prepare memory store: \(error.localizedDescription)"
+            print("[AgentSmith] \(msg)")
+            shared.startupError = msg
             return
         }
 
@@ -828,20 +300,19 @@ final class AppViewModel {
             providerAPITypes: apiTypes,
             agentTuning: tuning,
             semanticSearchEngine: engine,
-            usageStore: usageStore,
+            usageStore: shared.usageStore,
             autoAdvanceEnabled: autoRunNextTask,
-            autoRunInterruptedTasks: autoRunInterruptedTasks
+            autoRunInterruptedTasks: autoRunInterruptedTasks,
+            memoryStore: sharedMemoryStore
         )
         runtime = newRuntime
         isRunning = true
 
-        // Restore persisted tasks into the runtime's task store
         if !tasks.isEmpty {
             let tasksToRestore = tasks
             await newRuntime.taskStore.restore(tasksToRestore)
         }
 
-        // Register abort callback
         await newRuntime.setOnAbort { [weak self] reason in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -855,7 +326,6 @@ final class AppViewModel {
             }
         }
 
-        // Track which agents are actively waiting for an LLM response
         await newRuntime.setOnProcessingStateChange { [weak self] role, isProcessing in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -867,100 +337,48 @@ final class AppViewModel {
             }
         }
 
-        // Capture tool names from each agent when it comes online
         await newRuntime.setOnAgentStarted { [weak self] role, toolNames in
             Task { @MainActor [weak self] in
                 self?.agentToolNames[role] = toolNames
             }
         }
 
-        // Subscribe to channel messages
         let channel = await newRuntime.channel
         channelStreamTask = Task { @MainActor [weak self] in
             for await message in await channel.stream() {
                 guard let self else { break }
                 self.messages.append(message)
                 self.allPersistedMessages.append(message)
-                self.speechController.handle(message)
+                self.shared.speechController.handle(message)
                 self.persistMessages()
             }
         }
 
-        // Subscribe to task changes — keep a strong reference so operations work post-stop
-        let taskStore = await newRuntime.taskStore
-        self.taskStore = taskStore
-        await taskStore.setOnChange { [weak self] in
+        let liveTaskStore = await newRuntime.taskStore
+        self.taskStore = liveTaskStore
+        await liveTaskStore.setOnChange { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                let allTasks = await taskStore.allTasks()
+                let allTasks = await liveTaskStore.allTasks()
                 self.tasks = allTasks
                 self.persistTasks()
             }
         }
 
-        // Archive any completed tasks older than 4 hours now that the store is live.
-        await taskStore.archiveStaleCompleted()
+        await liveTaskStore.archiveStaleCompleted()
 
-        // Restore persisted memories and task summaries into the memory store.
-        let memoryStore = await newRuntime.memoryStore
-
-        // Wire memory persistence and UI refresh BEFORE the migration runs so the
-        // re-embedded vectors get persisted to disk in the same launch. Wiring this
-        // after the migration would leave the migration's onChange firings unobserved,
-        // and we'd re-pay the re-embed cost on every cold start until something else
-        // mutated the store.
-        await memoryStore.setOnChange { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.persistMemories(memoryStore: memoryStore)
-                await self.refreshMemories()
-            }
-        }
-
-        do {
-            let savedMemories = try await persistenceManager.loadMemories()
-            let savedTaskSummaries = try await persistenceManager.loadTaskSummaries()
-            if !savedMemories.isEmpty || !savedTaskSummaries.isEmpty {
-                await memoryStore.restore(memories: savedMemories, taskSummaries: savedTaskSummaries)
-
-                // Re-embed only entries whose stored model ID doesn't match the
-                // current engine — that way we don't pay the full re-embed cost on
-                // every launch, just when the model has changed (or for legacy
-                // entries that were saved before model-tagging existed).
-                let reembedStart = Date()
-
-                let memCount = try await memoryStore.reembedStaleMemories()
-
-                let allTasks = await taskStore.allTasks()
-                let taskCount = try await memoryStore.reembedStaleTaskSummaries(tasks: allTasks)
-
-                let reembedMs = Int(Date().timeIntervalSince(reembedStart) * 1000)
-                if memCount > 0 || taskCount > 0 {
-                    print("[AgentSmith] Re-embedded \(memCount) stale memories, \(taskCount) stale task summaries in \(reembedMs)ms")
-                }
-            }
-        } catch {
-            print("[AgentSmith] Failed to load/re-embed memories: \(error)")
-        }
-
-        // Initial population of the memory arrays for the UI.
-        await refreshMemories()
-
-        // Push LLM turn records from agents into the inspector store incrementally.
         await newRuntime.setOnTurnRecorded { [weak self] role, turn in
             Task { @MainActor [weak self] in
                 self?.inspectorStore.appendTurn(turn, for: role)
             }
         }
 
-        // Push live conversation history from agents into the inspector store.
         await newRuntime.setOnContextChanged { [weak self] role, messages in
             Task { @MainActor [weak self] in
                 self?.inspectorStore.updateLiveContext(messages, for: role)
             }
         }
 
-        // Push security evaluation records into the inspector store incrementally.
         await newRuntime.setOnEvaluationRecorded { [weak self] record in
             Task { @MainActor [weak self] in
                 self?.inspectorStore.appendEvaluation(record)
@@ -975,7 +393,6 @@ final class AppViewModel {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !pendingAttachments.isEmpty else { return }
 
-        // Handle slash commands locally before sending to the runtime.
         if pendingAttachments.isEmpty, text.lowercased() == "/clear" {
             inputText = ""
             clearLog()
@@ -988,9 +405,7 @@ final class AppViewModel {
         inputText = ""
         pendingAttachments = []
 
-        // Record non-empty text in message history for up/down arrow recall.
         if !text.isEmpty {
-            // Remove duplicate if the same message was sent most recently.
             if messageHistory.last != text {
                 messageHistory.append(text)
             }
@@ -999,10 +414,9 @@ final class AppViewModel {
             }
             historyIndex = -1
             historyStash = ""
-            UserDefaults.standard.set(messageHistory, forKey: "messageHistory")
+            persistMessageHistory()
         }
 
-        // Save attachment files to disk
         for attachment in attachments {
             Task.detached { [persistenceManager, logger] in
                 do {
@@ -1016,34 +430,29 @@ final class AppViewModel {
         await runtime.sendUserMessage(text, attachments: attachments)
     }
 
-    /// Navigates through message history. Call with `.up` to recall older messages, `.down` for newer.
     enum HistoryDirection { case up, down }
 
     @discardableResult
     func navigateHistory(_ direction: HistoryDirection) -> Bool {
         guard !messageHistory.isEmpty else { return false }
-
         switch direction {
         case .up:
             if historyIndex == -1 {
-                // Entering history mode — stash whatever the user was typing.
                 historyStash = inputText
                 historyIndex = messageHistory.count - 1
             } else if historyIndex > 0 {
                 historyIndex -= 1
             } else {
-                return false // already at oldest
+                return false
             }
             inputText = messageHistory[historyIndex]
             return true
-
         case .down:
-            guard historyIndex >= 0 else { return false } // not in history mode
+            guard historyIndex >= 0 else { return false }
             if historyIndex < messageHistory.count - 1 {
                 historyIndex += 1
                 inputText = messageHistory[historyIndex]
             } else {
-                // Past the newest — restore the stash and exit history mode.
                 historyIndex = -1
                 inputText = historyStash
                 historyStash = ""
@@ -1052,13 +461,11 @@ final class AppViewModel {
         }
     }
 
-    /// Sends a private message from the user directly to the specified agent role.
     func sendDirectMessage(to role: AgentRole, text: String) async {
         guard let runtime else { return }
         await runtime.sendDirectMessage(to: role, text: text)
     }
 
-    /// Replaces the system prompt for the active agent with the given role.
     func updateSystemPrompt(for role: AgentRole, prompt: String) async {
         guard let runtime else { return }
         await runtime.updateSystemPrompt(for: role, prompt: prompt)
@@ -1116,7 +523,6 @@ final class AppViewModel {
         await taskStore?.stop(id: id)
     }
 
-    /// Soft-deletes the failed task (a new one will be created on retry) and asks Smith to retry.
     func retryTask(_ task: AgentTask) async {
         await taskStore?.softDelete(id: task.id)
         await sendDirectMessage(
@@ -1125,7 +531,6 @@ final class AppViewModel {
         )
     }
 
-    /// Archives the completed task (a new one will be created) and asks Smith to run it again.
     func runTaskAgain(_ task: AgentTask) async {
         await taskStore?.archive(id: task.id)
         await sendDirectMessage(
@@ -1134,31 +539,32 @@ final class AppViewModel {
         )
     }
 
-    /// Updates the idle poll interval for the active agent with the given role.
     func updatePollInterval(for role: AgentRole, interval: TimeInterval) async {
         agentPollIntervals[role] = interval
         guard let runtime else { return }
         await runtime.updatePollInterval(for: role, interval: interval)
     }
 
-    /// Updates the maximum tool calls per LLM response for the active agent with the given role.
     func updateMaxToolCalls(for role: AgentRole, count: Int) async {
         agentMaxToolCalls[role] = count
         guard let runtime else { return }
         await runtime.updateMaxToolCalls(for: role, count: count)
     }
 
-    /// Stops the first running task, if any. Intended for ESC-key quick-stop.
     func stopCurrentTask() async {
         guard let runningTask = tasks.first(where: { $0.status == .running }) else { return }
         await stopTask(id: runningTask.id)
     }
 
-    /// Master kill switch — stops everything immediately.
+    /// Stops this session only. For app-wide Emergency Stop, SessionManager iterates all sessions.
+    ///
+    /// Does NOT call `shared.speechController.stopAll()` because the SpeechController is
+    /// shared across sessions — stopping it would silence speech in other running tabs.
+    /// Any in-progress utterance from this session's agents will finish naturally; no new
+    /// utterances get queued after this point because the runtime has stopped.
     func stopAll() async {
         guard let runtime else { return }
         await runtime.stopAll()
-        speechController.stopAll()
         isRunning = false
         processingRoles.removeAll()
         agentToolNames.removeAll()
@@ -1167,8 +573,6 @@ final class AppViewModel {
         channelStreamTask = nil
         self.runtime = nil
 
-        // Mark any tasks that were mid-flight as interrupted.
-        // Read from the store directly to get the most current state after agents have stopped.
         if let store = taskStore {
             let liveTasks = await store.allTasks()
             for task in liveTasks where task.status == .running {
@@ -1176,25 +580,38 @@ final class AppViewModel {
             }
         }
 
-        // Persist final state
-        persistMessages()
-        persistTasks()
-        await usageStore.flush()
+        // Flush persistence synchronously here so that callers (notably SessionManager.closeSession,
+        // which deletes the session directory immediately after) can rely on no pending writes
+        // racing the delete. The hot-path persists during message streaming still use detached
+        // tasks for performance; this is the quiescent, stop-of-world flush.
+        await flushPersistence()
+        await shared.usageStore.flush()
     }
 
-    /// Clears the abort state and allows restart.
+    /// Awaits any pending channel-log and tasks writes so the on-disk state reflects the
+    /// current in-memory state before `stopAll` returns. Called at the end of `stopAll` so
+    /// that session deletion can proceed without racing detached saves.
+    private func flushPersistence() async {
+        let snapshot = allPersistedMessages
+        let tasksToSave = tasks
+        do {
+            try await persistenceManager.saveChannelLog(snapshot)
+            try await persistenceManager.saveTasks(tasksToSave)
+        } catch {
+            logger.error("Failed to flush persistence on stop: \(error.localizedDescription)")
+        }
+    }
+
     func resetAbort() {
         isAborted = false
         abortReason = ""
     }
 
-    /// Clears the message display and inspector snapshots. The full history is always retained on disk.
     func clearLog() {
         messages.removeAll()
         inspectorStore.clearAll()
     }
 
-    /// Prepends the persisted history before the current live messages.
     func restoreHistory() {
         let currentIDs = Set(messages.map(\.id))
         let restoredHistory = allPersistedMessages.filter { !currentIDs.contains($0.id) }
@@ -1204,17 +621,12 @@ final class AppViewModel {
 
     // MARK: - Attachments
 
-    /// Processes file URLs from a file picker, clipboard paste, or drag-and-drop.
     func addAttachments(from urls: [URL]) {
         for url in urls {
-            // Security-scoped access is needed for fileImporter URLs (sandboxed).
-            // Clipboard and drag-drop URLs are not security-scoped, so this returns false —
-            // we still proceed and attempt to read.
             let didAccessScope = url.startAccessingSecurityScopedResource()
             defer {
                 if didAccessScope { url.stopAccessingSecurityScopedResource() }
             }
-
             let data: Data
             do {
                 data = try Data(contentsOf: url)
@@ -1222,7 +634,6 @@ final class AppViewModel {
                 print("[AgentSmith] Failed to read attachment \(url.lastPathComponent): \(error)")
                 continue
             }
-
             let mimeType = Self.mimeType(for: url)
             let attachment = Attachment(
                 filename: url.lastPathComponent,
@@ -1234,12 +645,10 @@ final class AppViewModel {
         }
     }
 
-    /// Removes a pending attachment before sending.
     func removePendingAttachment(id: UUID) {
         pendingAttachments.removeAll { $0.id == id }
     }
 
-    /// Adds an attachment from raw data (e.g. clipboard paste).
     func addAttachment(data: Data, filename: String, mimeType: String) {
         let attachment = Attachment(
             filename: filename,
@@ -1250,20 +659,14 @@ final class AppViewModel {
         pendingAttachments.append(attachment)
     }
 
-    /// Reads image or file data from the pasteboard and adds as pending attachments.
-    /// Returns `true` if anything was pasted.
     func pasteFromClipboard() -> Bool {
         let pasteboard = NSPasteboard.general
-
-        // 1. Try file URLs first (covers copied files from Finder)
         if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [
             .urlReadingFileURLsOnly: true
         ]) as? [URL], !urls.isEmpty {
             addAttachments(from: urls)
             return true
         }
-
-        // 2. Try image data (covers screenshots, copied images)
         if let tiffData = pasteboard.data(forType: .tiff),
            let bitmap = NSBitmapImageRep(data: tiffData),
            let pngData = bitmap.representation(using: .png, properties: [:]) {
@@ -1274,12 +677,9 @@ final class AppViewModel {
             )
             return true
         }
-
         return false
     }
 
-    /// Generates a filesystem-safe timestamp string for auto-named attachments.
-    /// Uses a fixed POSIX locale so output is deterministic regardless of user settings.
     static func attachmentTimestamp() -> String {
         attachmentTimestampFormatter.string(from: Date())
     }
@@ -1291,74 +691,60 @@ final class AppViewModel {
         return f
     }()
 
-    // MARK: - Persistence
+    // MARK: - Configuration helpers (per-session)
 
     /// Resolves each agent role to its assigned ModelConfiguration, for inspector display.
     var resolvedAgentConfigs: [AgentRole: ModelConfiguration] {
         var result: [AgentRole: ModelConfiguration] = [:]
         for (role, configID) in agentAssignments {
-            if let config = llmKit.configurations.first(where: { $0.id == configID }) {
+            if let config = shared.llmKit.configurations.first(where: { $0.id == configID }) {
                 result[role] = config
             }
         }
         return result
     }
 
-    /// Whether all agent roles have valid assigned configurations.
+    /// Whether all required agent roles in this session have valid assigned configurations.
     var allAgentConfigsValid: Bool {
         AgentRole.requiredRoles.allSatisfy { role in
             guard let configID = agentAssignments[role],
-                  let config = llmKit.configurations.first(where: { $0.id == configID }),
+                  let config = shared.llmKit.configurations.first(where: { $0.id == configID }),
                   config.isValid else { return false }
             return true
         }
     }
 
-    /// Deletes a model configuration and unassigns any agent roles that reference it.
-    func deleteConfiguration(id: UUID) {
+    /// Clears any assignment in this session that references the deleted config ID.
+    func clearAssignment(forConfigID id: UUID) {
         for (role, configID) in agentAssignments where configID == id {
             agentAssignments[role] = nil
         }
-        llmKit.deleteConfiguration(id: id)
     }
 
-    /// Returns the `ModelConfiguration` dedicated to the given agent role, creating or
-    /// cloning one as needed so that edits to it never affect another role's settings.
+    /// Returns a `ModelConfiguration` dedicated to this role within this session.
     ///
-    /// Behavior:
-    /// 1. If the role has no assignment, creates a new empty configuration, assigns it,
-    ///    and returns it.
-    /// 2. If the assigned configuration is also assigned to a different role, clones it
-    ///    (with a fresh ID), reassigns the current role to the clone, and returns the clone.
-    /// 3. Otherwise returns the existing assigned configuration unchanged.
-    ///
-    /// The agent-centric Model section in `AgentConfigSheet` calls this on appear so that
-    /// any edits go to a config owned exclusively by this role. Always returns a config —
-    /// the starter path falls through unconditionally if no assignment exists.
+    /// Creates or clones as needed so edits to the returned config don't affect this session's
+    /// other roles. Edits *may* affect roles in other sessions that point at the same config —
+    /// the config catalog is global and sessions can intentionally share configs. Users wanting
+    /// full isolation can duplicate the config via Settings → Configurations.
     @discardableResult
     func ensureDedicatedConfig(for role: AgentRole) -> ModelConfiguration {
         if let existingID = agentAssignments[role],
-           let existing = llmKit.configurations.first(where: { $0.id == existingID }) {
-            let sharedWith = agentAssignments.filter { $0.value == existingID && $0.key != role }
-            if sharedWith.isEmpty {
+           let existing = shared.llmKit.configurations.first(where: { $0.id == existingID }) {
+            let sharedWithinSession = agentAssignments.filter { $0.value == existingID && $0.key != role }
+            if sharedWithinSession.isEmpty {
                 return existing
             }
-            // Shared — clone and reassign so this role owns its own config. Copy-and-mutate
-            // off the existing struct so any new fields added to ModelConfiguration are
-            // automatically picked up here.
             var clone = existing
             clone.id = UUID()
             clone.name = "\(role.displayName) — \(existing.modelID)"
-            llmKit.addConfiguration(clone)
+            shared.llmKit.addConfiguration(clone)
             agentAssignments[role] = clone.id
-            persistAgentAssignments()
             return clone
         }
 
-        // No assignment yet — pick a sensible starter config (any existing one) or build
-        // an empty placeholder so the user can fill it in.
         let starter: ModelConfiguration
-        if let firstProvider = llmKit.providers.first {
+        if let firstProvider = shared.llmKit.providers.first {
             starter = ModelConfiguration(
                 id: UUID(),
                 name: "\(role.displayName) — \(firstProvider.name)",
@@ -1376,45 +762,25 @@ final class AppViewModel {
                 modelID: ""
             )
         }
-        llmKit.addConfiguration(starter)
+        shared.llmKit.addConfiguration(starter)
         agentAssignments[role] = starter.id
-        persistAgentAssignments()
         return starter
     }
 
-    /// Updates the agent's dedicated configuration in place.
-    ///
-    /// If an `undoManager` is supplied, registers an inverse action that restores the
-    /// previous configuration. The inverse handler also re-calls this method, which
-    /// re-registers the *forward* inverse — giving us free redo support via the
-    /// standard UndoManager ping-pong pattern.
-    func updateAgentConfig(_ config: ModelConfiguration, undoManager: UndoManager? = nil) {
-        let previous = llmKit.configurations.first { $0.id == config.id }
-        llmKit.updateConfiguration(config)
-        guard let previous, let undoManager, previous != config else { return }
-        undoManager.registerUndo(withTarget: self) { target in
-            target.updateAgentConfig(previous, undoManager: undoManager)
-        }
-        undoManager.setActionName("Change \(config.name)")
-    }
-
-    /// Saves the nickname to UserDefaults and syncs it to the static used by system prompts.
-    func persistNickname() {
-        UserDefaults.standard.set(nickname, forKey: "userNickname")
-        AgentRole.userNickname = nickname
-    }
-
-    /// Saves agent assignments to UserDefaults.
-    func persistAgentAssignments() {
-        do {
-            let data = try JSONEncoder().encode(agentAssignments)
-            UserDefaults.standard.set(data, forKey: "agentAssignments")
-        } catch {
-            print("[AgentSmith] Failed to encode agent assignments: \(error)")
-        }
-    }
-
     // MARK: - Private
+
+    private var sessionHistoryKey: String {
+        "messageHistory.\(session.id.uuidString)"
+    }
+
+    private func persistMessageHistory() {
+        do {
+            let data = try JSONEncoder().encode(messageHistory)
+            UserDefaults.standard.set(data, forKey: sessionHistoryKey)
+        } catch {
+            logger.error("Failed to encode message history: \(error)")
+        }
+    }
 
     private func persistMessages() {
         let snapshot = allPersistedMessages
@@ -1423,83 +789,6 @@ final class AppViewModel {
                 try await persistenceManager.saveChannelLog(snapshot)
             } catch {
                 logger.error("Failed to persist messages: \(error)")
-            }
-        }
-    }
-
-    // MARK: - Memory Editor Support
-
-    /// Refreshes the published memory arrays from the memory store.
-    func refreshMemories() async {
-        guard let memoryStore = await runtime?.memoryStore else { return }
-        storedMemories = await memoryStore.allMemories()
-        storedTaskSummaries = await memoryStore.allTaskSummaries()
-    }
-
-    /// Deletes a memory by ID.
-    func deleteMemory(id: UUID) async {
-        guard let memoryStore = await runtime?.memoryStore else { return }
-        await memoryStore.delete(id: id)
-    }
-
-    /// Errors thrown by the memory editor's search helpers, surfaced to the UI.
-    enum MemorySearchUIError: LocalizedError {
-        case smithNotRunning
-        case underlying(Error)
-
-        var errorDescription: String? {
-            switch self {
-            case .smithNotRunning:
-                return "Memory store is unavailable. Start Smith from the toolbar to load and search memories."
-            case .underlying(let error):
-                return "Search failed: \(error.localizedDescription)"
-            }
-        }
-    }
-
-    /// Searches memories by semantic similarity. Throws so the editor can distinguish
-    /// "no results" from "search failed" and surface a meaningful message to the user.
-    func searchMemories(query: String, limit: Int = 20) async throws -> [MemorySearchResult] {
-        guard let memoryStore = await runtime?.memoryStore else {
-            throw MemorySearchUIError.smithNotRunning
-        }
-        do {
-            return try await memoryStore.searchMemories(query: query, limit: limit, threshold: 0.0)
-        } catch {
-            print("[AppViewModel] Memory search failed: \(error)")
-            throw MemorySearchUIError.underlying(error)
-        }
-    }
-
-    /// Searches task summaries by semantic similarity. Same error contract as `searchMemories`.
-    func searchTaskSummaries(query: String, limit: Int = 20) async throws -> [TaskSummarySearchResult] {
-        guard let memoryStore = await runtime?.memoryStore else {
-            throw MemorySearchUIError.smithNotRunning
-        }
-        do {
-            return try await memoryStore.searchTaskSummaries(query: query, limit: limit, threshold: 0.0)
-        } catch {
-            print("[AppViewModel] Task summary search failed: \(error)")
-            throw MemorySearchUIError.underlying(error)
-        }
-    }
-
-    /// Updates a memory's content and/or tags via the Memory editor. Marked as a `.user`
-    /// edit so the entry's `lastUpdatedBy` reflects who made the change.
-    func updateMemory(id: UUID, content: String? = nil, tags: [String]? = nil) async throws {
-        guard let memoryStore = await runtime?.memoryStore else { return }
-        try await memoryStore.update(id: id, content: content, tags: tags, updatedBy: .user)
-    }
-
-    private func persistMemories(memoryStore: MemoryStore) {
-        Task.detached { [persistenceManager, logger] in
-            do {
-                let memories = await memoryStore.allMemories()
-                let taskSummaries = await memoryStore.allTaskSummaries()
-                try await persistenceManager.saveMemories(memories)
-                try await persistenceManager.saveTaskSummaries(taskSummaries)
-            } catch {
-                logger.error("Failed to persist memories: \(error)")
             }
         }
     }
@@ -1515,68 +804,29 @@ final class AppViewModel {
         }
     }
 
+    private func persistSessionStateAsync() {
+        let state = SessionState(
+            agentAssignments: agentAssignments,
+            agentPollIntervals: agentPollIntervals,
+            agentMaxToolCalls: agentMaxToolCalls,
+            agentMessageDebounceIntervals: agentMessageDebounceIntervals,
+            toolsEnabled: toolsEnabled,
+            autoRunNextTask: autoRunNextTask,
+            autoRunInterruptedTasks: autoRunInterruptedTasks
+        )
+        Task.detached { [persistenceManager, logger] in
+            do {
+                try await persistenceManager.saveSessionState(state)
+            } catch {
+                logger.error("Failed to persist session state: \(error)")
+            }
+        }
+    }
+
     private static func mimeType(for url: URL) -> String {
         if let utType = UTType(filenameExtension: url.pathExtension) {
             return utType.preferredMIMEType ?? "application/octet-stream"
         }
         return "application/octet-stream"
-    }
-
-    /// Extracts the cache-read token count from a provider's raw usage object.
-    /// Knows the per-provider field naming so the migration can recover cache
-    /// data from `UsageRecord.rawUsage` without reaching for log files.
-    /// Returns 0 if the field isn't present (which is a valid value).
-    static func extractCacheRead(from usageObject: [String: Any], providerType: String) -> Int {
-        if providerType == "gemini" {
-            return usageObject["cachedContentTokenCount"] as? Int ?? 0
-        }
-        // OpenAI-compatible: cached_tokens lives inside prompt_tokens_details
-        if let details = usageObject["prompt_tokens_details"] as? [String: Any] {
-            return details["cached_tokens"] as? Int ?? 0
-        }
-        return 0
-    }
-
-    /// Sanity-checks recently-recorded usage data and logs warnings for patterns
-    /// that suggest the provider layer is silently dropping fields. Specifically,
-    /// flags providers known to support prompt caching (Anthropic, Gemini, OpenAI-
-    /// compatible families) that show 0% cache hit rate across a meaningful sample
-    /// of recent calls — the signature of a parser regression. A non-fatal canary;
-    /// makes no UI changes, only writes to the console.
-    private func runUsageHealthCheck() async {
-        let allRecords = await usageStore.allRecords()
-        let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60) // last 7 days
-        let recent = allRecords.filter { $0.timestamp >= cutoff }
-        guard recent.count >= 20 else { return }
-
-        // Providers known to support and report prompt caching.
-        let cacheCapableProviders: Set<String> = [
-            "anthropic", "gemini",
-            "openAICompatible", "lmStudio", "mistral", "huggingFace",
-            "xAI", "zAI", "metaLlama", "alibabaCloud", "openRouter"
-        ]
-
-        var byProvider: [String: (calls: Int, totalInput: Int, totalCacheRead: Int, withRawUsage: Int)] = [:]
-        for record in recent where cacheCapableProviders.contains(record.providerType) {
-            // Only count "large" calls — small calls (e.g. summarizer) often don't
-            // cache anything legitimately, which would dilute the signal.
-            guard record.inputTokens >= 5000 else { continue }
-            var entry = byProvider[record.providerType] ?? (0, 0, 0, 0)
-            entry.calls += 1
-            entry.totalInput += record.inputTokens
-            entry.totalCacheRead += record.cacheReadTokens
-            if record.rawUsage != nil { entry.withRawUsage += 1 }
-            byProvider[record.providerType] = entry
-        }
-
-        for (provider, stats) in byProvider where stats.calls >= 20 {
-            let hitRate = Double(stats.totalCacheRead) / Double(stats.totalInput)
-            let rawUsageCoverage = Double(stats.withRawUsage) / Double(stats.calls)
-            if hitRate == 0 {
-                logger.warning("Usage health: provider \(provider) shows 0% cache hit rate across \(stats.calls) recent large calls (\(stats.totalInput) input tokens). Possible parser regression — verify the provider layer still extracts cache token fields. rawUsage coverage: \(Int(rawUsageCoverage * 100))%")
-            } else {
-                logger.info("Usage health: provider \(provider) cache hit rate \(String(format: "%.1f%%", hitRate * 100)) across \(stats.calls) recent calls. rawUsage coverage: \(Int(rawUsageCoverage * 100))%")
-            }
-        }
     }
 }

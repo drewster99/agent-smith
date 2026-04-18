@@ -35,7 +35,7 @@ struct AgentModelSettingsSection: View {
     /// handlers don't fire `commit()` and create a phantom undo entry.
     @State private var isSyncingFromExternal = false
 
-    private var llmKit: LLMKitManager { viewModel.llmKit }
+    private var llmKit: LLMKitManager { viewModel.shared.llmKit }
 
     private var selectedProvider: ModelProvider? {
         llmKit.providers.first { $0.id == providerID }
@@ -484,7 +484,7 @@ struct AgentModelSettingsSection: View {
         if updated == previous { return }
 
         // updateAgentConfig handles undo registration internally when given a manager.
-        viewModel.updateAgentConfig(updated, undoManager: undoManager)
+        viewModel.shared.updateAgentConfig(updated, undoManager: undoManager)
         lastSavedAt = Date()
     }
 }

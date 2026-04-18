@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 /// Primary app view: sidebar with tasks, detail with channel log and input.
 struct MainView: View {
     @Bindable var viewModel: AppViewModel
+    @Bindable var sessionManager: SessionManager
     @Environment(\.openWindow) private var openWindow
     @State private var showValidationSheet = false
     @State private var showWelcomeSheet = false
@@ -13,6 +14,8 @@ struct MainView: View {
     /// The attachment currently shown in the full-screen image viewer.
     @State private var selectedImageAttachment: Attachment?
     @FocusState private var isLightboxFocused: Bool
+
+    private var shared: SharedAppState { viewModel.shared }
 
     var body: some View {
         NavigationSplitView {
@@ -172,13 +175,13 @@ struct MainView: View {
                     .foregroundStyle(.green)
                 }
 
-                if viewModel.speechController.isGloballyEnabled {
+                if shared.speechController.isGloballyEnabled {
                     Button("Mute All", systemImage: "speaker.wave.2.fill") {
-                        viewModel.speechController.setGloballyEnabled(false)
+                        shared.speechController.setGloballyEnabled(false)
                     }
                 } else {
                     Button("Unmute All", systemImage: "speaker.slash.fill") {
-                        viewModel.speechController.setGloballyEnabled(true)
+                        shared.speechController.setGloballyEnabled(true)
                     }
                     .foregroundStyle(.secondary)
                 }
@@ -199,14 +202,24 @@ struct MainView: View {
                 .keyboardShortcut("i", modifiers: [.command, .option])
             }
         }
-        .navigationTitle("Agent Smith")
+        .navigationTitle(viewModel.session.name)
         .onChange(of: viewModel.hasLoadedPersistedState) { _, loaded in
-            guard loaded else { return }
-            if viewModel.nickname.isEmpty {
+            guard loaded, shared.hasLoadedPersistedState else { return }
+            if shared.nickname.isEmpty {
                 showWelcomeSheet = true
             } else if !viewModel.allAgentConfigsValid {
                 showValidationSheet = true
-            } else if viewModel.autoStartEnabled {
+            } else if shared.autoStartEnabled && !viewModel.isRunning {
+                Task { await viewModel.start() }
+            }
+        }
+        .onChange(of: shared.hasLoadedPersistedState) { _, loaded in
+            guard loaded, viewModel.hasLoadedPersistedState else { return }
+            if shared.nickname.isEmpty {
+                showWelcomeSheet = true
+            } else if !viewModel.allAgentConfigsValid {
+                showValidationSheet = true
+            } else if shared.autoStartEnabled && !viewModel.isRunning {
                 Task { await viewModel.start() }
             }
         }
@@ -215,7 +228,7 @@ struct MainView: View {
                 showValidationSheet = true
             }
         }) {
-            WelcomeSheet(viewModel: viewModel, onDismiss: {
+            WelcomeSheet(shared: shared, onDismiss: {
                 showWelcomeSheet = false
             })
         }
@@ -359,7 +372,7 @@ private struct ReviewBanner: View {
 
 /// First-launch sheet asking the user for their preferred name.
 private struct WelcomeSheet: View {
-    @Bindable var viewModel: AppViewModel
+    @Bindable var shared: SharedAppState
     let onDismiss: () -> Void
     @State private var nameInput = ""
 
@@ -392,8 +405,8 @@ private struct WelcomeSheet: View {
     private func save() {
         let trimmed = nameInput.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
-        viewModel.nickname = trimmed
-        viewModel.persistNickname()
+        shared.nickname = trimmed
+        shared.persistNickname()
         onDismiss()
     }
 }

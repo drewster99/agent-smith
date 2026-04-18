@@ -94,11 +94,12 @@ public actor OrchestrationRuntime {
         semanticSearchEngine: SemanticSearchEngine,
         usageStore: UsageStore,
         autoAdvanceEnabled: Bool = true,
-        autoRunInterruptedTasks: Bool = false
+        autoRunInterruptedTasks: Bool = false,
+        memoryStore: MemoryStore? = nil
     ) {
         self.channel = MessageChannel()
         self.taskStore = TaskStore()
-        self.memoryStore = MemoryStore(engine: semanticSearchEngine)
+        self.memoryStore = memoryStore ?? MemoryStore(engine: semanticSearchEngine)
         self.llmProviders = providers
         self.llmConfigs = configurations
         self.providerAPITypes = providerAPITypes

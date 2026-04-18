@@ -51,7 +51,7 @@ struct InspectorView: View {
                             currentSystemPrompt: currentSystemPrompt,
                             pollInterval: pollInterval,
                             maxToolCalls: maxToolCalls,
-                            speechController: viewModel.speechController,
+                            speechController: viewModel.shared.speechController,
                             onSendDirectMessage: { text in
                                 Task { await viewModel.sendDirectMessage(to: role, text: text) }
                             },
@@ -176,7 +176,7 @@ private struct AgentCard: View {
             HStack(spacing: 8) {
                 Button(action: {
                     if opensInWindow {
-                        openWindow(value: role.rawValue)
+                        openWindow(value: AgentInspectorTarget(sessionID: viewModel.session.id, role: role))
                     } else {
                         withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
                     }

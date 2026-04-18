@@ -2,8 +2,9 @@ import SwiftUI
 import AgentSmithKit
 
 /// Standalone window for browsing, editing, and deleting stored memories and task summaries.
+/// Memories are shared across all sessions, so this view binds to `SharedAppState`.
 struct MemoryEditorView: View {
-    @Bindable var viewModel: AppViewModel
+    @Bindable var shared: SharedAppState
 
     @State private var searchText = ""
     @State private var filterSource: MemoryEntry.Source?
@@ -53,7 +54,7 @@ struct MemoryEditorView: View {
         }
         .frame(minWidth: 600, minHeight: 400)
         .task {
-            await viewModel.refreshMemories()
+            await shared.refreshMemories()
         }
         .onChange(of: searchText) {
             searchTask?.cancel()
@@ -75,15 +76,15 @@ struct MemoryEditorView: View {
                 // Snapshot the corpus shape BEFORE the search so the stats reflect what
                 // was actually searched (the corpus could change between snapshot and
                 // display, e.g. if a memory is saved during the await).
-                let memDocs = viewModel.storedMemories.count
-                let memVectors = viewModel.storedMemories.reduce(0) { $0 + ($1.embedding.isEmpty ? 0 : 1) }
-                let taskDocs = viewModel.storedTaskSummaries.count
-                let taskVectors = viewModel.storedTaskSummaries.reduce(0) { $0 + ($1.embedding.isEmpty ? 0 : 1) }
+                let memDocs = shared.storedMemories.count
+                let memVectors = shared.storedMemories.reduce(0) { $0 + ($1.embedding.isEmpty ? 0 : 1) }
+                let taskDocs = shared.storedTaskSummaries.count
+                let taskVectors = shared.storedTaskSummaries.reduce(0) { $0 + ($1.embedding.isEmpty ? 0 : 1) }
 
                 let started = Date()
                 do {
-                    let memResults = try await viewModel.searchMemories(query: query)
-                    let taskResults = try await viewModel.searchTaskSummaries(query: query)
+                    let memResults = try await shared.searchMemories(query: query)
+                    let taskResults = try await shared.searchTaskSummaries(query: query)
                     let elapsed = Date().timeIntervalSince(started)
                     guard !Task.isCancelled else { return }
 
@@ -189,10 +190,10 @@ struct MemoryEditorView: View {
     /// searchable). Stale entries waiting for the migration pass to re-embed them
     /// have an empty `embedding` and won't contribute to semantic search hits.
     private func formatCorpusStats() -> String {
-        let memCount = viewModel.storedMemories.count
-        let memEmbedded = viewModel.storedMemories.reduce(0) { $0 + ($1.embedding.isEmpty ? 0 : 1) }
-        let taskCount = viewModel.storedTaskSummaries.count
-        let taskEmbedded = viewModel.storedTaskSummaries.reduce(0) { $0 + ($1.embedding.isEmpty ? 0 : 1) }
+        let memCount = shared.storedMemories.count
+        let memEmbedded = shared.storedMemories.reduce(0) { $0 + ($1.embedding.isEmpty ? 0 : 1) }
+        let taskCount = shared.storedTaskSummaries.count
+        let taskEmbedded = shared.storedTaskSummaries.reduce(0) { $0 + ($1.embedding.isEmpty ? 0 : 1) }
         let memLabel = memCount == 1 ? "memory" : "memories"
         let taskLabel = taskCount == 1 ? "task summary" : "task summaries"
         return "\(memCount) \(memLabel) (\(memEmbedded) embedded)  •  \(taskCount) \(taskLabel) (\(taskEmbedded) embedded)"
@@ -217,8 +218,8 @@ struct MemoryEditorView: View {
     private var headerBar: some View {
         HStack(spacing: 12) {
             Picker("", selection: $showTaskSummaries) {
-                Text("Memories (\(viewModel.storedMemories.count))").tag(false)
-                Text("Tasks (\(viewModel.storedTaskSummaries.count))").tag(true)
+                Text("Memories (\(shared.storedMemories.count))").tag(false)
+                Text("Tasks (\(shared.storedTaskSummaries.count))").tag(true)
             }
             .pickerStyle(.segmented)
             .fixedSize()
@@ -245,7 +246,7 @@ struct MemoryEditorView: View {
     // MARK: - Memory List
 
     private var filteredMemories: [MemoryEntry] {
-        var result = viewModel.storedMemories
+        var result = shared.storedMemories
         if let source = filterSource {
             result = result.filter { $0.source == source }
         }
@@ -281,13 +282,13 @@ struct MemoryEditorView: View {
                 systemImage: "magnifyingglass",
                 description: Text("No memories matched “\(searchText)”. Try different keywords or a longer phrase.")
             )
-        } else if viewModel.storedMemories.isEmpty && !viewModel.isRunning {
+        } else if shared.storedMemories.isEmpty && shared.memoryStore == nil {
             ContentUnavailableView(
-                "Smith Not Running",
+                "Memory Store Not Loaded",
                 systemImage: "play.circle",
-                description: Text("Click Start in the main window's toolbar to load memories from disk.")
+                description: Text("Start a session from any window's toolbar to load memories from disk.")
             )
-        } else if viewModel.storedMemories.isEmpty {
+        } else if shared.storedMemories.isEmpty {
             ContentUnavailableView(
                 "No Memories Saved",
                 systemImage: "brain",
@@ -394,7 +395,7 @@ struct MemoryEditorView: View {
                 .controlSize(.small)
 
                 Button("Delete") {
-                    Task { await viewModel.deleteMemory(id: memory.id) }
+                    Task { await shared.deleteMemory(id: memory.id) }
                 }
                 .controlSize(.small)
                 .foregroundStyle(.red)
@@ -438,7 +439,7 @@ struct MemoryEditorView: View {
                         .filter { !$0.isEmpty }
                     Task {
                         do {
-                            try await viewModel.updateMemory(
+                            try await shared.updateMemory(
                                 id: memory.id,
                                 content: editContent,
                                 tags: newTags
@@ -468,12 +469,12 @@ struct MemoryEditorView: View {
                 // Same logic as `filteredMemories`: distinguish "first search not yet
                 // complete" (show the full list as a placeholder) from "search completed
                 // with zero results" (return empty to surface the 'no matches' state).
-                return isSearching ? viewModel.storedTaskSummaries : []
+                return isSearching ? shared.storedTaskSummaries : []
             }
-            let scored = viewModel.storedTaskSummaries.filter { taskSummarySimilarities[$0.id] != nil }
+            let scored = shared.storedTaskSummaries.filter { taskSummarySimilarities[$0.id] != nil }
             return scored.sorted { (taskSummarySimilarities[$0.id] ?? 0) > (taskSummarySimilarities[$1.id] ?? 0) }
         }
-        return viewModel.storedTaskSummaries
+        return shared.storedTaskSummaries
     }
 
     @ViewBuilder
@@ -491,13 +492,13 @@ struct MemoryEditorView: View {
                 systemImage: "magnifyingglass",
                 description: Text("No tasks matched “\(searchText)”. Try different keywords or a longer phrase.")
             )
-        } else if viewModel.storedTaskSummaries.isEmpty && !viewModel.isRunning {
+        } else if shared.storedTaskSummaries.isEmpty && shared.memoryStore == nil {
             ContentUnavailableView(
-                "Smith Not Running",
+                "Memory Store Not Loaded",
                 systemImage: "play.circle",
-                description: Text("Click Start in the main window's toolbar to load tasks from disk.")
+                description: Text("Start a session from any window's toolbar to load task summaries from disk.")
             )
-        } else if viewModel.storedTaskSummaries.isEmpty {
+        } else if shared.storedTaskSummaries.isEmpty {
             ContentUnavailableView(
                 "No Tasks Indexed",
                 systemImage: "doc.text",

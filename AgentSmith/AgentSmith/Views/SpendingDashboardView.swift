@@ -14,7 +14,7 @@ import SwiftLLMKit
 ///
 /// Opened via View → Spending Dashboard (⌘⇧D).
 struct SpendingDashboardView: View {
-    @Bindable var viewModel: AppViewModel
+    @Bindable var shared: SharedAppState
 
     // MARK: - State
 
@@ -111,7 +111,7 @@ struct SpendingDashboardView: View {
         .task {
             await loadRecords()
         }
-        .onChange(of: viewModel.hasLoadedPersistedState, initial: false) {
+        .onChange(of: shared.hasLoadedPersistedState, initial: false) {
             Task { await loadRecords() }
         }
         .refreshable {
@@ -127,9 +127,13 @@ struct SpendingDashboardView: View {
         }
         .sheet(item: $selectedTaskID) { taskID in
             let taskCount = aggregator.byTask(filteredRecords).keys.compactMap({ $0 }).count
+            // Usage records can come from any session; this sheet has no easy way to
+            // locate the source AgentTask without threading every session's task list
+            // through the dashboard. For now, the task-detail sheet renders a generic
+            // view when the `task` is nil — a reasonable degradation.
             TaskCostDetailSheet(
                 taskID: taskID,
-                task: viewModel.tasks.first(where: { $0.id == taskID }),
+                task: nil,
                 records: filteredRecords.filter { $0.taskID == taskID },
                 allRecordsSummary: currentSummary,
                 taskCountInRange: max(1, taskCount),
@@ -141,11 +145,11 @@ struct SpendingDashboardView: View {
 
     private func loadRecords() async {
         isLoading = true
-        allRecords = await viewModel.usageStore.allRecords()
+        allRecords = await shared.usageStore.allRecords()
         // Snapshot pricing keyed by "providerID/modelID" so the aggregator closure
         // doesn't need to cross the main-actor boundary at query time.
         var pricing: [String: ModelPricing] = [:]
-        for model in viewModel.llmKit.models {
+        for model in shared.llmKit.models {
             // model.id == "providerID/modelID"; skip entries with empty components
             // that would produce nonsensical keys like "providerID/" or "/modelID".
             if let p = model.pricing, !model.id.hasSuffix("/"), !model.id.hasPrefix("/") {
@@ -155,7 +159,7 @@ struct SpendingDashboardView: View {
         pricingSnapshot = pricing
         // Snapshot provider display names so we can resolve "builtin.mistral" → "Mistral".
         var names: [String: String] = [:]
-        for provider in viewModel.llmKit.providers {
+        for provider in shared.llmKit.providers {
             names[provider.id] = provider.name
         }
         providerNames = names
@@ -554,7 +558,10 @@ struct SpendingDashboardView: View {
     // MARK: - Section 4: Task Ledger
 
     private var taskLedger: some View {
-        let taskLookup = Dictionary(uniqueKeysWithValues: viewModel.tasks.map { ($0.id, $0) })
+        // Tasks live per-session now. The dashboard doesn't have access to every session's
+        // task list from here, so task titles fall back to a truncated UUID. A future
+        // enhancement could take `SessionManager` and union tasks across sessions.
+        let taskLookup: [UUID: AgentTask] = [:]
         let grouped = aggregator.byTask(filteredRecords)
         let planningSummary = grouped[nil]
         let byTask = grouped

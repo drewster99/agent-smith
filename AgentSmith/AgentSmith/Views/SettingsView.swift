@@ -4,9 +4,11 @@ import SwiftUI
 import AgentSmithKit
 import SwiftLLMKit
 
-/// Settings window organized into tabs: Providers, Model Configurations, Agent Assignments, Audio.
+/// Settings window: app-global preferences only. Per-session agent assignments are
+/// now edited in each session window's Inspector, not here.
 struct SettingsView: View {
-    @Bindable var viewModel: AppViewModel
+    @Bindable var shared: SharedAppState
+    @Bindable var sessionManager: SessionManager
 
     @State private var availableVoices: [AVSpeechSynthesisVoice] = []
     @State private var exportError: String?
@@ -22,7 +24,7 @@ struct SettingsView: View {
 
             Tab("Providers", systemImage: "server.rack") {
                 ScrollView {
-                    ProviderManagementView(llmKit: viewModel.llmKit)
+                    ProviderManagementView(llmKit: shared.llmKit)
                         .padding()
                 }
             }
@@ -30,13 +32,6 @@ struct SettingsView: View {
             Tab("Configurations", systemImage: "slider.horizontal.3") {
                 ScrollView {
                     configurationsTab
-                        .padding()
-                }
-            }
-
-            Tab("Agents", systemImage: "person.3") {
-                ScrollView {
-                    agentAssignmentsTab
                         .padding()
                 }
             }
@@ -53,9 +48,6 @@ struct SettingsView: View {
             availableVoices = AVSpeechSynthesisVoice.speechVoices()
                 .sorted { $0.name < $1.name }
         }
-        .onChange(of: viewModel.agentAssignments) {
-            viewModel.persistAgentAssignments()
-        }
     }
 
     // MARK: - Account Tab
@@ -66,10 +58,10 @@ struct SettingsView: View {
                 .font(AppFonts.sectionHeader)
 
             LabeledContent("What should I call you?") {
-                TextField("Your name or nickname", text: $viewModel.nickname)
+                TextField("Your name or nickname", text: $shared.nickname)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 250)
-                    .onSubmit { viewModel.persistNickname() }
+                    .onSubmit { shared.persistNickname() }
             }
 
             Text("This name is shown in the channel log and included in agent system prompts.")
@@ -78,12 +70,16 @@ struct SettingsView: View {
 
             Divider()
 
-            Text("Behavior")
+            Text("Launch Behavior")
                 .font(AppFonts.sectionHeader)
 
-            Toggle("Auto-run next pending task after completion", isOn: $viewModel.autoRunNextTask)
+            Toggle("Auto-start sessions on launch", isOn: $shared.autoStartEnabled)
 
-            Text("When enabled, Smith automatically starts the next queued task after completing one. When disabled, Smith waits for your instruction. Takes effect on next start.")
+            Text("When enabled, sessions with valid configuration automatically start their agents on launch.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("Per-session options (auto-run next task, agent assignments, tunings) are configured in each window's Inspector.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -105,13 +101,13 @@ struct SettingsView: View {
                 })
             }
 
-            if viewModel.llmKit.configurations.isEmpty {
+            if shared.llmKit.configurations.isEmpty {
                 Text("No configurations yet. Create one to assign to agents.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 20)
             } else {
-                ForEach(viewModel.llmKit.configurations) { config in
+                ForEach(shared.llmKit.configurations) { config in
                     configRow(config)
                 }
             }
@@ -120,10 +116,10 @@ struct SettingsView: View {
 
             HStack {
                 Button("Refresh Models") {
-                    Task { await viewModel.llmKit.forceRefresh() }
+                    Task { await shared.llmKit.forceRefresh() }
                 }
-                .disabled(viewModel.llmKit.isRefreshing)
-                if viewModel.llmKit.isRefreshing {
+                .disabled(shared.llmKit.isRefreshing)
+                if shared.llmKit.isRefreshing {
                     ProgressView()
                         .controlSize(.small)
                 }
@@ -133,9 +129,9 @@ struct SettingsView: View {
                 }
             }
 
-            if !viewModel.llmKit.refreshErrors.isEmpty {
+            if !shared.llmKit.refreshErrors.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(viewModel.llmKit.refreshErrors.sorted(by: { $0.key < $1.key }), id: \.key) { provider, error in
+                    ForEach(shared.llmKit.refreshErrors.sorted(by: { $0.key < $1.key }), id: \.key) { provider, error in
                         Label("\(provider): \(error)", systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
                             .foregroundStyle(.red)
@@ -145,20 +141,20 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $isCreatingConfig) {
             ModelConfigurationEditorView(
-                llmKit: viewModel.llmKit,
+                llmKit: shared.llmKit,
                 existingConfig: nil,
                 onSave: { config in
-                    viewModel.llmKit.addConfiguration(config)
+                    shared.llmKit.addConfiguration(config)
                 },
                 onDismiss: { isCreatingConfig = false }
             )
         }
         .sheet(item: $editingConfig) { config in
             ModelConfigurationEditorView(
-                llmKit: viewModel.llmKit,
+                llmKit: shared.llmKit,
                 existingConfig: config,
                 onSave: { updated in
-                    viewModel.llmKit.updateConfiguration(updated)
+                    shared.llmKit.updateConfiguration(updated)
                 },
                 onDismiss: { editingConfig = nil }
             )
@@ -174,8 +170,8 @@ struct SettingsView: View {
     }
 
     private func configRow(_ config: ModelConfiguration) -> some View {
-        let provider = viewModel.llmKit.providers.first { $0.id == config.providerID }
-        let modelInfo = viewModel.llmKit.modelInfo(providerID: config.providerID, modelID: config.modelID)
+        let provider = shared.llmKit.providers.first { $0.id == config.providerID }
+        let modelInfo = shared.llmKit.modelInfo(providerID: config.providerID, modelID: config.modelID)
         return GroupBox {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -218,7 +214,7 @@ struct SettingsView: View {
                 }
                 Spacer()
                 Button("Duplicate") {
-                    viewModel.llmKit.duplicateConfiguration(id: config.id)
+                    shared.llmKit.duplicateConfiguration(id: config.id)
                 }
                 .buttonStyle(.borderless)
                 Button("Edit") {
@@ -226,7 +222,7 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.borderless)
                 Button(role: .destructive, action: {
-                    viewModel.deleteConfiguration(id: config.id)
+                    sessionManager.deleteConfiguration(id: config.id)
                 }, label: {
                     Image(systemName: "trash")
                 })
@@ -236,108 +232,7 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Agent Assignments Tab
-
-    private var agentAssignmentsTab: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Agent Assignments")
-                .font(AppFonts.sectionHeader)
-
-            Text("Assign a model configuration to each agent role. Changes take effect on next start.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-
-            agentAssignmentRow(
-                role: .smith,
-                label: "Agent Smith (Orchestrator)",
-                description: "Receives user requests, creates tasks, delegates work to Brown, and coordinates the overall workflow.",
-                color: AppColors.smithAgent
-            )
-            agentAssignmentRow(
-                role: .brown,
-                label: "Agent Brown (Executor)",
-                description: "Executes tasks assigned by Smith using shell commands, file operations, and other tools. All actions are reviewed by Jones.",
-                color: AppColors.brownAgent
-            )
-            agentAssignmentRow(
-                role: .jones,
-                label: "Agent Jones (Safety Monitor)",
-                description: "Reviews every tool call Brown attempts and approves, warns, or blocks based on safety analysis.",
-                color: AppColors.jonesAgent
-            )
-            agentAssignmentRow(
-                role: .summarizer,
-                label: "Task Summarizer",
-                description: "Generates concise summaries of completed and failed tasks for semantic memory and future task context.",
-                color: .secondary
-            )
-        }
-    }
-
-    private func agentAssignmentRow(role: AgentRole, label: String, description: String, color: Color) -> some View {
-        let currentConfigID = viewModel.agentAssignments[role]
-        let currentConfig = currentConfigID.flatMap { id in
-            viewModel.llmKit.configurations.first { $0.id == id }
-        }
-
-        return GroupBox {
-            VStack(alignment: .leading, spacing: 10) {
-                Label(label, systemImage: "person.circle")
-                    .font(AppFonts.sectionHeader)
-                    .foregroundStyle(color)
-
-                Text(description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Divider()
-
-                HStack {
-                    Picker("Configuration", selection: Binding(
-                        get: { viewModel.agentAssignments[role] },
-                        set: { viewModel.agentAssignments[role] = $0 }
-                    )) {
-                        Text("None").tag(UUID?.none)
-                        ForEach(viewModel.llmKit.configurations) { config in
-                            HStack {
-                                Text(config.name)
-                                if !config.isValid {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                }
-                            }
-                            .tag(Optional(config.id))
-                        }
-                    }
-                    .labelsHidden()
-
-                    if let config = currentConfig, !config.isValid {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                            .help(config.validationError ?? "Invalid")
-                    }
-                }
-
-                if let config = currentConfig {
-                    let modelInfo = viewModel.llmKit.modelInfo(
-                        providerID: config.providerID,
-                        modelID: config.modelID
-                    )
-                    HStack(spacing: 8) {
-                        Text(config.modelID)
-                        Text("temp \(String(format: "%.1f", config.temperature))")
-                        Text("max \(formatTokenCount(config.maxOutputTokens))")
-                        if let info = modelInfo {
-                            pricingLabel(for: info)
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-            }
-            .padding(6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
+    // MARK: - (Agent Assignments moved to InspectorView)
 
     /// Compact pricing label showing input/output cost per million tokens.
     @ViewBuilder
@@ -361,38 +256,38 @@ struct SettingsView: View {
             // User
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
-                    Label(viewModel.nickname.isEmpty ? "User" : viewModel.nickname, systemImage: "person.circle")
+                    Label(shared.nickname.isEmpty ? "User" : shared.nickname, systemImage: "person.circle")
                         .font(AppFonts.sectionHeader)
                         .foregroundStyle(.blue)
 
                     VoicePickerRow(
                         voiceIdentifier: Binding(
-                            get: { viewModel.speechController.userVoiceIdentifier },
-                            set: { viewModel.speechController.setUserVoice($0) }
+                            get: { shared.speechController.userVoiceIdentifier },
+                            set: { shared.speechController.setUserVoice($0) }
                         ),
                         availableVoices: availableVoices,
-                        onTest: { viewModel.speechController.previewUserSpeech() }
+                        onTest: { shared.speechController.previewUserSpeech() }
                     )
 
                     SoundPickerRow(
                         label: "Message sound",
                         soundName: Binding(
-                            get: { viewModel.speechController.userSound.soundName },
+                            get: { shared.speechController.userSound.soundName },
                             set: {
-                                var config = viewModel.speechController.userSound
+                                var config = shared.speechController.userSound
                                 config.soundName = $0
-                                viewModel.speechController.setUserSound(config)
+                                shared.speechController.setUserSound(config)
                             }
                         ),
-                        onPreview: { viewModel.speechController.previewSound(named: $0) }
+                        onPreview: { shared.speechController.previewSound(named: $0) }
                     )
 
                     Toggle("Speak user messages", isOn: Binding(
-                        get: { viewModel.speechController.userSound.speakEnabled },
+                        get: { shared.speechController.userSound.speakEnabled },
                         set: {
-                            var config = viewModel.speechController.userSound
+                            var config = shared.speechController.userSound
                             config.speakEnabled = $0
-                            viewModel.speechController.setUserSound(config)
+                            shared.speechController.setUserSound(config)
                         }
                     ))
                     .font(AppFonts.inspectorBody)
@@ -408,17 +303,17 @@ struct SettingsView: View {
                         .foregroundStyle(.purple)
 
                     Toggle("Enabled", isOn: Binding(
-                        get: { viewModel.speechController.narratorEnabled },
-                        set: { viewModel.speechController.setNarratorEnabled($0) }
+                        get: { shared.speechController.narratorEnabled },
+                        set: { shared.speechController.setNarratorEnabled($0) }
                     ))
 
                     VoicePickerRow(
                         voiceIdentifier: Binding(
-                            get: { viewModel.speechController.narratorVoiceIdentifier },
-                            set: { viewModel.speechController.setNarratorVoice($0) }
+                            get: { shared.speechController.narratorVoiceIdentifier },
+                            set: { shared.speechController.setNarratorVoice($0) }
                         ),
                         availableVoices: availableVoices,
-                        onTest: { viewModel.speechController.previewNarratorSpeech() }
+                        onTest: { shared.speechController.previewNarratorSpeech() }
                     )
                 }
                 .padding(8)
@@ -434,37 +329,37 @@ struct SettingsView: View {
                     SoundPickerRow(
                         label: "Approved",
                         soundName: Binding(
-                            get: { viewModel.speechController.securitySafeSoundName },
-                            set: { viewModel.speechController.setSecuritySafeSound($0) }
+                            get: { shared.speechController.securitySafeSoundName },
+                            set: { shared.speechController.setSecuritySafeSound($0) }
                         ),
-                        onPreview: { viewModel.speechController.previewSound(named: $0) }
+                        onPreview: { shared.speechController.previewSound(named: $0) }
                     )
 
                     SoundPickerRow(
                         label: "Warning",
                         soundName: Binding(
-                            get: { viewModel.speechController.securityWarnSoundName },
-                            set: { viewModel.speechController.setSecurityWarnSound($0) }
+                            get: { shared.speechController.securityWarnSoundName },
+                            set: { shared.speechController.setSecurityWarnSound($0) }
                         ),
-                        onPreview: { viewModel.speechController.previewSound(named: $0) }
+                        onPreview: { shared.speechController.previewSound(named: $0) }
                     )
 
                     SoundPickerRow(
                         label: "Denied",
                         soundName: Binding(
-                            get: { viewModel.speechController.securityDenySoundName },
-                            set: { viewModel.speechController.setSecurityDenySound($0) }
+                            get: { shared.speechController.securityDenySoundName },
+                            set: { shared.speechController.setSecurityDenySound($0) }
                         ),
-                        onPreview: { viewModel.speechController.previewSound(named: $0) }
+                        onPreview: { shared.speechController.previewSound(named: $0) }
                     )
 
                     SoundPickerRow(
                         label: "Abort",
                         soundName: Binding(
-                            get: { viewModel.speechController.securityAbortSoundName },
-                            set: { viewModel.speechController.setSecurityAbortSound($0) }
+                            get: { shared.speechController.securityAbortSoundName },
+                            set: { shared.speechController.setSecurityAbortSound($0) }
                         ),
-                        onPreview: { viewModel.speechController.previewSound(named: $0) }
+                        onPreview: { shared.speechController.previewSound(named: $0) }
                     )
                 }
                 .padding(8)
@@ -473,15 +368,24 @@ struct SettingsView: View {
     }
 
     private func exportDefaults() {
+        // Per-session assignments/tunings are exported from the first session in the list
+        // (or fall back to shared defaults if no session exists yet). The resulting
+        // defaults.json is still a single flat blob — it doesn't capture per-session divergence.
+        let firstVM = sessionManager.sessions.first.flatMap { sessionManager.viewModel(for: $0.id) }
+        let assignments = firstVM?.agentAssignments ?? shared.defaultAgentAssignments
+        let pollIntervals = firstVM?.agentPollIntervals ?? shared.defaultAgentPollIntervals
+        let maxToolCalls = firstVM?.agentMaxToolCalls ?? shared.defaultAgentMaxToolCalls
+        let debounceIntervals = firstVM?.agentMessageDebounceIntervals ?? shared.defaultAgentMessageDebounceIntervals
+
         let data: Data
         do {
             data = try DefaultsExporter.exportCurrentSettings(
-                llmKit: viewModel.llmKit,
-                agentAssignments: viewModel.agentAssignments,
-                pollIntervals: viewModel.agentPollIntervals,
-                maxToolCalls: viewModel.agentMaxToolCalls,
-                messageDebounceIntervals: viewModel.agentMessageDebounceIntervals,
-                speechController: viewModel.speechController
+                llmKit: shared.llmKit,
+                agentAssignments: assignments,
+                pollIntervals: pollIntervals,
+                maxToolCalls: maxToolCalls,
+                messageDebounceIntervals: debounceIntervals,
+                speechController: shared.speechController
             )
         } catch {
             exportError = error.localizedDescription

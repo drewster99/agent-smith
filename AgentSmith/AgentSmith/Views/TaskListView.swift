@@ -30,7 +30,7 @@ struct TaskListView: View {
                 // Active task rows
                 ForEach(activeTasks) { task in
                     Button {
-                        openWindow(value: task.id)
+                        openWindow(value: TaskDetailTarget(sessionID: viewModel.session.id, taskID: task.id))
                     } label: {
                         ActiveTaskRow(task: task, viewModel: viewModel)
                     }
@@ -74,7 +74,7 @@ struct TaskListView: View {
                     TaskSectionHeader(title: "Archived")
                     ForEach(archivedTasks) { task in
                         Button {
-                            openWindow(value: task.id)
+                            openWindow(value: TaskDetailTarget(sessionID: viewModel.session.id, taskID: task.id))
                         } label: {
                             ArchivedTaskRow(task: task, viewModel: viewModel)
                         }
@@ -88,7 +88,7 @@ struct TaskListView: View {
                     TaskSectionHeader(title: "Recently Deleted")
                     ForEach(deletedTasks) { task in
                         Button {
-                            openWindow(value: task.id)
+                            openWindow(value: TaskDetailTarget(sessionID: viewModel.session.id, taskID: task.id))
                         } label: {
                             DeletedTaskRow(task: task, viewModel: viewModel)
                         }

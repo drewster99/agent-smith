@@ -48,7 +48,7 @@ struct ConfigValidationView: View {
 
     private func agentRow(role: AgentRole, label: String, color: Color) -> some View {
         let configID = viewModel.agentAssignments[role]
-        let config = configID.flatMap { id in viewModel.llmKit.configurations.first { $0.id == id } }
+        let config = configID.flatMap { id in viewModel.shared.llmKit.configurations.first { $0.id == id } }
 
         return GroupBox {
             HStack {
