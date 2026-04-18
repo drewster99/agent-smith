@@ -54,12 +54,32 @@ final class SharedAppState {
 
     /// Set when a load/decode operation fails during startup; drives the error alert.
     var startupError: String?
+    /// ID of the session whose window is currently key (frontmost). Updated by
+    /// `SessionScene` via `NSWindow.didBecomeKeyNotification`. Used by commands like
+    /// Cmd+N and Close Session so they target the focused tab, not an arbitrary one.
+    var focusedSessionID: UUID?
+    /// Signal from the File menu → the focused `SessionScene` that it should show a
+    /// close-confirmation sheet for this session ID. Cleared by the scene after handling.
+    /// Only the scene whose session matches acts on it, so the menu command correctly
+    /// routes to the frontmost tab.
+    var closeSessionRequestID: UUID?
+    /// Same pattern for rename.
+    var renameSessionRequestID: UUID?
     /// Set to true after `loadPersistedState()` finishes.
     var hasLoadedPersistedState = false
     /// Tracks the in-flight `loadPersistedState()` call so concurrent windows that all
     /// trigger bootstrap on first appear share a single run rather than double-executing
     /// the migrations and model refresh.
     private var loadTask: Task<Void, Never>?
+    /// Tracks the in-flight `ensureSemanticEngine()` call so concurrent session starts
+    /// share a single MLX model load. Without this, two tabs auto-starting on launch
+    /// would each allocate a fresh `SemanticSearchEngine` and prepare independently.
+    private var semanticEngineTask: Task<SemanticSearchEngine, Error>?
+    /// Tracks the in-flight `ensureMemoryStore()` call so concurrent session starts
+    /// share a single `MemoryStore` instance — critical for the "shared corpus"
+    /// invariant. Without this, each tab would get a different store, writes would
+    /// diverge, and `memories.json` persistence would be last-writer-wins.
+    private var memoryStoreTask: Task<MemoryStore, Error>?
 
     /// Default agent assignments (from bundled defaults) — used when creating a new session.
     private(set) var defaultAgentAssignments: [AgentRole: UUID] = [:]
@@ -103,6 +123,7 @@ final class SharedAppState {
             await self.performLoadPersistedState()
         }
         loadTask = task
+        defer { loadTask = nil }
         await task.value
     }
 
@@ -179,7 +200,23 @@ final class SharedAppState {
 
     /// Creates the shared semantic search engine on demand, preparing the MLX model.
     /// Subsequent calls return the existing engine without re-preparation.
+    /// Concurrent callers (multiple windows auto-starting at launch) share a single
+    /// in-flight `prepare()` run via `semanticEngineTask`.
     func ensureSemanticEngine() async throws -> SemanticSearchEngine {
+        if let engine = semanticSearchEngine { return engine }
+        if let existing = semanticEngineTask {
+            return try await existing.value
+        }
+        let task = Task { @MainActor [weak self] () -> SemanticSearchEngine in
+            guard let self else { throw CancellationError() }
+            return try await self.performEnsureSemanticEngine()
+        }
+        semanticEngineTask = task
+        defer { semanticEngineTask = nil }
+        return try await task.value
+    }
+
+    private func performEnsureSemanticEngine() async throws -> SemanticSearchEngine {
         if let engine = semanticSearchEngine { return engine }
         let engine = SemanticSearchEngine()
         for try await progress in engine.prepare() {
@@ -194,7 +231,23 @@ final class SharedAppState {
 
     /// Creates the shared memory store on demand (after the semantic engine is ready) and
     /// restores memories + task summaries from disk. Wires persistence + UI refresh once.
+    /// Concurrent callers share a single in-flight creation via `memoryStoreTask`, so
+    /// every session's runtime ends up with the same `MemoryStore` instance.
     func ensureMemoryStore() async throws -> MemoryStore {
+        if let store = memoryStore { return store }
+        if let existing = memoryStoreTask {
+            return try await existing.value
+        }
+        let task = Task { @MainActor [weak self] () -> MemoryStore in
+            guard let self else { throw CancellationError() }
+            return try await self.performEnsureMemoryStore()
+        }
+        memoryStoreTask = task
+        defer { memoryStoreTask = nil }
+        return try await task.value
+    }
+
+    private func performEnsureMemoryStore() async throws -> MemoryStore {
         if let store = memoryStore { return store }
         let engine = try await ensureSemanticEngine()
         let store = MemoryStore(engine: engine)

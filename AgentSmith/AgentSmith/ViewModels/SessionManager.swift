@@ -43,6 +43,7 @@ final class SessionManager {
             await self.performLoadSessions()
         }
         loadTask = task
+        defer { loadTask = nil }
         await task.value
     }
 
@@ -76,10 +77,16 @@ final class SessionManager {
         }
 
         // Copy legacy agentAssignments from UserDefaults into the new session's state.json.
+        // `assignmentsDecoded` tracks whether the raw bytes actually parsed — if both formats
+        // fail to decode, we must NOT delete the UserDefaults key, so a future version (or
+        // manual repair) can still reach the bytes.
         var legacyAssignments: [AgentRole: UUID] = [:]
+        var assignmentsDecoded = false
+        let hadAssignmentsKey = UserDefaults.standard.data(forKey: "agentAssignments") != nil
         if let data = UserDefaults.standard.data(forKey: "agentAssignments") {
             do {
                 legacyAssignments = try JSONDecoder().decode([AgentRole: UUID].self, from: data)
+                assignmentsDecoded = true
             } catch {
                 // Previous format was an alternating ["role","uuid",…] array.
                 do {
@@ -90,6 +97,7 @@ final class SessionManager {
                             legacyAssignments[role] = uuid
                         }
                     }
+                    assignmentsDecoded = true
                 } catch {
                     logger.error("Failed to decode legacy agent assignments: \(error.localizedDescription)")
                 }
@@ -99,17 +107,24 @@ final class SessionManager {
         let legacyAutoRunNextTask = (UserDefaults.standard.object(forKey: "autoRunNextTask") as? Bool) ?? true
         let legacyAutoRunInterrupted = (UserDefaults.standard.object(forKey: "autoRunInterruptedTasks") as? Bool) ?? false
 
-        // Migrate legacy message history into the per-session key if present.
+        // Migrate legacy message history into the per-session key if present. `historyMigrated`
+        // guards the eventual delete — we never drop the legacy bytes if the encode/set failed.
         let legacyHistoryKey = "messageHistory"
+        var historyMigrated = false
+        let hadLegacyHistory = (UserDefaults.standard.stringArray(forKey: legacyHistoryKey) ?? []).isEmpty == false
         if let legacyHistory = UserDefaults.standard.stringArray(forKey: legacyHistoryKey), !legacyHistory.isEmpty {
             let sessionHistoryKey = "messageHistory.\(defaultSession.id.uuidString)"
             if UserDefaults.standard.data(forKey: sessionHistoryKey) == nil {
                 do {
                     let data = try JSONEncoder().encode(legacyHistory)
                     UserDefaults.standard.set(data, forKey: sessionHistoryKey)
+                    historyMigrated = true
                 } catch {
                     logger.error("Failed to migrate legacy message history: \(error.localizedDescription)")
                 }
+            } else {
+                // The per-session key already has history — the legacy key is redundant.
+                historyMigrated = true
             }
         }
 
@@ -121,10 +136,30 @@ final class SessionManager {
             autoRunInterruptedTasks: legacyAutoRunInterrupted
         )
 
+        var stateSaved = false
         do {
             try await pm.saveSessionState(state)
+            stateSaved = true
         } catch {
             logger.error("Failed to save Default session state: \(error.localizedDescription)")
+        }
+
+        // Only purge legacy keys once the per-session state has landed on disk AND the specific
+        // migration step succeeded. If any step failed, leave its source bytes in UserDefaults
+        // so a subsequent launch (possibly with fixed code) can retry.
+        if stateSaved {
+            // Assignments: only remove if it either decoded cleanly or was never set.
+            if assignmentsDecoded || !hadAssignmentsKey {
+                UserDefaults.standard.removeObject(forKey: "agentAssignments")
+            }
+            // Bools can't fail to read; always safe to remove.
+            UserDefaults.standard.removeObject(forKey: "autoRunNextTask")
+            UserDefaults.standard.removeObject(forKey: "autoRunInterruptedTasks")
+            // History: only remove if re-saved under the session key, or there was nothing
+            // to migrate in the first place.
+            if historyMigrated || !hadLegacyHistory {
+                UserDefaults.standard.removeObject(forKey: legacyHistoryKey)
+            }
         }
 
         sessions = [defaultSession]
@@ -156,19 +191,25 @@ final class SessionManager {
 
     /// Creates a new empty session, persists the list, and returns the session.
     ///
-    /// If any existing session has a loaded view model, the new session inherits that
-    /// session's per-session settings (agent assignments, tunings, tool flags, auto-run
-    /// behaviors). This means Cmd+N gives the user another tab pre-configured like their
-    /// current tab, rather than forcing them back to the bundled defaults — which may
-    /// reference stale model IDs.
+    /// If `templateSessionID` resolves to a loaded view model, the new session inherits
+    /// that session's per-session settings. Otherwise, any loaded view model is used as
+    /// a fallback. This means Cmd+N from a specific tab gives the user another tab
+    /// pre-configured like the one they were just using, rather than whichever VM
+    /// happened to be first in the dictionary's hash order.
     @discardableResult
-    func createSession(name: String = "New Session") async -> Session {
+    func createSession(name: String = "New Session", templateSessionID: UUID? = nil) async -> Session {
         let session = Session(name: name)
         sessions.append(session)
         await persistSessions()
 
-        // Inherit settings from an existing loaded session if available.
-        if let template = viewModels.values.first {
+        // Inherit settings: prefer the caller's specified template, fall back to any loaded VM.
+        let template: AppViewModel? = {
+            if let templateSessionID, let explicit = viewModels[templateSessionID] {
+                return explicit
+            }
+            return viewModels.values.first
+        }()
+        if let template {
             let inheritedState = SessionState(
                 agentAssignments: template.agentAssignments,
                 agentPollIntervals: template.agentPollIntervals,
