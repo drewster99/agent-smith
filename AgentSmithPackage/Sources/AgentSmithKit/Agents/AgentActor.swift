@@ -1954,6 +1954,9 @@ public actor AgentActor {
 
     /// Sliding-window prune for non-Brown agents. Keeps ~35% of recent messages.
     private func pruneNonBrownHistory(inputBudget: Int) {
+        // Need at least a system prompt + two messages for pruning to make sense.
+        guard conversationHistory.count > 2 else { return }
+
         let targetTokens = inputBudget * 7 / 20
         var keptTokens = 0
         var keepFromIndex = conversationHistory.count

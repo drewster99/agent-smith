@@ -1237,10 +1237,20 @@ struct VoicePickerRow: View {
     let availableVoices: [AVSpeechSynthesisVoice]
     let onTest: () -> Void
 
+    private var displaySelection: Binding<String> {
+        Binding(
+            get: {
+                if voiceIdentifier.isEmpty { return "" }
+                return availableVoices.contains { $0.identifier == voiceIdentifier } ? voiceIdentifier : ""
+            },
+            set: { voiceIdentifier = $0 }
+        )
+    }
+
     var body: some View {
         LabeledContent("Voice") {
             HStack {
-                Picker("", selection: $voiceIdentifier) {
+                Picker("", selection: displaySelection) {
                     Text("System Default").tag("")
                     ForEach(availableVoices, id: \.identifier) { voice in
                         Text("\(voice.name) (\(voice.language))").tag(voice.identifier)
