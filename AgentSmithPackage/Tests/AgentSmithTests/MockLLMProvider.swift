@@ -7,6 +7,7 @@ final class MockLLMProvider: LLMProvider, @unchecked Sendable {
     private var _responses: [LLMResponse]
     private var _callCount = 0
     private var _receivedMessages: [[LLMMessage]] = []
+    private var _receivedMaxTokenOverrides: [Int?] = []
 
     /// Initializes with a queue of responses that will be returned in order.
     init(responses: [LLMResponse]) {
@@ -21,12 +22,18 @@ final class MockLLMProvider: LLMProvider, @unchecked Sendable {
         lock.withLock { _receivedMessages }
     }
 
+    var receivedMaxTokenOverrides: [Int?] {
+        lock.withLock { _receivedMaxTokenOverrides }
+    }
+
     func send(
         messages: [LLMMessage],
-        tools: [LLMToolDefinition]
+        tools: [LLMToolDefinition],
+        maxOutputTokensOverride: Int?
     ) async throws -> LLMResponse {
         lock.withLock {
             _receivedMessages.append(messages)
+            _receivedMaxTokenOverrides.append(maxOutputTokensOverride)
             precondition(!_responses.isEmpty, "MockLLMProvider has no canned responses")
             let index = min(_callCount, _responses.count - 1)
             _callCount += 1

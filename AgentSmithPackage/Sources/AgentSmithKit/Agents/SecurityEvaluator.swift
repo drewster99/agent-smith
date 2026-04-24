@@ -20,6 +20,16 @@ public struct SecurityDisposition: Sendable {
     }
 }
 
+/// Execution outcome of a tool call.
+public enum ToolExecutionOutcome: String, Codable, Sendable {
+    /// Tool has not yet been executed
+    case notExecuted
+    /// Tool was executed and succeeded
+    case succeeded
+    /// Tool was approved but failed during execution
+    case safeButFailed
+}
+
 /// Record of a single security evaluation for inspector display.
 public struct EvaluationRecord: Sendable, Identifiable {
     public let id = UUID()
@@ -39,6 +49,34 @@ public struct EvaluationRecord: Sendable, Identifiable {
     public let disposition: SecurityDisposition
     /// Wall-clock time in milliseconds for the evaluation round-trip.
     public let latencyMs: Int
+    /// The execution outcome of the tool call (if executed).
+    public let executionOutcome: ToolExecutionOutcome
+    /// The tool call ID for tracking execution status.
+    public let toolCallID: String
+    
+    public init(
+        timestamp: Date,
+        toolName: String,
+        toolParams: String,
+        taskTitle: String?,
+        prompt: String,
+        response: String,
+        disposition: SecurityDisposition,
+        latencyMs: Int,
+        executionOutcome: ToolExecutionOutcome = .notExecuted,
+        toolCallID: String = ""
+    ) {
+        self.timestamp = timestamp
+        self.toolName = toolName
+        self.toolParams = toolParams
+        self.taskTitle = taskTitle
+        self.prompt = prompt
+        self.response = response
+        self.disposition = disposition
+        self.latencyMs = latencyMs
+        self.executionOutcome = executionOutcome
+        self.toolCallID = toolCallID
+    }
 }
 
 /// Direct security evaluator that replaces the Jones agent actor.
@@ -52,8 +90,19 @@ public actor SecurityEvaluator {
     private let channel: MessageChannel
     private let abort: @Sendable (String, AgentRole) async -> Void
 
-    /// Ring buffer of recent tool request summaries for evaluation context.
-    private var recentToolRequestSummaries: [String] = []
+    /// Ring buffer of recent tool requests for evaluation context. Each entry
+    /// retains the originating tool call ID so the prompt can annotate the
+    /// summary with the actual execution outcome (succeeded / failed / unknown)
+    /// — without that, Jones sees only "verdict: SAFE" and assumes the tool
+    /// actually ran successfully, which leads to false denials of legitimate
+    /// retries after a tool error.
+    private struct RecentToolRequest {
+        let toolName: String
+        let toolParams: String
+        let verdict: String
+        let toolCallID: String?
+    }
+    private var recentToolRequests: [RecentToolRequest] = []
     private static let maxRecentToolRequests = 10
 
     /// WARN retry tracking — an identical retry of a WARN'd request is auto-approved.
@@ -80,6 +129,16 @@ public actor SecurityEvaluator {
         return tool.definition(for: .jones)
     }()
 
+    /// Per-call output cap for Jones. A SAFE/WARN/UNSAFE/ABORT verdict line plus
+    /// terse reasoning fits comfortably under this. Capping prevents pathological
+    /// chain-of-thought preambles from chatty models (notably claude-haiku-4-5)
+    /// from running long and burning tokens on output the parser will discard.
+    /// Mutually exclusive with extended thinking — Anthropic requires
+    /// max_tokens > thinking_budget (>=1024), so enabling thinking on Jones's
+    /// configuration would force this cap to be lifted via the override clamp
+    /// in the provider.
+    private static let evaluationMaxOutputTokens = 200
+
     /// Evaluation history for inspector display.
     private var history: [EvaluationRecord] = []
     private static let maxHistory = 50
@@ -100,6 +159,11 @@ public actor SecurityEvaluator {
     /// Session ID for the current orchestration run — stamped on every UsageRecord.
     private let sessionID: UUID?
 
+    /// Function to check if a tool call has already succeeded.
+    private let hasToolSucceeded: @Sendable (String) async -> Bool
+    /// Function to check if a tool call has already failed after being approved.
+    private let hasToolFailed: @Sendable (String) async -> Bool
+
     public init(
         provider: any LLMProvider,
         systemPrompt: String,
@@ -108,7 +172,9 @@ public actor SecurityEvaluator {
         usageStore: UsageStore? = nil,
         configuration: ModelConfiguration? = nil,
         providerType: String = "",
-        sessionID: UUID? = nil
+        sessionID: UUID? = nil,
+        hasToolSucceeded: @escaping @Sendable (String) async -> Bool = { _ in false },
+        hasToolFailed: @escaping @Sendable (String) async -> Bool = { _ in false }
     ) {
         self.provider = provider
         self.systemPrompt = systemPrompt
@@ -118,6 +184,8 @@ public actor SecurityEvaluator {
         self.configuration = configuration
         self.providerType = providerType
         self.sessionID = sessionID
+        self.hasToolSucceeded = hasToolSucceeded
+        self.hasToolFailed = hasToolFailed
     }
 
     /// Returns the evaluation history for inspector display.
@@ -157,7 +225,8 @@ public actor SecurityEvaluator {
         taskID: String?,
         taskDescription: String?,
         siblingCalls: String?,
-        agentRoleName: String
+        agentRoleName: String,
+        toolCallID: String? = nil
     ) async -> SecurityDisposition {
         let parsedParams = Self.parseToolParams(toolParams)
 
@@ -166,11 +235,11 @@ public actor SecurityEvaluator {
             $0.toolName == toolName && $0.toolParams == parsedParams
         }) {
             pendingWarnRetries.remove(at: matchIndex)
-            appendSummary("\(toolName) \(toolParams)", verdict: "SAFE (auto-approved retry of prior WARN)")
+            appendSummary(toolName: toolName, toolParams: toolParams, verdict: "SAFE (auto-approved retry of prior WARN)", toolCallID: toolCallID)
             return SecurityDisposition(approved: true, isAutoApproval: true)
         }
 
-        let evalPrompt = buildEvalPrompt(
+        let evalPrompt = await buildEvalPrompt(
             toolName: toolName,
             toolParams: toolParams,
             toolDescription: toolDescription,
@@ -199,7 +268,11 @@ public actor SecurityEvaluator {
             let callLatencyMs: Int
             do {
                 let callStart = Date()
-                response = try await provider.send(messages: conversationMessages, tools: [Self.fileReadToolDef])
+                response = try await provider.send(
+                    messages: conversationMessages,
+                    tools: [Self.fileReadToolDef],
+                    maxOutputTokensOverride: Self.evaluationMaxOutputTokens
+                )
                 callLatencyMs = Int(Date().timeIntervalSince(callStart) * 1000)
             } catch {
                 if Task.isCancelled {
@@ -276,14 +349,15 @@ public actor SecurityEvaluator {
             }
 
             consecutiveEvaluationFailures = 0
-            recordEvaluation(toolName: toolName, toolParams: toolParams, taskTitle: taskTitle, prompt: evalPrompt, response: responseText, disposition: disposition, startTime: startTime)
+            recordEvaluation(toolName: toolName, toolParams: toolParams, taskTitle: taskTitle, prompt: evalPrompt, response: responseText, disposition: disposition, startTime: startTime, toolCallID: toolCallID ?? "")
 
             // Record the summary with the verdict (after evaluation, so we have the result).
-            appendSummary("\(toolName) \(toolParams)", verdict: Self.verdictSummary(from: responseText))
+            appendSummary(toolName: toolName, toolParams: toolParams, verdict: Self.verdictSummary(from: responseText), toolCallID: toolCallID)
 
-            // Handle ABORT — trigger system-wide shutdown.
+            // Handle ABORT — trigger system-wide shutdown. Uses verdictSummary so
+            // ABORT is detected even when the model prefixes the verdict with preamble.
             if !disposition.approved, let msg = disposition.message,
-               responseText.trimmingCharacters(in: .whitespacesAndNewlines).uppercased().hasPrefix("ABORT") {
+               Self.verdictSummary(from: responseText).uppercased().hasPrefix("ABORT") {
                 await postToChannel(ChannelMessage(
                     sender: .system,
                     content: "Security review: ABORT — \(msg)",
@@ -327,39 +401,57 @@ public actor SecurityEvaluator {
             message: fallbackMessage
         )
         let recordedResponse = lastErrorDescription ?? "(parse failure)"
-        recordEvaluation(toolName: toolName, toolParams: toolParams, taskTitle: taskTitle, prompt: evalPrompt, response: recordedResponse, disposition: fallback, startTime: startTime)
-        appendSummary("\(toolName) \(toolParams)", verdict: "UNSAFE (evaluation failed)")
+        recordEvaluation(toolName: toolName, toolParams: toolParams, taskTitle: taskTitle, prompt: evalPrompt, response: recordedResponse, disposition: fallback, startTime: startTime, toolCallID: toolCallID ?? "")
+        appendSummary(toolName: toolName, toolParams: toolParams, verdict: "UNSAFE (evaluation failed)", toolCallID: toolCallID)
         return fallback
-    }
-
-    /// Prunes recent tool summaries when context grows too large.
-    public func pruneHistory() {
-        guard !recentToolRequestSummaries.isEmpty else { return }
-        let removeCount = max(1, recentToolRequestSummaries.count / 2)
-        recentToolRequestSummaries.removeFirst(removeCount)
     }
 
     // MARK: - Private
 
-    private func appendSummary(_ summary: String, verdict: String) {
-        recentToolRequestSummaries.append("\(summary) → \(verdict)")
-        if recentToolRequestSummaries.count > Self.maxRecentToolRequests {
-            recentToolRequestSummaries.removeFirst()
+    private func appendSummary(toolName: String, toolParams: String, verdict: String, toolCallID: String?) {
+        recentToolRequests.append(RecentToolRequest(
+            toolName: toolName,
+            toolParams: toolParams,
+            verdict: verdict,
+            toolCallID: toolCallID
+        ))
+        if recentToolRequests.count > Self.maxRecentToolRequests {
+            recentToolRequests.removeFirst()
         }
     }
 
     /// Extracts the verdict keyword and reasoning from Jones's raw response text,
     /// stripping the WARN retry boilerplate that is only relevant to Brown.
+    ///
+    /// Mirrors `parseDisposition`'s preamble-tolerance: scans all lines for the last
+    /// one beginning with a verdict keyword so responses with chain-of-thought
+    /// preceding the verdict still produce a useful one-line summary.
     private static func verdictSummary(from responseText: String) -> String {
         let trimmed = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "(no response)" }
-        // Return the full first line (e.g. "SAFE reasonable file read for task context").
-        // Multi-line responses are truncated — the first line has the verdict + reasoning.
+        let verdictKeywords: Set<String> = ["SAFE", "WARN", "UNSAFE", "ABORT"]
+        let stripSet = CharacterSet.whitespaces.union(CharacterSet(charactersIn: "*_`#>-•·\t "))
+
+        var lastVerdictLine: String?
+        for rawLine in trimmed.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+            let line = String(rawLine).trimmingCharacters(in: stripSet)
+            guard !line.isEmpty else { continue }
+            let words = line.split(separator: " ", maxSplits: 1)
+            guard let first = words.first else { continue }
+            let keyword = first.trimmingCharacters(in: CharacterSet.punctuationCharacters).uppercased()
+            if verdictKeywords.contains(keyword) {
+                lastVerdictLine = line
+            }
+        }
+
+        if let lastVerdictLine { return lastVerdictLine }
+        // Fall back to the first non-empty line so summaries still show *something*
+        // useful even when the response is unparseable.
         let firstLineEnd = trimmed.firstIndex(where: { $0 == "\n" || $0 == "\r" }) ?? trimmed.endIndex
         return String(trimmed[trimmed.startIndex..<firstLineEnd])
     }
 
-    private func recordEvaluation(toolName: String, toolParams: String, taskTitle: String?, prompt: String, response: String, disposition: SecurityDisposition, startTime: Date) {
+    private func recordEvaluation(toolName: String, toolParams: String, taskTitle: String?, prompt: String, response: String, disposition: SecurityDisposition, startTime: Date, executionOutcome: ToolExecutionOutcome = .notExecuted, toolCallID: String = "") {
         let latency = Int(Date().timeIntervalSince(startTime) * 1000)
         let record = EvaluationRecord(
             timestamp: Date(),
@@ -369,7 +461,9 @@ public actor SecurityEvaluator {
             prompt: prompt,
             response: response,
             disposition: disposition,
-            latencyMs: latency
+            latencyMs: latency,
+            executionOutcome: executionOutcome,
+            toolCallID: toolCallID
         )
         history.append(record)
         if history.count > Self.maxHistory {
@@ -387,7 +481,7 @@ public actor SecurityEvaluator {
         taskID: String?,
         taskDescription: String?,
         siblingCalls: String?
-    ) -> String {
+    ) async -> String {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss zzz"
         let dateStr = dateFormatter.string(from: Date())
@@ -404,11 +498,28 @@ public actor SecurityEvaluator {
                 """)
         }
 
-        if !recentToolRequestSummaries.isEmpty {
-            let recent = recentToolRequestSummaries.enumerated()
-                .map { "\($0.offset + 1). \($0.element)" }
-                .joined(separator: "\n")
-            sections.append("# Recent tool calls (for context):\n\(recent)")
+        if !recentToolRequests.isEmpty {
+            // Annotate each entry with the actual execution outcome of the
+            // approved tool call. Without this Jones cannot tell that a SAFE
+            // verdict still produced an error at execution time, and
+            // (incorrectly) refuses legitimate retry attempts as duplicates.
+            var renderedLines: [String] = []
+            for (index, entry) in recentToolRequests.enumerated() {
+                let outcome: String
+                if let id = entry.toolCallID, !id.isEmpty {
+                    if await hasToolSucceeded(id) {
+                        outcome = " [executed: succeeded]"
+                    } else if await hasToolFailed(id) {
+                        outcome = " [executed: FAILED — retry of an identical request is a legitimate response to the failure, not a duplicate operation]"
+                    } else {
+                        outcome = " [executed: not yet recorded]"
+                    }
+                } else {
+                    outcome = ""
+                }
+                renderedLines.append("\(index + 1). \(entry.toolName) \(entry.toolParams) → \(entry.verdict)\(outcome)")
+            }
+            sections.append("# Recent tool calls (for context):\n\(renderedLines.joined(separator: "\n"))")
         }
 
         if let siblings = siblingCalls, !siblings.isEmpty {
@@ -468,7 +579,15 @@ public actor SecurityEvaluator {
 
             ## If you are uncertain as to how to respond, respond with WARN.
 
-            Your response will be processed by an automated system, so it is REQUIRED that you MUST respond with a SINGLE LINE OF TEXT that begins with one of those 4 words (SAFE, WARN, UNSAFE, ABORT).
+            Your response will be processed by an automated system. DO NOT write any preamble, reasoning, \
+            analysis, or chain-of-thought before your verdict. Your response MUST begin — on the very first \
+            character of the very first line — with one of the four keywords SAFE, WARN, UNSAFE, or ABORT, \
+            followed by your terse reasoning. No leading whitespace, no prefacing sentences, no markdown \
+            headers, no "Let me think...", no "Based on...". Just the keyword, then your reasoning, all on one line.
+
+            Correct: `SAFE reading a project file for task context`
+            Incorrect: `Let me analyze this... SAFE reading a project file`
+            Incorrect: `Based on the task, this appears safe.\\nSAFE reading a project file`
             """
         sections.append(requestSection)
 
@@ -477,22 +596,49 @@ public actor SecurityEvaluator {
 
     /// Parses Jones's text response into a SecurityDisposition.
     /// Returns nil on parse failure (caller should retry).
+    ///
+    /// Robust to models that emit preamble or chain-of-thought before the verdict
+    /// (notably observed on claude-haiku-4-5). Scans all lines for the *last* line
+    /// whose first word — after trimming leading whitespace, markdown punctuation,
+    /// and list bullets — is SAFE/WARN/UNSAFE/ABORT. The last match wins so a model
+    /// that reasons about "UNSAFE" earlier and concludes "SAFE" ends up approved.
     private func parseDisposition(_ text: String, toolName: String, parsedParams: [String: AnyCodable]?, agentRoleName: String) -> SecurityDisposition? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let firstLineEnd = trimmed.firstIndex(where: { $0 == "\n" || $0 == "\r" }) ?? trimmed.endIndex
-        let firstLine = String(trimmed[trimmed.startIndex..<firstLineEnd])
-        let words = firstLine.split(separator: " ", maxSplits: 1)
+        let verdictKeywords: Set<String> = ["SAFE", "WARN", "UNSAFE", "ABORT"]
+        let stripSet = CharacterSet.whitespaces.union(CharacterSet(charactersIn: "*_`#>-•·\t "))
 
-        guard let keyword = words.first else { return nil }
-        let keywordUpper = keyword.uppercased()
+        let lines = trimmed.split(whereSeparator: { $0 == "\n" || $0 == "\r" })
+
+        var matchedKeyword: String?
+        var matchedRemainder: String?
+        var matchedLineIndex: Int?
+
+        for (index, rawLine) in lines.enumerated() {
+            let line = String(rawLine).trimmingCharacters(in: stripSet)
+            guard !line.isEmpty else { continue }
+            let words = line.split(separator: " ", maxSplits: 1)
+            guard let first = words.first else { continue }
+            let keywordCandidate = first.trimmingCharacters(in: CharacterSet.punctuationCharacters).uppercased()
+            if verdictKeywords.contains(keywordCandidate) {
+                matchedKeyword = keywordCandidate
+                matchedRemainder = words.count > 1 ? String(words[1]) : nil
+                matchedLineIndex = index
+            }
+        }
+
+        guard let keywordUpper = matchedKeyword, let matchIdx = matchedLineIndex else {
+            return nil
+        }
 
         let explanatoryText: String? = {
             var parts: [String] = []
-            if words.count > 1 {
-                parts.append(String(words[1]))
+            if let remainder = matchedRemainder, !remainder.isEmpty {
+                parts.append(remainder)
             }
-            if firstLineEnd < trimmed.endIndex {
-                let rest = String(trimmed[trimmed.index(after: firstLineEnd)...])
+            if matchIdx + 1 < lines.count {
+                let rest = lines[(matchIdx + 1)...]
+                    .map(String.init)
+                    .joined(separator: "\n")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if !rest.isEmpty {
                     parts.append(rest)

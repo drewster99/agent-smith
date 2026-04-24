@@ -952,7 +952,10 @@ public actor OrchestrationRuntime {
         currentResumingTaskID: UUID? = nil,
         filesReadInSession: FileReadTracker? = nil
     ) -> ToolContext {
-        ToolContext(
+        // Create a tool execution tracker for this agent
+        let executionTracker = ToolExecutionTracker()
+
+        return ToolContext(
             agentID: agentID,
             agentRole: role,
             channel: channel,
@@ -1014,6 +1017,18 @@ public actor OrchestrationRuntime {
             },
             hasFileBeenRead: { path in
                 filesReadInSession?.contains(path) ?? false
+            },
+            setToolExecutionStatus: { [weak executionTracker] toolCallID, succeeded in
+                guard let executionTracker else { return }
+                await executionTracker.recordExecutionStatus(toolCallID: toolCallID, succeeded: succeeded)
+            },
+            hasToolSucceeded: { [weak executionTracker] toolCallID in
+                guard let executionTracker else { return false }
+                return await executionTracker.hasSucceeded(toolCallID: toolCallID)
+            },
+            hasToolFailed: { [weak executionTracker] toolCallID in
+                guard let executionTracker else { return false }
+                return await executionTracker.hasFailed(toolCallID: toolCallID)
             }
         )
     }

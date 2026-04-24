@@ -914,7 +914,8 @@ public actor AgentActor {
                         taskID: entry.taskID,
                         taskDescription: entry.taskDescription,
                         siblingCalls: entry.siblings.isEmpty ? nil : entry.siblings,
-                        agentRoleName: roleName
+                        agentRoleName: roleName,
+                        toolCallID: entry.call.id
                     )
 
                     let shouldSignalEnd = jonesActiveCount.withLock { count -> Bool in
@@ -1133,7 +1134,8 @@ public actor AgentActor {
             taskID: currentTask?.id.uuidString,
             taskDescription: currentTask?.description,
             siblingCalls: siblings,
-            agentRoleName: configuration.role.displayName
+            agentRoleName: configuration.role.displayName,
+            toolCallID: call.id
         )
         toolContext.onJonesProcessingStateChange(false)
 
@@ -1163,15 +1165,21 @@ public actor AgentActor {
     private func directExecute(_ call: LLMToolCall, tool: any AgentTool) async -> String {
         let start = Date()
         let result: String
+        var executionSucceeded = false
         do {
             let args = try call.parsedArguments()
             result = try await tool.execute(arguments: args, context: toolContext)
+            executionSucceeded = true
         } catch {
             result = "Tool error: \(error.localizedDescription)"
+            executionSucceeded = false
         }
         let elapsedMs = Int(Date().timeIntervalSince(start) * 1000)
         turnToolExecutionMs += elapsedMs
         turnToolResultChars += result.count
+        
+        await toolContext.setToolExecutionStatus(call.id, executionSucceeded)
+        
         return result
     }
 

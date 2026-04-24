@@ -130,6 +130,14 @@ public struct ToolContext: Sendable {
     public let recordFileRead: @Sendable (String) -> Void
     /// Returns true if the file at the given path was read during this agent session.
     public let hasFileBeenRead: @Sendable (String) -> Bool
+    /// Records the execution status of a tool call for security agent inspection.
+    public let setToolExecutionStatus: @Sendable (String, Bool) async -> Void
+    /// Checks if a tool call has already succeeded. Async because the underlying
+    /// store is actor-isolated.
+    public let hasToolSucceeded: @Sendable (String) async -> Bool
+    /// Checks if a tool call has already failed after being approved. Async because
+    /// the underlying store is actor-isolated.
+    public let hasToolFailed: @Sendable (String) async -> Bool
 
     public init(
         agentID: UUID,
@@ -154,7 +162,10 @@ public struct ToolContext: Sendable {
         mergeMemoryContent: @escaping @Sendable (String, String) async -> String? = { _, _ in nil },
         autoAdvanceEnabled: @escaping @Sendable () async -> Bool = { true },
         recordFileRead: @escaping @Sendable (String) -> Void = { _ in },
-        hasFileBeenRead: @escaping @Sendable (String) -> Bool = { _ in false }
+        hasFileBeenRead: @escaping @Sendable (String) -> Bool = { _ in false },
+        setToolExecutionStatus: @escaping @Sendable (String, Bool) async -> Void = { _, _ in },
+        hasToolSucceeded: @escaping @Sendable (String) async -> Bool = { _ in false },
+        hasToolFailed: @escaping @Sendable (String) async -> Bool = { _ in false }
     ) {
         self.agentID = agentID
         self.agentRole = agentRole
@@ -179,6 +190,9 @@ public struct ToolContext: Sendable {
         self.autoAdvanceEnabled = autoAdvanceEnabled
         self.recordFileRead = recordFileRead
         self.hasFileBeenRead = hasFileBeenRead
+        self.setToolExecutionStatus = setToolExecutionStatus
+        self.hasToolSucceeded = hasToolSucceeded
+        self.hasToolFailed = hasToolFailed
     }
 
     /// Posts a message to the channel, auto-stamping it with the owning agent's
