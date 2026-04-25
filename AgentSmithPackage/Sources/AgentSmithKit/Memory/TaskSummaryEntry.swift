@@ -1,6 +1,11 @@
 import Foundation
 
 /// An LLM-generated summary of a completed or failed task, embedded for semantic search.
+///
+/// `embedding` is a single L2-normalized `[Float]` vector; legacy on-disk shapes
+/// (`[[Double]]`, `[Double]`) decode to an empty array and disable the semantic-similarity
+/// contribution for that summary rather than failing the whole-array decode in persistence.
+/// `embeddingSourceText` falls back to the empty string if absent in a legacy record.
 public struct TaskSummaryEntry: Codable, Identifiable, Sendable {
     /// Matches the `AgentTask.id` this summary was generated from.
     public let id: UUID
@@ -40,5 +45,21 @@ public struct TaskSummaryEntry: Codable, Identifiable, Sendable {
         self.status = status
         self.taskCreatedAt = taskCreatedAt
         self.createdAt = createdAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, summary, embeddingSourceText, embedding, status, taskCreatedAt, createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        summary = try c.decode(String.self, forKey: .summary)
+        embeddingSourceText = try c.decodeIfPresent(String.self, forKey: .embeddingSourceText) ?? ""
+        embedding = (try? c.decode([Float].self, forKey: .embedding)) ?? []
+        status = try c.decode(AgentTask.Status.self, forKey: .status)
+        taskCreatedAt = try c.decode(Date.self, forKey: .taskCreatedAt)
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
     }
 }

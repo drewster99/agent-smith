@@ -26,10 +26,12 @@ final class SessionManager {
         self.shared = shared
     }
 
-    // MARK: - Loading / migration
+    // MARK: - Loading
 
-    /// Loads the session list from disk. On first launch, migrates legacy single-session
-    /// data into a "Default" session and/or creates an empty "Default" if nothing exists.
+    /// Loads the session list from disk. If the list is empty (a fresh install or a
+    /// previously emptied install), a single "Default" session is bootstrapped. The legacy
+    /// single-session-to-multi-session migration that earlier versions performed here was
+    /// retired in 2026-04 — by that point all surviving installs had already migrated.
     /// Safe to call from multiple windows concurrently — the first call does the work,
     /// subsequent callers await the same Task.
     func loadSessions() async {

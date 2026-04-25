@@ -52,11 +52,9 @@ public actor AgentActor {
     /// All scheduled wakes for this agent. Each carries an id, time, reason, and optional task
     /// association. Sorted ascending by `wakeAt`. The earliest wake bounds the next idle sleep.
     private var scheduledWakes: [ScheduledWake] = []
+
     /// The currently sleeping idle task. Cancelling it wakes the agent early.
     private var idleSleepTask: Task<Void, Never>?
-    /// Conflict window for `scheduleWake` — a new wake within this many seconds of an existing
-    /// one is treated as a conflict unless `replacesID` is provided.
-    private static let scheduleWakeConflictWindowSeconds: TimeInterval = 60
 
     /// Seconds of channel silence required before processing new messages.
     private let messageDebounceInterval: TimeInterval
@@ -274,11 +272,10 @@ public actor AgentActor {
         syntheticFirstToolCall = toolName
     }
 
-    /// Schedules a wake. Returns `.scheduled(wake)` on success, `.conflict(...)` if a wake
-    /// already exists within `scheduleWakeConflictWindowSeconds` of the requested time and the
-    /// caller didn't pass `replacesID`, or `.error(...)` for validation failures.
-    /// If `replacesID` is supplied, that wake is cancelled before scheduling the new one and
-    /// conflict checking is skipped against it.
+    /// Schedules a wake. Returns `.scheduled(wake)` on success, or `.error(...)` for
+    /// validation failures. If `replacesID` is supplied, that wake is cancelled before
+    /// scheduling the new one. Multiple wakes can share a wake time without conflict —
+    /// callers that genuinely want a single replacement should pass `replacesID`.
     public func scheduleWake(
         wakeAt: Date,
         reason: String,
@@ -292,14 +289,6 @@ public actor AgentActor {
 
         if let replacesID {
             scheduledWakes.removeAll { $0.id == replacesID }
-        }
-
-        let window = Self.scheduleWakeConflictWindowSeconds
-        let conflicts = scheduledWakes.filter {
-            abs($0.wakeAt.timeIntervalSince(wakeAt)) <= window
-        }
-        if !conflicts.isEmpty {
-            return .conflict(existing: conflicts, requestedAt: wakeAt)
         }
 
         let wake = ScheduledWake(wakeAt: wakeAt, reason: trimmedReason, taskID: taskID)
@@ -547,6 +536,11 @@ public actor AgentActor {
                         role: .tool,
                         content: .toolResult(toolCallID: syntheticCall.id, content: Self.capToolResult(result))
                     ))
+                    if configuration.role == .brown && toolName == "task_acknowledged" {
+                        lastTaskCommunicationAt = Date()
+                        toolCallsSinceTaskCommunication = 0
+                        brownSilenceNudgeArmed = true
+                    }
                     pushLiveContext()
                 }
                 continue
@@ -942,6 +936,7 @@ public actor AgentActor {
                         result = await directExecute(call, tool: tool)
                     } else {
                         result = "Unknown tool: \(call.name)"
+                        await toolContext.setToolExecutionStatus(call.id, false)
                     }
                     executedCallIDs.insert(call.id)
                     updatePostCallFlags(call: call, result: result, sentMessage: &sentMessage, calledTaskComplete: &calledTaskComplete, calledCreateTask: &calledCreateTask)
@@ -1139,6 +1134,7 @@ public actor AgentActor {
                         }
                     } else {
                         result = "Unknown tool: \(call.name)"
+                        await toolContext.setToolExecutionStatus(call.id, false)
                     }
                     executedCallIDs.insert(call.id)
                     updatePostCallFlags(call: call, result: result, sentMessage: &sentMessage, calledTaskComplete: &calledTaskComplete, calledCreateTask: &calledCreateTask)
@@ -1159,6 +1155,7 @@ public actor AgentActor {
                 role: .tool,
                 content: .toolResult(toolCallID: call.id, content: "Tool execution cancelled (agent stopped)")
             ))
+            await toolContext.setToolExecutionStatus(call.id, false)
             appendedPlaceholders = true
         }
         if appendedPlaceholders { pushLiveContext() }
@@ -1522,7 +1519,10 @@ public actor AgentActor {
     /// or the earliest scheduled wake (whichever comes first).
     private func idleWait(maxDuration: TimeInterval? = nil) async {
         var duration = maxDuration ?? pollInterval
-        if let earliest = scheduledWakes.first {
+        // Skip the wake-clamp during task review: elapsed wakes are held in the queue,
+        // so a wake whose `wakeAt` is in the past would otherwise tight-loop us at 0.1s
+        // intervals doing no useful work.
+        if let earliest = scheduledWakes.first, !awaitingTaskReview {
             let untilWake = max(0, earliest.wakeAt.timeIntervalSinceNow)
             duration = min(duration, untilWake)
         }
@@ -1555,14 +1555,19 @@ public actor AgentActor {
     /// Fires every scheduled wake whose deadline has arrived. Injects one combined `[System: ...]`
     /// user-role marker that lists each elapsed wake (id, time, reason, taskID if any) so the
     /// model can address them in order.
+    ///
+    /// During `awaitingTaskReview`, elapsed wakes are held in the queue rather than dropped.
+    /// They fire on the next loop iteration after review completes (Smith approves with
+    /// rejection feedback or otherwise resumes Brown). Cross-session/cross-window routing for
+    /// wakes that belong to a *different* task or to no task at all is tracked in ROADMAP.md
+    /// and not yet implemented — those still fire on the originating actor.
     private func checkScheduledWake() {
         let now = Date()
         let due = scheduledWakes.filter { $0.wakeAt <= now }
         guard !due.isEmpty else { return }
         guard !awaitingTaskReview else {
-            // Don't fire during task review — drop the elapsed wakes so we don't pile up.
-            // Wakes that fire mid-review are inherently stale by the time review completes.
-            scheduledWakes.removeAll { $0.wakeAt <= now }
+            // Hold elapsed wakes through review — they fire on the next loop iteration
+            // after `drainPendingMessages` flips `awaitingTaskReview` back to false.
             return
         }
         scheduledWakes.removeAll { $0.wakeAt <= now }
@@ -2309,6 +2314,13 @@ public actor AgentActor {
         conversationHistory = newHistory
         lastTurnMessageCount = conversationHistory.count
         lastUsageStale = true
+        // The pruned slice may or may not have included Brown's last task_update;
+        // either way, post-prune counts start fresh against the kept slice.
+        if configuration.role == .brown {
+            lastTaskCommunicationAt = Date()
+            toolCallsSinceTaskCommunication = 0
+            brownSilenceNudgeArmed = true
+        }
         pushLiveContext()
 
         let roleName = configuration.role.displayName
@@ -2419,6 +2431,17 @@ public actor AgentActor {
         lastUsageStale = true
         hasUnprocessedInput = true
         pushLiveContext()
+
+        // Reset Brown's silence-nudge counters: the rebuilt history shows zero tool
+        // calls since the (synthetic) task acknowledgement, so post-rebuild counts
+        // must start from zero too. Without this the next tool turn can immediately
+        // trip the nudge and accuse Brown of N tool calls whose history no longer
+        // exists in its view.
+        if configuration.role == .brown {
+            lastTaskCommunicationAt = Date()
+            toolCallsSinceTaskCommunication = 0
+            brownSilenceNudgeArmed = true
+        }
 
         let ctx = toolContext
         let prunedLabel = configuration.role.displayName

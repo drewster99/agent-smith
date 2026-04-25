@@ -364,8 +364,9 @@ public actor SecurityEvaluator {
 
             // Handle ABORT — trigger system-wide shutdown. Uses verdictSummary so
             // ABORT is detected even when the model prefixes the verdict with preamble.
+            // Case-sensitive: ABORT must be ALL-CAPS to count.
             if !disposition.approved, let msg = disposition.message,
-               Self.verdictSummary(from: responseText).uppercased().hasPrefix("ABORT") {
+               Self.verdictSummary(from: responseText).hasPrefix("ABORT") {
                 await postToChannel(ChannelMessage(
                     sender: .system,
                     content: "Security review: ABORT — \(msg)",
@@ -434,6 +435,9 @@ public actor SecurityEvaluator {
     /// Mirrors `parseDisposition`'s preamble-tolerance: scans all lines for the last
     /// one beginning with a verdict keyword so responses with chain-of-thought
     /// preceding the verdict still produce a useful one-line summary.
+    ///
+    /// Verdict matching is case-sensitive — Jones's prompt mandates ALL-CAPS. A lowercase
+    /// `"abort, this is risky"` in conversational text must NOT trip a system-wide ABORT.
     private static func verdictSummary(from responseText: String) -> String {
         let trimmed = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "(no response)" }
@@ -446,7 +450,8 @@ public actor SecurityEvaluator {
             guard !line.isEmpty else { continue }
             let words = line.split(separator: " ", maxSplits: 1)
             guard let first = words.first else { continue }
-            let keyword = first.trimmingCharacters(in: CharacterSet.punctuationCharacters).uppercased()
+            // Strip punctuation but do NOT case-fold — verdict keywords MUST be ALL-CAPS.
+            let keyword = first.trimmingCharacters(in: CharacterSet.punctuationCharacters)
             if verdictKeywords.contains(keyword) {
                 lastVerdictLine = line
             }
@@ -610,6 +615,11 @@ public actor SecurityEvaluator {
     /// whose first word — after trimming leading whitespace, markdown punctuation,
     /// and list bullets — is SAFE/WARN/UNSAFE/ABORT. The last match wins so a model
     /// that reasons about "UNSAFE" earlier and concludes "SAFE" ends up approved.
+    ///
+    /// Verdict matching is **case-sensitive**: Jones's prompt mandates ALL-CAPS keywords,
+    /// and conversational lowercase ("abort, this is risky") must not trip a system-wide
+    /// ABORT. If the model violates the prompt and writes a lowercase verdict, we let the
+    /// retry path catch it — preferable to silently letting a chatty model trigger an abort.
     private func parseDisposition(_ text: String, toolName: String, parsedParams: [String: AnyCodable]?, agentRoleName: String) -> SecurityDisposition? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let verdictKeywords: Set<String> = ["SAFE", "WARN", "UNSAFE", "ABORT"]
@@ -626,7 +636,8 @@ public actor SecurityEvaluator {
             guard !line.isEmpty else { continue }
             let words = line.split(separator: " ", maxSplits: 1)
             guard let first = words.first else { continue }
-            let keywordCandidate = first.trimmingCharacters(in: CharacterSet.punctuationCharacters).uppercased()
+            // Strip punctuation but do NOT case-fold — verdict keywords MUST be ALL-CAPS.
+            let keywordCandidate = first.trimmingCharacters(in: CharacterSet.punctuationCharacters)
             if verdictKeywords.contains(keywordCandidate) {
                 matchedKeyword = keywordCandidate
                 matchedRemainder = words.count > 1 ? String(words[1]) : nil

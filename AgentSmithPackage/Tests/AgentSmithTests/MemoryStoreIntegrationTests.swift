@@ -7,16 +7,32 @@ import Foundation
 /// The prepared engine and the saved memories are shared across every test in the
 /// suite via a single `Task` so we download / load the MLX model at most once.
 ///
-/// Requires Xcode's build pipeline to compile MLX's Metal shaders:
+/// Requires Xcode's build pipeline to compile MLX's Metal shaders. Plain `swift test`
+/// cannot compile MLX's `.metal` shaders, so this suite is gated behind an explicit
+/// environment variable and skipped (with a recorded note) when not set:
 ///
+///   AGENT_SMITH_RUN_MLX_TESTS=1 \
 ///   xcodebuild test \
 ///       -scheme AgentSmith \
 ///       -destination 'platform=macOS' \
 ///       -only-testing:AgentSmithTests/MemoryStoreIntegrationTests
 ///
-/// `swift test` on its own cannot run this suite.
+/// Without the flag, every test in this suite returns immediately. This means the
+/// project's primary test command — `swift test --skip MemoryStoreIntegrationTests`
+/// (per CLAUDE.md) — is now belt-and-suspenders: even without `--skip`, the tests
+/// won't actually exercise the MLX runtime.
 @Suite("MemoryStore Integration", .serialized)
 struct MemoryStoreIntegrationTests {
+    /// True when the gating env var is set to a non-empty, non-zero value. Snapshot at
+    /// suite construction so each `@Test` can short-circuit cheaply.
+    private static let isEnabled: Bool = {
+        guard let raw = ProcessInfo.processInfo.environment["AGENT_SMITH_RUN_MLX_TESTS"] else {
+            return false
+        }
+        let v = raw.trimmingCharacters(in: .whitespaces)
+        return !v.isEmpty && v != "0" && v.lowercased() != "false"
+    }()
+
     private static let shared: Task<Fixture, Error> = Task {
         let engine = SemanticSearchEngine()
         for try await _ in engine.prepare() { /* drain progress */ }
@@ -31,6 +47,17 @@ struct MemoryStoreIntegrationTests {
             ids[seed.id] = entry.id
         }
         return Fixture(engine: engine, store: store, ids: ids)
+    }
+
+    /// Returns the shared fixture if the suite is enabled; otherwise returns nil so
+    /// the calling `@Test` can skip itself with a recorded note. Putting this in one
+    /// place keeps every test's gating identical.
+    private static func fixtureIfEnabled() async throws -> Fixture? {
+        guard isEnabled else {
+            Issue.record("MemoryStoreIntegrationTests skipped — set AGENT_SMITH_RUN_MLX_TESTS=1 and run via xcodebuild to exercise this suite.")
+            return nil
+        }
+        return try await shared.value
     }
 
     private struct Fixture: Sendable {
@@ -98,7 +125,7 @@ struct MemoryStoreIntegrationTests {
 
     @Test("save persists the memory and assigns an embedding of the model's dimension")
     func savePersistsWithEmbedding() async throws {
-        let fixture = try await Self.shared.value
+        guard let fixture = try await Self.fixtureIfEnabled() else { return }
         let memories = await fixture.store.allMemories()
         #expect(memories.count == Self.seeds.count)
 
@@ -110,7 +137,7 @@ struct MemoryStoreIntegrationTests {
 
     @Test("searchMemories returns the expected memory as top-1 for each paraphrased query")
     func searchTop1ForEachQuery() async throws {
-        let fixture = try await Self.shared.value
+        guard let fixture = try await Self.fixtureIfEnabled() else { return }
         let idBySeed = fixture.ids
 
         var misses: [(query: String, expected: String, got: String?, rrf: Double)] = []
@@ -134,7 +161,7 @@ struct MemoryStoreIntegrationTests {
 
     @Test("unrelated query scores lower than a matched query against the same expected memory")
     func unrelatedScoresLowerThanMatchedQuery() async throws {
-        let fixture = try await Self.shared.value
+        guard let fixture = try await Self.fixtureIfEnabled() else { return }
         let matchedQuery = "what causes the northern lights"
         let unrelatedQuery = "the flight path of a migrating humpback whale"
         let expectedUUID = try #require(fixture.ids["astro-aurora"])
@@ -153,7 +180,7 @@ struct MemoryStoreIntegrationTests {
 
     @Test("exact phrase recall — querying with the memory's own content retrieves it as top-1")
     func exactContentRetrievesItself() async throws {
-        let fixture = try await Self.shared.value
+        guard let fixture = try await Self.fixtureIfEnabled() else { return }
         for seed in Self.seeds {
             let expectedUUID = try #require(fixture.ids[seed.id])
             let results = try await fixture.store.searchMemories(query: seed.content, limit: 1)

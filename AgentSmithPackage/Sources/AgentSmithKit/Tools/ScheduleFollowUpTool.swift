@@ -4,10 +4,8 @@ import Foundation
 /// asked to be revisited later. Each wake carries a `reason` (surfaced verbatim when the wake
 /// fires) and an optional `task_id` (auto-cancels the wake when that task terminates).
 ///
-/// Multiple wakes can coexist. Conflict detection: if a wake is already scheduled within
-/// 60 seconds of the requested time, the call returns the conflicting wake's id and details
-/// instead of scheduling — Smith should resolve by passing `replaces_id` or picking a different
-/// time, after asking the user.
+/// Multiple wakes can coexist freely — there is no spacing minimum. If the caller wants a
+/// single wake to replace another (rather than coexist), they pass `replaces_id`.
 ///
 /// Replaces the old single-slot `schedule_followup` polling tool. The runtime no longer needs
 /// Smith to poll Brown — that's handled by an automatic 10-minute Brown-activity digest.
@@ -19,11 +17,11 @@ public struct ScheduleFollowUpTool: AgentTool {
         DO NOT use this to poll Brown's progress — the runtime sends you an automatic Brown-activity \
         digest every 10 minutes. \
         Required: `delay_seconds` OR `at_time` (ISO-8601), `reason`. \
-        Optional: `task_id` (auto-cancels on task completion/failure), `replaces_id` (overwrites \
-        a conflicting existing wake — use the id returned by `list_scheduled_wakes`). \
-        Before scheduling, call `list_scheduled_wakes` to check for duplicates and ambiguity. \
-        On conflict (any existing wake within 60 seconds of the requested time), the call returns \
-        the conflicting wake's details and does NOT schedule — ask the user how to resolve.
+        Optional: `task_id` (auto-cancels on task completion/failure), `replaces_id` (cancels an \
+        existing wake before scheduling the new one — use the id returned by `list_scheduled_wakes`). \
+        Multiple wakes can be scheduled at the same time; if you want a single wake to replace \
+        another, use `replaces_id`. Call `list_scheduled_wakes` first if you need to check what's \
+        already pending.
         """
 
     /// Minimum allowed delay (or distance from now for `at_time`). Floors short scheduling
@@ -145,17 +143,6 @@ public struct ScheduleFollowUpTool: AgentTool {
         case .scheduled(let wake):
             let taskFragment = wake.taskID.map { " (linked to task \($0.uuidString))" } ?? ""
             return .success("Scheduled wake \(wake.id.uuidString) for \(formatter.string(from: wake.wakeAt))\(taskFragment). Reason: \(wake.reason)")
-        case .conflict(let existing, let requestedAt):
-            let lines = existing.map { wake -> String in
-                let taskFragment = wake.taskID.map { " task=\($0.uuidString)" } ?? ""
-                return "  • id=\(wake.id.uuidString) at=\(formatter.string(from: wake.wakeAt))\(taskFragment) reason=\"\(wake.reason)\""
-            }
-            return .failure("""
-                Conflict: a wake is already scheduled within 60 seconds of \(formatter.string(from: requestedAt)). Existing wake(s):
-                \(lines.joined(separator: "\n"))
-                To overwrite, call schedule_wake again with `replaces_id` set to the existing wake's id. \
-                Otherwise, ask the user whether to keep the existing wake, replace it, or pick a different time.
-                """)
         case .error(let message):
             return .failure("Could not schedule wake: \(message)")
         }

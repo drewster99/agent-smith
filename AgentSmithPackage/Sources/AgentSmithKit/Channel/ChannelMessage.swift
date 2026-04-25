@@ -50,6 +50,13 @@ extension MessageRecipient: Codable {
 }
 
 /// A message posted to the shared communication channel.
+///
+/// Custom `Codable` conformance is provided to tolerate older on-disk JSON shapes:
+///   - `attachments` may be missing (older messages had no attachment slot — defaults to `[]`).
+///   - `recipient` may be present under the legacy key name `recipientRole` (a bare
+///     `AgentRole` enum value rather than the current `MessageRecipient` envelope).
+/// Without these fallbacks, a single legacy entry in `channel_log.json` would fail the
+/// whole-array decode in `PersistenceManager.loadChannelLog()` and silently lose the log.
 public struct ChannelMessage: Identifiable, Codable, Sendable {
     public var id: UUID
     public var timestamp: Date
@@ -133,5 +140,57 @@ public struct ChannelMessage: Identifiable, Codable, Sendable {
         self.providerID = providerID
         self.modelID = modelID
         self.configuration = configuration
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, timestamp, sender, recipientID, recipient, content, attachments, metadata
+        case taskID, sessionID, providerID, modelID, configuration
+        // Legacy decode-only key — older messages stored the recipient as a bare
+        // AgentRole under this name. New writes use `recipient` (MessageRecipient envelope).
+        case recipientRole
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        timestamp = try c.decode(Date.self, forKey: .timestamp)
+        sender = try c.decode(Sender.self, forKey: .sender)
+        recipientID = try c.decodeIfPresent(UUID.self, forKey: .recipientID)
+        if let direct = try c.decodeIfPresent(MessageRecipient.self, forKey: .recipient) {
+            recipient = direct
+        } else if let legacyRole = try c.decodeIfPresent(AgentRole.self, forKey: .recipientRole) {
+            // Legacy on-disk shape: bare AgentRole. Promote to the agent-recipient envelope.
+            recipient = .agent(legacyRole)
+        } else {
+            recipient = nil
+        }
+        content = try c.decode(String.self, forKey: .content)
+        attachments = try c.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
+        metadata = try c.decodeIfPresent([String: AnyCodable].self, forKey: .metadata)
+        taskID = try c.decodeIfPresent(UUID.self, forKey: .taskID)
+        sessionID = try c.decodeIfPresent(UUID.self, forKey: .sessionID)
+        providerID = try c.decodeIfPresent(String.self, forKey: .providerID)
+        modelID = try c.decodeIfPresent(String.self, forKey: .modelID)
+        configuration = try c.decodeIfPresent(ModelConfiguration.self, forKey: .configuration)
+    }
+
+    /// Custom encoder. Required because the synthesized one would emit every
+    /// `CodingKeys` case, including the legacy decode-only `recipientRole` key —
+    /// which doesn't map to a stored property and would not compile.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(timestamp, forKey: .timestamp)
+        try c.encode(sender, forKey: .sender)
+        try c.encodeIfPresent(recipientID, forKey: .recipientID)
+        try c.encodeIfPresent(recipient, forKey: .recipient)
+        try c.encode(content, forKey: .content)
+        try c.encode(attachments, forKey: .attachments)
+        try c.encodeIfPresent(metadata, forKey: .metadata)
+        try c.encodeIfPresent(taskID, forKey: .taskID)
+        try c.encodeIfPresent(sessionID, forKey: .sessionID)
+        try c.encodeIfPresent(providerID, forKey: .providerID)
+        try c.encodeIfPresent(modelID, forKey: .modelID)
+        try c.encodeIfPresent(configuration, forKey: .configuration)
     }
 }

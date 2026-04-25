@@ -14,10 +14,15 @@ public struct GhTool: AgentTool {
     /// would let the forbidden sequence through to the shell. We optimize for the latter.
     ///
     /// `$(` covers POSIX command substitution (functionally equivalent to backticks).
+    /// `>(` and `<(` cover bash process substitution (`gh foo >(curl …)` is an exfil channel).
+    /// `${` covers parameter expansion — even though `$(` is already blocked, `${VAR:?$(…)}`
+    /// would catch the `$(`, but `${VAR:-evil}` reads any env var the agent shell exports;
+    /// if the model needs $VAR expansion it should use the bare `$VAR` form, which is allowed.
     /// `\n` / `\r` are command separators in `bash -c "..."` — JSON tool args trivially decode
     /// into strings containing literal newlines, so they MUST be on the list.
+    /// `\0` (NUL) corrupts `bash -c` parsing on some shells; reject it outright.
     static let forbiddenSequences: [String] = [
-        "&&", "||", "<<<", "$(", "`", ";", "\n", "\r"
+        "&&", "||", "<<<", "$(", ">(", "<(", "${", "`", ";", "\n", "\r", "\0"
     ]
 
     /// Returns the first forbidden sequence found in `args`, or nil if the args are clean.
@@ -68,15 +73,21 @@ public struct GhTool: AgentTool {
 
     public var toolDescription: String {
         """
-        Run a GitHub CLI command. Args are passed through `/bin/bash -l -c "exec gh <args>"` so \
-        gh's exit status is the literal return value (no intermediate shell layer). \
+        Run a GitHub CLI command. THIS is the tool to use for `gh` — do NOT shell out to `gh` \
+        via the `bash` tool, even though that would also work. Routing `gh` through this tool \
+        keeps the GitHub-specific argument filter, exit-code semantics, and the pre-captured \
+        auth-status snapshot below in the loop. \
+        Args are passed through `/bin/bash -l -c "exec gh <args>"` so gh's exit status is the \
+        literal return value (no intermediate shell layer). \
         ALLOWED shell features: `~` expansion, `$VAR` expansion, pipes (`|`), redirection \
         (`>`, `>>`, `<`, `2>`). \
         BLOCKED (call will be refused before bash sees it): `;`, `&&`, `||`, `<<<`, backticks, \
-        `$(...)` command substitution, newlines/carriage returns, and any bare `&` that would \
-        background or chain commands (URL-query `&` between word characters is still allowed). \
-        The block is naive substring matching — it triggers even inside quoted strings, so \
-        prefer plain identifiers. If you need to chain commands, issue separate gh calls instead. \
+        `$(...)` command substitution, `>(...)`/`<(...)` process substitution, `${...}` parameter \
+        expansion (use bare `$VAR` if you need expansion), newlines/carriage returns, NUL bytes, \
+        and any bare `&` that would background or chain commands (URL-query `&` between word \
+        characters is still allowed). The block is naive substring matching — it triggers even \
+        inside quoted strings, so prefer plain identifiers. If you need to chain commands, issue \
+        separate gh calls instead. \
         Non-zero exit from `gh` is reported as a tool-call FAILURE — retrying after a failure is \
         a legitimate response, not a duplicate operation. \
         You ARE authenticated to GitHub via `gh` — the `gh auth status` snapshot below was \

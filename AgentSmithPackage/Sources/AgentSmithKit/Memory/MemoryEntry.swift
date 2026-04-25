@@ -1,6 +1,12 @@
 import Foundation
 
 /// A piece of knowledge saved by an agent or the user for future semantic retrieval.
+///
+/// `embedding` is a single L2-normalized `[Float]` vector. Older on-disk JSON used either
+/// `[[Double]]` (multi-vector) or `[Double]` (single-double) shapes — those decode to an
+/// empty `[Float]` here, which `MemoryStore` treats as "fall back to keyword-only scoring."
+/// This is preferable to throwing `typeMismatch`, which would abort the whole-array decode
+/// in persistence and lose every memory in the corpus.
 public struct MemoryEntry: Codable, Identifiable, Sendable {
     public let id: UUID
     /// The textual content of the memory.
@@ -72,5 +78,33 @@ public struct MemoryEntry: Codable, Identifiable, Sendable {
         self.retrievalCount = retrievalCount
         self.lastUpdatedAt = lastUpdatedAt
         self.lastUpdatedBy = lastUpdatedBy
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, content, embedding, source, tags, sourceTaskID, createdAt
+        case lastRetrievedAt, retrievalCount, lastUpdatedAt, lastUpdatedBy
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        content = try c.decode(String.self, forKey: .content)
+        embedding = Self.decodeEmbedding(container: c)
+        source = try c.decode(Source.self, forKey: .source)
+        tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
+        sourceTaskID = try c.decodeIfPresent(UUID.self, forKey: .sourceTaskID)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        lastRetrievedAt = try c.decodeIfPresent(Date.self, forKey: .lastRetrievedAt)
+        retrievalCount = try c.decodeIfPresent(Int.self, forKey: .retrievalCount) ?? 0
+        lastUpdatedAt = try c.decodeIfPresent(Date.self, forKey: .lastUpdatedAt)
+        lastUpdatedBy = try c.decodeIfPresent(UpdateSource.self, forKey: .lastUpdatedBy)
+    }
+
+    /// Decodes `embedding`, tolerating legacy `[[Double]]` (multi-vector) and `[Double]`
+    /// (single-vector double) shapes by returning an empty `[Float]`. Empty embeddings
+    /// disable the semantic-similarity contribution for the entry but keep keyword search
+    /// intact — much better than throwing a typeMismatch and losing the entry entirely.
+    private static func decodeEmbedding(container c: KeyedDecodingContainer<CodingKeys>) -> [Float] {
+        (try? c.decode([Float].self, forKey: .embedding)) ?? []
     }
 }

@@ -25,9 +25,6 @@ public struct ScheduledWake: Sendable, Identifiable, Codable, Equatable {
 /// Result of a `scheduleWake` request.
 public enum ScheduleWakeOutcome: Sendable {
     case scheduled(ScheduledWake)
-    /// The requested wake time conflicts with one or more existing wakes.
-    /// The caller can resolve via `replacesID` or by picking a different time.
-    case conflict(existing: [ScheduledWake], requestedAt: Date)
     /// The request was rejected (validation error, etc.).
     case error(String)
 }

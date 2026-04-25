@@ -1176,9 +1176,14 @@ public actor OrchestrationRuntime {
 
     /// Builds Smith's periodic Brown-activity digest from channel history since `since`.
     /// Returns nil when nothing meaningful has happened (so the digest wake is suppressed).
+    ///
+    /// Iteration is bounded to messages in `[since, now]` via the channel's binary-search
+    /// `messages(since:)` lookup so this is cheap even when the channel holds the full
+    /// 10K-message backlog. Jones denial breadcrumbs are detected via the structured
+    /// `securityDisposition` metadata key (set by `SecurityEvaluator.postToChannel` on
+    /// ABORT messages) rather than by substring-matching the rendered content.
     static func assembleBrownActivityDigest(channel: MessageChannel, since: Date) async -> String? {
-        let all = await channel.allMessages()
-        let recent = all.filter { $0.timestamp >= since }
+        let recent = await channel.messages(since: since)
         guard !recent.isEmpty else { return nil }
 
         var taskUpdateCount = 0
@@ -1213,8 +1218,12 @@ public actor OrchestrationRuntime {
                     msgFromBrownToSmith.append((msg.timestamp, String(msg.content.prefix(120))))
                 }
             }
-            // Jones denial breadcrumbs are system-sender messages that mention security verdict.
-            if case .system = msg.sender, msg.content.contains("UNSAFE") || msg.content.contains("ABORT") {
+            // Jones denial breadcrumbs: structured metadata key set by
+            // `AgentActor.postSecurityReviewToChannel` ("denied") and `SecurityEvaluator`
+            // ("abort"). Substring-matching the content was unreliable — Smith log lines
+            // often quote denial reasons and would have been counted as denials themselves.
+            if case .string(let dispo) = msg.metadata?["securityDisposition"],
+               dispo == "abort" || dispo == "denied" {
                 jonesDenials += 1
                 lastDenial = msg.content
             }

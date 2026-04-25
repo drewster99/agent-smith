@@ -136,7 +136,7 @@ public struct ToolContext: Sendable {
     /// Called with `true` when Jones begins a security evaluation LLM call, `false` when it completes.
     public let onJonesProcessingStateChange: @Sendable (Bool) -> Void
     /// Schedules a deferred wake-up. See `ScheduledWake` for the per-wake record. Returns
-    /// `.scheduled(wake)`, `.conflict(...)`, or `.error(...)`.
+    /// `.scheduled(wake)` or `.error(...)`.
     public let scheduleWake: @Sendable (Date, String, UUID?, UUID?) async -> ScheduleWakeOutcome
     /// Returns all currently-scheduled wakes for the calling agent (sorted by `wakeAt`).
     public let listScheduledWakes: @Sendable () async -> [ScheduledWake]

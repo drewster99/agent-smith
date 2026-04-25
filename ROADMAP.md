@@ -347,6 +347,17 @@ The model stats popover (shown when clicking the model name on an agent card) cu
 ### Token usage cost estimation
 Add estimated cost columns to the Token Usage analytics window. Use LiteLLM pricing data (already available via `ModelMetadataService`) to calculate per-turn and per-task cost estimates based on model ID and token counts. Display in the Overview, By Task, and By Model/Provider tabs. Handle cache pricing correctly (Anthropic cached reads are cheaper than uncached input).
 
+### Cross-window/cross-session wake routing
+A scheduled wake currently fires on the same actor that scheduled it. This is fine for "wake Brown for the task he's working on now," but it's wrong in three other shapes the user has identified as desired behavior:
+
+1. **Wake for the current task, fired during `awaitingTaskReview`.** Today the wake is held in the queue and fires on the next loop iteration after Smith resumes Brown (the local 2026-04 fix). The user's intent is broader: even if Smith *approves* and Brown terminates, the wake should still surface — re-routed to whatever runtime/window currently has access to the (now-completed) task, or to Smith.
+2. **Wake for a different task.** The wake should be delivered to the runtime/window currently running that task (if any). If no window is currently running it, a new window/tab should be opened for the task, the agent awoken, and the wake delivered there. The UI should switch focus to that window.
+3. **Wake not tied to any task.** The wake should land in any open window/tab that is not currently working on a task. If none qualify, a new window/tab opens to receive it.
+
+**Why this is a separate redesign:** wakes today live inside `AgentActor.scheduledWakes` — actor-private state belonging to a single Brown or a single Smith. Cross-window delivery requires a coordinator above the actor: it has to enumerate sessions in `SessionManager`, find the runtime hosting a given task, and (in the new-window case) drive `openWindow(id:)` + the `pendingNewSessionIDs` queue from outside the SwiftUI scene graph. Likely shape: hoist scheduled wakes onto a `WakeRouter` actor owned by `SharedAppState`, with `AgentActor` only holding wakes that are local-by-construction (the silence-nudge timers). The router fans out on fire to the right runtime by task lookup, falling back to "any idle session" or "spawn a new window."
+
+**Out of scope for the local-only fix landed in 2026-04:** that change just stops `checkScheduledWake` from dropping wakes during `awaitingTaskReview`. It does NOT add cross-runtime delivery, does NOT route to other windows, and does NOT preserve a wake whose Brown actor terminates between schedule and fire. ROADMAP entry tracks the full design.
+
 ### Brown silence — hard mode and synthetic-update fallback
 The soft Brown silence nudge already injects a `[System]` user-role message into Brown's conversation when he hasn't sent a `task_update`/`task_complete` in `(≥5min AND ≥10 tool calls)` OR `≥15min`, instructing him to call `task_update` next. That handles the common case where the model just forgot.
 

@@ -93,6 +93,28 @@ public actor MessageChannel {
         return Array(messages[index...])
     }
 
+    /// Messages with `timestamp >= cutoff`. Internally uses a binary search over the
+    /// chronologically-ordered backing array, so for a 10K-message channel the digest
+    /// no longer pays an O(N) scan per fire — typical digest windows of 10 minutes
+    /// hit a few hundred messages at most.
+    public func messages(since cutoff: Date) -> [ChannelMessage] {
+        guard !messages.isEmpty else { return [] }
+        if messages[0].timestamp >= cutoff { return messages }
+        if messages[messages.count - 1].timestamp < cutoff { return [] }
+
+        var lo = 0
+        var hi = messages.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if messages[mid].timestamp < cutoff {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        return Array(messages[lo...])
+    }
+
     /// Current message count.
     public var messageCount: Int {
         messages.count
