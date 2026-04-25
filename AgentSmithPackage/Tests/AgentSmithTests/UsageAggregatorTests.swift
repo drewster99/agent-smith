@@ -435,19 +435,19 @@ struct UsageAggregatorTests {
             UsageRecord(
                 agentRole: .brown, taskID: nil, modelID: "model-a",
                 providerType: "test", providerID: "test",
-                configuration: configA, configurationID: configA.id,
+                configuration: configA,
                 inputTokens: 100, outputTokens: 50, latencyMs: 200
             ),
             UsageRecord(
                 agentRole: .brown, taskID: nil, modelID: "model-b",
                 providerType: "test", providerID: "test",
-                configuration: configB, configurationID: configB.id,
+                configuration: configB,
                 inputTokens: 200, outputTokens: 100, latencyMs: 300
             ),
             UsageRecord(
                 agentRole: .brown, taskID: nil, modelID: "model-a",
                 providerType: "test", providerID: "test",
-                configuration: configA, configurationID: configA.id,
+                configuration: configA,
                 inputTokens: 150, outputTokens: 75, latencyMs: 250
             ),
         ]

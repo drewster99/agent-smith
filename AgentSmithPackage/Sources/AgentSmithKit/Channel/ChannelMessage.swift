@@ -64,10 +64,8 @@ public struct ChannelMessage: Identifiable, Codable, Sendable {
     /// Optional structured metadata (e.g., tool call details).
     public var metadata: [String: AnyCodable]?
 
-    // MARK: - Context stamping (added in Phase 2)
-    // All optional so historical messages decode cleanly. Populated at post time from
-    // the sending/receiving agent's current state; also backfilled on older messages
-    // by joining to nearby UsageRecords during the startup migration.
+    // MARK: - Context stamping
+    // Populated at post time from the sending/receiving agent's current state.
 
     /// Task this message was posted in service of, if any. System messages and
     /// unrelated chatter remain nil.
@@ -89,55 +87,6 @@ public struct ChannelMessage: Identifiable, Codable, Sendable {
 
     /// Whether this message targets a specific agent rather than the public channel.
     public var isPrivate: Bool { recipientID != nil }
-
-    private enum CodingKeys: String, CodingKey {
-        case id, timestamp, sender, recipientID, recipient, recipientRole, content, attachments, metadata
-        case taskID, sessionID, providerID, modelID, configuration
-    }
-
-    /// Backward-compatible decoding: reads the new `recipient` key, falling back to the
-    /// legacy `recipientRole` key found in persisted messages written by older builds.
-    /// Context-stamping fields (taskID, sessionID, providerID, modelID, configuration)
-    /// are all optional; old messages decode them as nil.
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(UUID.self, forKey: .id)
-        timestamp = try container.decode(Date.self, forKey: .timestamp)
-        sender = try container.decode(Sender.self, forKey: .sender)
-        recipientID = try container.decodeIfPresent(UUID.self, forKey: .recipientID)
-        if let r = try container.decodeIfPresent(MessageRecipient.self, forKey: .recipient) {
-            recipient = r
-        } else if let role = try container.decodeIfPresent(AgentRole.self, forKey: .recipientRole) {
-            recipient = .agent(role)
-        } else {
-            recipient = nil
-        }
-        content = try container.decode(String.self, forKey: .content)
-        attachments = try container.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
-        metadata = try container.decodeIfPresent([String: AnyCodable].self, forKey: .metadata)
-        taskID = try container.decodeIfPresent(UUID.self, forKey: .taskID)
-        sessionID = try container.decodeIfPresent(UUID.self, forKey: .sessionID)
-        providerID = try container.decodeIfPresent(String.self, forKey: .providerID)
-        modelID = try container.decodeIfPresent(String.self, forKey: .modelID)
-        configuration = try container.decodeIfPresent(ModelConfiguration.self, forKey: .configuration)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(id, forKey: .id)
-        try container.encode(timestamp, forKey: .timestamp)
-        try container.encode(sender, forKey: .sender)
-        try container.encodeIfPresent(recipientID, forKey: .recipientID)
-        try container.encodeIfPresent(recipient, forKey: .recipient)
-        try container.encode(content, forKey: .content)
-        try container.encode(attachments, forKey: .attachments)
-        try container.encodeIfPresent(metadata, forKey: .metadata)
-        try container.encodeIfPresent(taskID, forKey: .taskID)
-        try container.encodeIfPresent(sessionID, forKey: .sessionID)
-        try container.encodeIfPresent(providerID, forKey: .providerID)
-        try container.encodeIfPresent(modelID, forKey: .modelID)
-        try container.encodeIfPresent(configuration, forKey: .configuration)
-    }
 
     public enum Sender: Codable, Sendable, Hashable {
         case agent(AgentRole)

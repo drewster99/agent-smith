@@ -69,7 +69,7 @@ public actor UsageStore {
         records = records.map { record in
             guard record.sessionID == sessionID, record.taskID == nil else { return record }
             changed = true
-            return record.replacing(taskID: .some(taskID))
+            return record.withTaskID(taskID)
         }
         if changed {
             scheduleFlush()

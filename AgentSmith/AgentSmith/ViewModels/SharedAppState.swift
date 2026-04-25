@@ -182,9 +182,6 @@ final class SharedAppState {
             logger.error("Failed to load user model overrides: \(error.localizedDescription)")
         }
 
-        // Run one-shot UsageRecord migrations (shared across all sessions).
-        await migrateUsageRecords()
-
         // Load persisted usage records into the shared store.
         await usageStore.load()
 
@@ -252,7 +249,6 @@ final class SharedAppState {
         let engine = try await ensureSemanticEngine()
         let store = MemoryStore(engine: engine)
 
-        // Wire persistence + UI refresh BEFORE restore so migration re-embed firings are captured.
         await store.setOnChange { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -266,25 +262,9 @@ final class SharedAppState {
             let savedTaskSummaries = try await basePersistence.loadTaskSummaries()
             if !savedMemories.isEmpty || !savedTaskSummaries.isEmpty {
                 await store.restore(memories: savedMemories, taskSummaries: savedTaskSummaries)
-
-                // Re-embed entries whose stored model ID doesn't match the current engine.
-                let reembedStart = Date()
-                let memCount = try await store.reembedStaleMemories()
-                // Task summaries' fuller embeddings require the originating AgentTask (for
-                // description, timestamps) but those now live per-session and aren't loaded
-                // yet at app-bootstrap time. Passing an empty task list forces the orphan
-                // path in `reembedStaleTaskSummaries`: re-embed from `title + summary`
-                // stored on the entry itself. Slight quality regression on model-change
-                // re-embed only; fresh summaries saved after task completion continue to
-                // include the full description text via `MemoryStore.saveTaskSummary`.
-                let taskCount = try await store.reembedStaleTaskSummaries(tasks: [])
-                let reembedMs = Int(Date().timeIntervalSince(reembedStart) * 1000)
-                if memCount > 0 || taskCount > 0 {
-                    print("[AgentSmith] Re-embedded \(memCount) stale memories, \(taskCount) stale task summaries in \(reembedMs)ms")
-                }
             }
         } catch {
-            print("[AgentSmith] Failed to load/re-embed memories: \(error)")
+            print("[AgentSmith] Failed to load memories: \(error)")
         }
 
         memoryStore = store
@@ -391,246 +371,6 @@ final class SharedAppState {
     func updateMemory(id: UUID, content: String? = nil, tags: [String]? = nil) async throws {
         guard let store = memoryStore else { return }
         try await store.update(id: id, content: content, tags: tags, updatedBy: .user)
-    }
-
-    // MARK: - Usage Record Migrations
-
-    /// One-shot migration pass over UsageRecords. Runs four idempotent backfills and saves
-    /// once at the end if anything changed. See AppViewModel's previous implementation for
-    /// the detailed design.
-    private func migrateUsageRecords() async {
-        // TODO: Remove all four migrations after 05/10/2026
-        do {
-            var rawRecords = try await basePersistence.loadUsageRecords()
-            var totalModified = 0
-
-            // --- Pass 1: Configuration backfill ---
-            var configBackfilled = 0
-            for i in rawRecords.indices {
-                let record = rawRecords[i]
-                if record.providerID != nil && record.configuration != nil { continue }
-                guard let configID = record.configurationID,
-                      let config = llmKit.configurations.first(where: { $0.id == configID }),
-                      let provider = llmKit.providers.first(where: { $0.id == config.providerID }),
-                      provider.apiType.rawValue == record.providerType else { continue }
-                rawRecords[i] = record.replacing(
-                    providerID: config.providerID,
-                    configuration: config,
-                    configurationID: configID
-                )
-                configBackfilled += 1
-            }
-            totalModified += configBackfilled
-            if configBackfilled > 0 {
-                print("[AgentSmith] Migration pass 1 (configuration): backfilled \(configBackfilled) records.")
-            }
-
-            // Smith taskID backfill used to require the per-session task list and is
-            // therefore skipped here — all records still carrying nil taskIDs have been
-            // present for many months now and remain nil-joined; the cost of threading
-            // every session's tasks into the shared bootstrap isn't worth it.
-
-            // Passes 3 and 4 scan $TMPDIR/AgentSmith-LLM-Logs/ response files.
-            let logDir = FileManager.default.temporaryDirectory.appendingPathComponent("AgentSmith-LLM-Logs")
-            let fm = FileManager.default
-            let logDirExists = fm.fileExists(atPath: logDir.path)
-
-            // --- Pass 3: Tool call backfill from API response logs ---
-            var toolCallBackfilled = 0
-            if rawRecords.contains(where: { $0.toolCallNames == nil }) {
-                if logDirExists {
-                    struct LogEntry { let mtime: TimeInterval; let toolNames: [String] }
-                    var logEntries: [LogEntry] = []
-                    // try? justified: log files live in $TMPDIR and may be partially
-                    // written, cleaned up by the OS, or have stale metadata. Skipping
-                    // unreadable files is the correct degradation for a best-effort backfill.
-                    let logFiles = (try? fm.contentsOfDirectory(at: logDir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-                    for file in logFiles where file.lastPathComponent.hasSuffix("_response.json") {
-                        guard let attrs = try? fm.attributesOfItem(atPath: file.path),
-                              let mdate = attrs[.modificationDate] as? Date,
-                              let data = try? Data(contentsOf: file),
-                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-                        var names: [String] = []
-                        if let choices = json["choices"] as? [[String: Any]] {
-                            for choice in choices {
-                                for tc in ((choice["message"] as? [String: Any])?["tool_calls"] as? [[String: Any]]) ?? [] {
-                                    if let name = (tc["function"] as? [String: Any])?["name"] as? String { names.append(name) }
-                                }
-                            }
-                        } else if let content = json["content"] as? [[String: Any]] {
-                            for block in content where block["type"] as? String == "tool_use" {
-                                if let name = block["name"] as? String { names.append(name) }
-                            }
-                        } else if let candidates = json["candidates"] as? [[String: Any]] {
-                            for cand in candidates {
-                                for part in ((cand["content"] as? [String: Any])?["parts"] as? [[String: Any]]) ?? [] {
-                                    if let fc = part["functionCall"] as? [String: Any], let name = fc["name"] as? String { names.append(name) }
-                                }
-                            }
-                        }
-                        logEntries.append(LogEntry(mtime: mdate.timeIntervalSinceReferenceDate, toolNames: names))
-                    }
-                    logEntries.sort { $0.mtime < $1.mtime }
-                    let logMtimes = logEntries.map(\.mtime)
-
-                    let matchWindow: TimeInterval = 10
-                    for i in rawRecords.indices where rawRecords[i].toolCallNames == nil {
-                        let ts = rawRecords[i].timestamp.timeIntervalSinceReferenceDate
-                        var lo = logMtimes.startIndex
-                        var hi = logMtimes.endIndex
-                        while lo < hi {
-                            let mid = lo + (hi - lo) / 2
-                            if logMtimes[mid] < ts - matchWindow { lo = mid + 1 } else { hi = mid }
-                        }
-                        var bestDist = TimeInterval.infinity
-                        var bestIdx = -1
-                        var idx = lo
-                        while idx < logEntries.count {
-                            let d = abs(logEntries[idx].mtime - ts)
-                            if logEntries[idx].mtime > ts + matchWindow { break }
-                            if d < bestDist { bestDist = d; bestIdx = idx }
-                            idx += 1
-                        }
-                        guard bestIdx >= 0 else { continue }
-                        let matched = logEntries[bestIdx]
-                        rawRecords[i] = rawRecords[i].replacing(
-                            toolCallCount: matched.toolNames.count,
-                            toolCallNames: matched.toolNames
-                        )
-                        toolCallBackfilled += 1
-                    }
-                    totalModified += toolCallBackfilled
-                }
-            }
-
-            // --- Pass 4: Cache token backfill ---
-            var cacheBackfilled = 0
-            let cacheHWMKey = "cacheTokenBackfillHighWaterMark"
-            let previousHWM = UserDefaults.standard.object(forKey: cacheHWMKey) as? Date ?? .distantPast
-            let openAICompatibleTypes: Set<String> = [
-                "openAICompatible", "lmStudio", "mistral", "huggingFace",
-                "xAI", "zAI", "metaLlama", "alibabaCloud", "openRouter"
-            ]
-            let candidateIndices = rawRecords.indices.filter { i in
-                let r = rawRecords[i]
-                return (r.providerType == "gemini" || openAICompatibleTypes.contains(r.providerType))
-                    && r.cacheReadTokens == 0
-                    && r.timestamp > previousHWM
-            }
-
-            if !candidateIndices.isEmpty {
-                var rawUsageBackfilled = 0
-                var unresolvedIndices: [Int] = []
-                for i in candidateIndices {
-                    let r = rawRecords[i]
-                    // try? justified: rawUsage is best-effort archival data. If a
-                    // record's stored JSON is corrupt, empty, or otherwise unparseable,
-                    // fall through to the log-file fallback (Strategy 2). Throwing
-                    // here would abort the entire migration over one bad record.
-                    guard let rawUsage = r.rawUsage,
-                          let data = rawUsage.data(using: .utf8),
-                          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                        unresolvedIndices.append(i)
-                        continue
-                    }
-                    let cacheRead = Self.extractCacheRead(from: obj, providerType: r.providerType)
-                    if cacheRead > 0 {
-                        rawRecords[i] = r.replacing(cacheReadTokens: cacheRead)
-                        rawUsageBackfilled += 1
-                    }
-                }
-                cacheBackfilled += rawUsageBackfilled
-
-                if !unresolvedIndices.isEmpty, logDirExists {
-                    struct CacheLogEntry { let mtime: TimeInterval; let cacheReadTokens: Int }
-                    var logEntries: [CacheLogEntry] = []
-                    // try? justified: temp directory files may be missing, partially
-                    // written, or have stale metadata.
-                    let logFiles = (try? fm.contentsOfDirectory(at: logDir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-                    for file in logFiles where file.lastPathComponent.hasSuffix("_response.json") {
-                        let name = file.lastPathComponent
-                        // Log filenames contain the provider adapter class name (e.g. "_Gemini_",
-                        // "_OpenAI_"). This is a convention set by the LLM logging layer — if
-                        // adapter naming changes, this filter must be updated accordingly.
-                        guard name.contains("_Gemini_") || name.contains("_OpenAI_") else { continue }
-                        guard let attrs = try? fm.attributesOfItem(atPath: file.path),
-                              let mdate = attrs[.modificationDate] as? Date,
-                              let data = try? Data(contentsOf: file),
-                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-
-                        var cacheRead = 0
-                        if name.contains("_Gemini_") {
-                            if let meta = json["usageMetadata"] as? [String: Any] {
-                                cacheRead = meta["cachedContentTokenCount"] as? Int ?? 0
-                            }
-                        } else {
-                            if let usage = json["usage"] as? [String: Any],
-                               let details = usage["prompt_tokens_details"] as? [String: Any] {
-                                cacheRead = details["cached_tokens"] as? Int ?? 0
-                            }
-                        }
-                        logEntries.append(CacheLogEntry(mtime: mdate.timeIntervalSinceReferenceDate, cacheReadTokens: cacheRead))
-                    }
-                    logEntries.sort { $0.mtime < $1.mtime }
-                    let logMtimes = logEntries.map(\.mtime)
-
-                    var logBackfilled = 0
-                    let matchWindow: TimeInterval = 10
-                    for i in unresolvedIndices {
-                        let ts = rawRecords[i].timestamp.timeIntervalSinceReferenceDate
-                        var lo = logMtimes.startIndex
-                        var hi = logMtimes.endIndex
-                        while lo < hi {
-                            let mid = lo + (hi - lo) / 2
-                            if logMtimes[mid] < ts - matchWindow { lo = mid + 1 } else { hi = mid }
-                        }
-                        var bestDist = TimeInterval.infinity
-                        var bestIdx = -1
-                        var idx = lo
-                        while idx < logEntries.count {
-                            let d = abs(logEntries[idx].mtime - ts)
-                            if logEntries[idx].mtime > ts + matchWindow { break }
-                            if d < bestDist { bestDist = d; bestIdx = idx }
-                            idx += 1
-                        }
-                        guard bestIdx >= 0, logEntries[bestIdx].cacheReadTokens > 0 else { continue }
-                        rawRecords[i] = rawRecords[i].replacing(
-                            cacheReadTokens: logEntries[bestIdx].cacheReadTokens
-                        )
-                        logBackfilled += 1
-                    }
-                    cacheBackfilled += logBackfilled
-                }
-            }
-            totalModified += cacheBackfilled
-
-            var saveSucceeded = true
-            if totalModified > 0 {
-                do {
-                    try await basePersistence.saveUsageRecords(rawRecords)
-                    print("[AgentSmith] UsageRecord migrations: saved \(totalModified) total modified records (config=\(configBackfilled), toolCalls=\(toolCallBackfilled), cache=\(cacheBackfilled)).")
-                } catch {
-                    logger.error("Failed to save migrated usage records: \(error.localizedDescription)")
-                    saveSucceeded = false
-                }
-            }
-
-            if saveSucceeded, let latestTimestamp = rawRecords.map(\.timestamp).max() {
-                UserDefaults.standard.set(latestTimestamp, forKey: cacheHWMKey)
-            }
-        } catch {
-            logger.error("Failed to load usage records for migration: \(error.localizedDescription)")
-        }
-    }
-
-    static func extractCacheRead(from usageObject: [String: Any], providerType: String) -> Int {
-        if providerType == "gemini" {
-            return usageObject["cachedContentTokenCount"] as? Int ?? 0
-        }
-        if let details = usageObject["prompt_tokens_details"] as? [String: Any] {
-            return details["cached_tokens"] as? Int ?? 0
-        }
-        return 0
     }
 
     private func runUsageHealthCheck() async {

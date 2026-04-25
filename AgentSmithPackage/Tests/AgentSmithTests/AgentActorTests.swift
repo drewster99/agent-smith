@@ -103,7 +103,7 @@ struct AgentActorTests {
             context: makeContext(taskStore: taskStore)
         )
 
-        #expect(result.contains("2 task(s)"))
+        #expect(result.contains("Showing tasks 1–2 of 2"))
         #expect(result.contains("Task A"))
         #expect(result.contains("Task B"))
     }
@@ -121,7 +121,7 @@ struct AgentActorTests {
             context: makeContext(taskStore: taskStore)
         )
 
-        #expect(result.contains("1 task(s)"))
+        #expect(result.contains("Showing tasks 1–1 of 1"))
         #expect(result.contains("Done task"))
         #expect(!result.contains("Pending task"))
     }
@@ -133,26 +133,10 @@ struct AgentActorTests {
             arguments: [:],
             context: makeContext()
         )
-        #expect(result == "No tasks found.")
+        #expect(result == "No tasks found matching the given filters.")
     }
 
     // MARK: - ChannelMessage Codable
-
-    @Test("ChannelMessage decodes old JSON without attachments field")
-    func channelMessageBackwardCompat() throws {
-        let json = """
-        {
-            "id": "550E8400-E29B-41D4-A716-446655440000",
-            "timestamp": 0,
-            "sender": {"user": {}},
-            "content": "Hello"
-        }
-        """
-        let data = Data(json.utf8)
-        let message = try JSONDecoder().decode(ChannelMessage.self, from: data)
-        #expect(message.content == "Hello")
-        #expect(message.attachments.isEmpty)
-    }
 
     @Test("ChannelMessage round-trips with attachments")
     func channelMessageRoundTrip() throws {
@@ -170,59 +154,13 @@ struct AgentActorTests {
         #expect(decoded.attachments[0].filename == "test.txt")
     }
 
-    // MARK: - MemoryEntry / TaskSummaryEntry legacy decoding
+    // MARK: - MemoryEntry round-trip
 
-    @Test("MemoryEntry decodes legacy multi-vector [[Double]] embedding as empty")
-    func memoryEntryDecodesLegacyMultiVector() throws {
-        // Pre-migration format: `embedding` was an array of per-sentence vectors
-        // (`[[Double]]`). The new decoder must accept it without throwing and surface
-        // an empty embedding so the startup migration pass picks the entry up.
-        let json = """
-        {
-            "id": "550E8400-E29B-41D4-A716-446655440000",
-            "content": "old multi-vector memory",
-            "embedding": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
-            "source": "user",
-            "tags": ["legacy"],
-            "createdAt": 0,
-            "retrievalCount": 0
-        }
-        """
-        let data = Data(json.utf8)
-        let entry = try JSONDecoder().decode(MemoryEntry.self, from: data)
-        #expect(entry.content == "old multi-vector memory")
-        #expect(entry.embedding.isEmpty)
-        #expect(entry.embeddingModelID == nil)
-    }
-
-    @Test("MemoryEntry decodes legacy single-vector [Double] embedding as empty")
-    func memoryEntryDecodesLegacySingleVectorDouble() throws {
-        // An interim format used `[Double]` instead of `[Float]`. The decoder must
-        // also surface this as an empty embedding for re-migration rather than
-        // attempting a lossy convert (the model dimensions may have changed too).
-        let json = """
-        {
-            "id": "550E8400-E29B-41D4-A716-446655440001",
-            "content": "old double-vector memory",
-            "embedding": [0.1, 0.2, 0.3, 0.4],
-            "source": "smith",
-            "tags": [],
-            "createdAt": 0,
-            "retrievalCount": 0
-        }
-        """
-        let data = Data(json.utf8)
-        let entry = try JSONDecoder().decode(MemoryEntry.self, from: data)
-        #expect(entry.embedding.isEmpty)
-        #expect(entry.embeddingModelID == nil)
-    }
-
-    @Test("MemoryEntry round-trips current [Float] embedding format")
+    @Test("MemoryEntry round-trips [Float] embedding format")
     func memoryEntryRoundTripsCurrentFormat() throws {
         let original = MemoryEntry(
             content: "current format memory",
             embedding: [0.1, 0.2, 0.3],
-            embeddingModelID: "qwen3-test",
             source: .user,
             tags: ["roundtrip"]
         )
@@ -230,51 +168,7 @@ struct AgentActorTests {
         let decoded = try JSONDecoder().decode(MemoryEntry.self, from: data)
         #expect(decoded.content == original.content)
         #expect(decoded.embedding == original.embedding)
-        #expect(decoded.embeddingModelID == "qwen3-test")
         #expect(decoded.tags == ["roundtrip"])
-    }
-
-    @Test("TaskSummaryEntry decodes legacy multi-vector embedding as empty")
-    func taskSummaryDecodesLegacyMultiVector() throws {
-        let json = """
-        {
-            "id": "660E8400-E29B-41D4-A716-446655440000",
-            "title": "Old task",
-            "summary": "Old summary",
-            "embeddingSourceText": "Old task\\nOld summary",
-            "embedding": [[0.1, 0.2], [0.3, 0.4]],
-            "status": "completed",
-            "createdAt": 0,
-            "taskCreatedAt": 0
-        }
-        """
-        let data = Data(json.utf8)
-        let entry = try JSONDecoder().decode(TaskSummaryEntry.self, from: data)
-        #expect(entry.title == "Old task")
-        #expect(entry.embedding.isEmpty)
-        #expect(entry.embeddingModelID == nil)
-    }
-
-    @Test("TaskSummaryEntry decodes pre-embeddingSourceText format")
-    func taskSummaryDecodesMissingSourceText() throws {
-        // Even older entries didn't have `embeddingSourceText` at all. The decoder
-        // should synthesize it from title + summary so search still has *something*
-        // to lexically match against once re-embedding completes.
-        let json = """
-        {
-            "id": "660E8400-E29B-41D4-A716-446655440001",
-            "title": "Title",
-            "summary": "Summary body",
-            "embedding": [0.1, 0.2],
-            "status": "failed",
-            "createdAt": 0
-        }
-        """
-        let data = Data(json.utf8)
-        let entry = try JSONDecoder().decode(TaskSummaryEntry.self, from: data)
-        #expect(entry.embeddingSourceText == "Title\nSummary body")
-        #expect(entry.embedding.isEmpty)
-        #expect(entry.embeddingModelID == nil)
     }
 
     // MARK: - Filename Sanitization

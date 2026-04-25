@@ -61,105 +61,16 @@ final class SessionManager {
         hasLoadedSessions = true
     }
 
-    /// Creates a "Default" session on first launch. If legacy single-session data exists
-    /// (channel_log.json, tasks.json, attachments/ at the root), moves it into the new
-    /// session's directory. Also copies legacy UserDefaults agentAssignments into the
-    /// Default session's state.json so the user's current config survives the upgrade.
+    /// Creates a "Default" session on first launch with empty per-session state;
+    /// `loadPersistedState` will apply bundled defaults when the state is empty.
     private func bootstrapDefaultSession() async {
         let defaultSession = Session(name: "Default")
         let pm = PersistenceManager(sessionID: defaultSession.id)
 
-        var migratedLegacy = false
         do {
-            migratedLegacy = try await pm.migrateLegacyDataIntoSession()
-        } catch {
-            logger.error("Legacy data migration failed: \(error.localizedDescription)")
-        }
-
-        // Copy legacy agentAssignments from UserDefaults into the new session's state.json.
-        // `assignmentsDecoded` tracks whether the raw bytes actually parsed — if both formats
-        // fail to decode, we must NOT delete the UserDefaults key, so a future version (or
-        // manual repair) can still reach the bytes.
-        var legacyAssignments: [AgentRole: UUID] = [:]
-        var assignmentsDecoded = false
-        let hadAssignmentsKey = UserDefaults.standard.data(forKey: "agentAssignments") != nil
-        if let data = UserDefaults.standard.data(forKey: "agentAssignments") {
-            do {
-                legacyAssignments = try JSONDecoder().decode([AgentRole: UUID].self, from: data)
-                assignmentsDecoded = true
-            } catch {
-                // Previous format was an alternating ["role","uuid",…] array.
-                do {
-                    let array = try JSONDecoder().decode([String].self, from: data)
-                    for i in stride(from: 0, to: array.count - 1, by: 2) {
-                        if let role = AgentRole(rawValue: array[i]),
-                           let uuid = UUID(uuidString: array[i + 1]) {
-                            legacyAssignments[role] = uuid
-                        }
-                    }
-                    assignmentsDecoded = true
-                } catch {
-                    logger.error("Failed to decode legacy agent assignments: \(error.localizedDescription)")
-                }
-            }
-        }
-
-        let legacyAutoRunNextTask = (UserDefaults.standard.object(forKey: "autoRunNextTask") as? Bool) ?? true
-        let legacyAutoRunInterrupted = (UserDefaults.standard.object(forKey: "autoRunInterruptedTasks") as? Bool) ?? false
-
-        // Migrate legacy message history into the per-session key if present. `historyMigrated`
-        // guards the eventual delete — we never drop the legacy bytes if the encode/set failed.
-        let legacyHistoryKey = "messageHistory"
-        var historyMigrated = false
-        let hadLegacyHistory = (UserDefaults.standard.stringArray(forKey: legacyHistoryKey) ?? []).isEmpty == false
-        if let legacyHistory = UserDefaults.standard.stringArray(forKey: legacyHistoryKey), !legacyHistory.isEmpty {
-            let sessionHistoryKey = "messageHistory.\(defaultSession.id.uuidString)"
-            if UserDefaults.standard.data(forKey: sessionHistoryKey) == nil {
-                do {
-                    let data = try JSONEncoder().encode(legacyHistory)
-                    UserDefaults.standard.set(data, forKey: sessionHistoryKey)
-                    historyMigrated = true
-                } catch {
-                    logger.error("Failed to migrate legacy message history: \(error.localizedDescription)")
-                }
-            } else {
-                // The per-session key already has history — the legacy key is redundant.
-                historyMigrated = true
-            }
-        }
-
-        // Build a SessionState with migrated values; falls back to empty dicts (loadPersistedState
-        // will apply bundled-defaults if the state is empty).
-        let state = SessionState(
-            agentAssignments: legacyAssignments,
-            autoRunNextTask: legacyAutoRunNextTask,
-            autoRunInterruptedTasks: legacyAutoRunInterrupted
-        )
-
-        var stateSaved = false
-        do {
-            try await pm.saveSessionState(state)
-            stateSaved = true
+            try await pm.saveSessionState(SessionState())
         } catch {
             logger.error("Failed to save Default session state: \(error.localizedDescription)")
-        }
-
-        // Only purge legacy keys once the per-session state has landed on disk AND the specific
-        // migration step succeeded. If any step failed, leave its source bytes in UserDefaults
-        // so a subsequent launch (possibly with fixed code) can retry.
-        if stateSaved {
-            // Assignments: only remove if it either decoded cleanly or was never set.
-            if assignmentsDecoded || !hadAssignmentsKey {
-                UserDefaults.standard.removeObject(forKey: "agentAssignments")
-            }
-            // Bools can't fail to read; always safe to remove.
-            UserDefaults.standard.removeObject(forKey: "autoRunNextTask")
-            UserDefaults.standard.removeObject(forKey: "autoRunInterruptedTasks")
-            // History: only remove if re-saved under the session key, or there was nothing
-            // to migrate in the first place.
-            if historyMigrated || !hadLegacyHistory {
-                UserDefaults.standard.removeObject(forKey: legacyHistoryKey)
-            }
         }
 
         sessions = [defaultSession]
@@ -167,10 +78,6 @@ final class SessionManager {
             try await shared.basePersistence.saveSessionList(sessions)
         } catch {
             logger.error("Failed to save session list: \(error.localizedDescription)")
-        }
-
-        if migratedLegacy {
-            print("[AgentSmith] Migrated legacy single-session data into new 'Default' session.")
         }
     }
 

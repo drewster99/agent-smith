@@ -6,13 +6,7 @@ public struct MemoryEntry: Codable, Identifiable, Sendable {
     /// The textual content of the memory.
     public let content: String
     /// Single L2-normalized embedding vector for the memory's content.
-    /// Empty when the entry was loaded from a legacy multi-vector save and is
-    /// awaiting re-embedding by the startup migration pass.
     public let embedding: [Float]
-    /// Identifier of the embedding model that produced `embedding`. Used by the
-    /// startup migration pass to detect a model swap and re-embed stale entries.
-    /// `nil` for legacy entries that were saved before model-tagging existed.
-    public let embeddingModelID: String?
     /// Who created this memory.
     public let source: Source
     /// Optional categorization tags.
@@ -58,7 +52,6 @@ public struct MemoryEntry: Codable, Identifiable, Sendable {
         id: UUID = UUID(),
         content: String,
         embedding: [Float],
-        embeddingModelID: String?,
         source: Source,
         tags: [String] = [],
         sourceTaskID: UUID? = nil,
@@ -71,7 +64,6 @@ public struct MemoryEntry: Codable, Identifiable, Sendable {
         self.id = id
         self.content = content
         self.embedding = embedding
-        self.embeddingModelID = embeddingModelID
         self.source = source
         self.tags = tags
         self.sourceTaskID = sourceTaskID
@@ -80,51 +72,5 @@ public struct MemoryEntry: Codable, Identifiable, Sendable {
         self.retrievalCount = retrievalCount
         self.lastUpdatedAt = lastUpdatedAt
         self.lastUpdatedBy = lastUpdatedBy
-    }
-
-    /// Backward-compatible decoding. The on-disk JSON key for the vector is `"embedding"`.
-    /// New format: `[Float]`. Legacy formats (`[[Double]]` multi-vector and `[Double]`
-    /// single-vector) are decoded as an empty `embedding` and a `nil` `embeddingModelID`,
-    /// which causes the startup migration pass to re-embed them with the current model.
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(UUID.self, forKey: .id)
-        content = try c.decode(String.self, forKey: .content)
-        if let v = try? c.decode([Float].self, forKey: .embedding) {
-            embedding = v
-        } else {
-            embedding = []
-        }
-        embeddingModelID = try c.decodeIfPresent(String.self, forKey: .embeddingModelID)
-        source = try c.decode(Source.self, forKey: .source)
-        tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
-        sourceTaskID = try c.decodeIfPresent(UUID.self, forKey: .sourceTaskID)
-        createdAt = try c.decode(Date.self, forKey: .createdAt)
-        lastRetrievedAt = try c.decodeIfPresent(Date.self, forKey: .lastRetrievedAt)
-        retrievalCount = try c.decodeIfPresent(Int.self, forKey: .retrievalCount) ?? 0
-        lastUpdatedAt = try c.decodeIfPresent(Date.self, forKey: .lastUpdatedAt)
-        lastUpdatedBy = try c.decodeIfPresent(UpdateSource.self, forKey: .lastUpdatedBy)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case id, content, embedding, embeddingModelID
-        case source, tags, sourceTaskID, createdAt
-        case lastRetrievedAt, retrievalCount, lastUpdatedAt, lastUpdatedBy
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(id, forKey: .id)
-        try c.encode(content, forKey: .content)
-        try c.encode(embedding, forKey: .embedding)
-        try c.encodeIfPresent(embeddingModelID, forKey: .embeddingModelID)
-        try c.encode(source, forKey: .source)
-        try c.encode(tags, forKey: .tags)
-        try c.encodeIfPresent(sourceTaskID, forKey: .sourceTaskID)
-        try c.encode(createdAt, forKey: .createdAt)
-        try c.encodeIfPresent(lastRetrievedAt, forKey: .lastRetrievedAt)
-        try c.encode(retrievalCount, forKey: .retrievalCount)
-        try c.encodeIfPresent(lastUpdatedAt, forKey: .lastUpdatedAt)
-        try c.encodeIfPresent(lastUpdatedBy, forKey: .lastUpdatedBy)
     }
 }

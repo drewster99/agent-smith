@@ -149,9 +149,8 @@ public actor SecurityEvaluator {
     /// Token usage store for persistent analytics.
     private let usageStore: UsageStore?
     /// Full snapshot of the ModelConfiguration used for Jones's LLM calls. Carried
-    /// directly (instead of separate modelID/providerID/configurationID fields) so
-    /// UsageRecords get the full config — context size, temperature, etc. — embedded
-    /// as immutable historical truth.
+    /// directly so UsageRecords get the full config — context size, temperature, etc. —
+    /// embedded as immutable historical truth.
     private let configuration: ModelConfiguration?
     /// API type key for the provider (e.g. "anthropic", "openAICompatible"). Not on
     /// ModelConfiguration itself, so still passed separately.

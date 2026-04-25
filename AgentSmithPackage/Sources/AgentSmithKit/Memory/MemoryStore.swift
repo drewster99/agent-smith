@@ -109,12 +109,6 @@ public actor MemoryStore {
         self.engine = engine
     }
 
-    /// Identifier of the embedding model the store stamps onto new entries.
-    /// Read-through to the engine's nonisolated `model.identifier`.
-    public nonisolated var currentModelID: String {
-        engine.model.identifier
-    }
-
     /// Registers a callback fired whenever memories or task summaries change.
     public func setOnChange(_ handler: @escaping @Sendable () -> Void) {
         onChange = handler
@@ -136,7 +130,6 @@ public actor MemoryStore {
         let entry = MemoryEntry(
             content: content,
             embedding: vector,
-            embeddingModelID: currentModelID,
             source: source,
             tags: tags,
             sourceTaskID: sourceTaskID
@@ -160,20 +153,16 @@ public actor MemoryStore {
         let newContent = content ?? existing.content
         let newTags = tags ?? existing.tags
         let newEmbedding: [Float]
-        let newModelID: String?
         if content != nil && content != existing.content {
             newEmbedding = try await engine.embed(newContent)
             try Self.validate(embedding: newEmbedding)
-            newModelID = currentModelID
         } else {
             newEmbedding = existing.embedding
-            newModelID = existing.embeddingModelID
         }
         let updated = MemoryEntry(
             id: existing.id,
             content: newContent,
             embedding: newEmbedding,
-            embeddingModelID: newModelID,
             source: existing.source,
             tags: newTags,
             sourceTaskID: existing.sourceTaskID,
@@ -247,7 +236,6 @@ public actor MemoryStore {
             summary: summary,
             embeddingSourceText: embeddingText,
             embedding: vector,
-            embeddingModelID: currentModelID,
             status: status,
             taskCreatedAt: task.createdAt
         )
@@ -374,15 +362,6 @@ public actor MemoryStore {
         }
     }
 
-    /// Returns true when an entry's stored embedding can be compared to the given
-    /// query vector — the model ID matches AND the dimensions agree. Used to skip
-    /// stale entries during the migration window before re-embed completes.
-    private func isComparable(embedding: [Float], modelID: String?, queryDim: Int) -> Bool {
-        guard let modelID, modelID == currentModelID else { return false }
-        guard !embedding.isEmpty, embedding.count == queryDim else { return false }
-        return true
-    }
-
     // MARK: - Search
 
     /// Searches memories using Reciprocal Rank Fusion of semantic similarity and keyword
@@ -418,7 +397,7 @@ public actor MemoryStore {
         var textScores: [Double] = []
         for entry in memories.values {
             let semantic: Double
-            if isComparable(embedding: entry.embedding, modelID: entry.embeddingModelID, queryDim: queryVector.count) {
+            if entry.embedding.count == queryVector.count, !entry.embedding.isEmpty {
                 semantic = Double(VectorMath.dotProduct(queryVector, entry.embedding))
             } else {
                 semantic = 0
@@ -483,7 +462,7 @@ public actor MemoryStore {
         var textScores: [Double] = []
         for entry in taskSummaries.values {
             let semantic: Double
-            if isComparable(embedding: entry.embedding, modelID: entry.embeddingModelID, queryDim: queryVector.count) {
+            if entry.embedding.count == queryVector.count, !entry.embedding.isEmpty {
                 semantic = Double(VectorMath.dotProduct(queryVector, entry.embedding))
             } else {
                 semantic = 0
@@ -542,7 +521,7 @@ public actor MemoryStore {
 
         for entry in memories.values {
             let semantic: Double
-            if isComparable(embedding: entry.embedding, modelID: entry.embeddingModelID, queryDim: queryVector.count) {
+            if entry.embedding.count == queryVector.count, !entry.embedding.isEmpty {
                 semantic = Double(VectorMath.dotProduct(queryVector, entry.embedding))
             } else {
                 semantic = 0
@@ -556,7 +535,7 @@ public actor MemoryStore {
         }
         for entry in taskSummaries.values {
             let semantic: Double
-            if isComparable(embedding: entry.embedding, modelID: entry.embeddingModelID, queryDim: queryVector.count) {
+            if entry.embedding.count == queryVector.count, !entry.embedding.isEmpty {
                 semantic = Double(VectorMath.dotProduct(queryVector, entry.embedding))
             } else {
                 semantic = 0
@@ -626,136 +605,6 @@ public actor MemoryStore {
         let ms = Int(Date().timeIntervalSince(start) * 1000)
         print("[MemoryStore] searchAll: \(memoryResults.count) memories + \(taskResults.count) tasks in \(ms)ms (query: \(query.prefix(60)))")
         return SemanticSearchResults(memories: memoryResults, taskSummaries: taskResults)
-    }
-
-    // MARK: - Re-embedding
-
-    /// Re-embeds memories whose `embeddingModelID` doesn't match the current model.
-    /// Snapshots all stale entries upfront and feeds them to the engine as a single
-    /// batch so MLX can amortize the forward passes (`engine.embed(batch:)` chunks
-    /// internally at `EngineOptions.maxBatchSize`). Entries that were deleted or had
-    /// their content changed during the embed await are skipped on write-back.
-    @discardableResult
-    public func reembedStaleMemories() async throws -> Int {
-        let target = currentModelID
-        let snapshots: [(id: UUID, content: String)] = memories.compactMap { (id, entry) in
-            entry.embeddingModelID == target ? nil : (id, entry.content)
-        }
-        guard !snapshots.isEmpty else { return 0 }
-
-        let vectors = try await engine.embed(batch: snapshots.map(\.content))
-        guard vectors.count == snapshots.count else {
-            throw MemoryStoreError.emptyEmbedding
-        }
-
-        var count = 0
-        for (i, snapshot) in snapshots.enumerated() {
-            let vector = vectors[i]
-            try Self.validate(embedding: vector)
-            // After the await, re-check the entry — it may have been deleted or
-            // updated under us. Only write back if the entry still exists with the
-            // same content we embedded.
-            guard let stillCurrent = memories[snapshot.id],
-                  stillCurrent.content == snapshot.content else {
-                continue
-            }
-            let updated = MemoryEntry(
-                id: stillCurrent.id,
-                content: stillCurrent.content,
-                embedding: vector,
-                embeddingModelID: target,
-                source: stillCurrent.source,
-                tags: stillCurrent.tags,
-                sourceTaskID: stillCurrent.sourceTaskID,
-                createdAt: stillCurrent.createdAt,
-                lastRetrievedAt: stillCurrent.lastRetrievedAt,
-                retrievalCount: stillCurrent.retrievalCount,
-                lastUpdatedAt: stillCurrent.lastUpdatedAt,
-                lastUpdatedBy: stillCurrent.lastUpdatedBy
-            )
-            memories[snapshot.id] = updated
-            count += 1
-        }
-        if count > 0 { onChange?() }
-        return count
-    }
-
-    /// Re-embeds task summaries whose `embeddingModelID` doesn't match the current model.
-    /// Pulls fresh task data from the provided `tasks` array so the composite
-    /// `embeddingSourceText` includes any updates that landed since the summary was
-    /// originally generated. Summaries whose underlying `AgentTask` has been deleted
-    /// or archived fall back to embedding `title + summary` so they remain searchable
-    /// rather than being permanently stuck with an empty vector.
-    @discardableResult
-    public func reembedStaleTaskSummaries(tasks: [AgentTask]) async throws -> Int {
-        struct StaleSnapshot {
-            let id: UUID
-            let title: String
-            let summary: String
-            let embeddingText: String
-            let taskCreatedAt: Date
-        }
-
-        let target = currentModelID
-        let tasksByID = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0) })
-        let snapshots: [StaleSnapshot] = taskSummaries.compactMap { (id, entry) in
-            guard entry.embeddingModelID != target else { return nil }
-            let embeddingText: String
-            let taskCreatedAt: Date
-            if let task = tasksByID[id] {
-                embeddingText = Self.composeEmbeddingText(task: task, summary: entry.summary)
-                taskCreatedAt = task.createdAt
-            } else {
-                // Orphan: the underlying task is gone. Embed what we still have so the
-                // summary stays semantically searchable instead of falling back to
-                // text-only forever.
-                embeddingText = "\(entry.title)\n\(entry.summary)"
-                taskCreatedAt = entry.taskCreatedAt
-            }
-            return StaleSnapshot(
-                id: id,
-                title: entry.title,
-                summary: entry.summary,
-                embeddingText: embeddingText,
-                taskCreatedAt: taskCreatedAt
-            )
-        }
-        guard !snapshots.isEmpty else { return 0 }
-
-        let vectors = try await engine.embed(batch: snapshots.map(\.embeddingText))
-        guard vectors.count == snapshots.count else {
-            throw MemoryStoreError.emptyEmbedding
-        }
-
-        var count = 0
-        for (i, snapshot) in snapshots.enumerated() {
-            let vector = vectors[i]
-            try Self.validate(embedding: vector)
-            // Re-check after the await: a concurrent `saveTaskSummary` may have replaced
-            // the entry with fresh content stamped with the current model ID. If so,
-            // skip — writing our snapshot back would clobber the newer data.
-            guard let stillCurrent = taskSummaries[snapshot.id],
-                  stillCurrent.embeddingModelID != target,
-                  stillCurrent.summary == snapshot.summary,
-                  stillCurrent.title == snapshot.title else {
-                continue
-            }
-            let updated = TaskSummaryEntry(
-                id: snapshot.id,
-                title: snapshot.title,
-                summary: snapshot.summary,
-                embeddingSourceText: snapshot.embeddingText,
-                embedding: vector,
-                embeddingModelID: target,
-                status: stillCurrent.status,
-                taskCreatedAt: snapshot.taskCreatedAt,
-                createdAt: stillCurrent.createdAt
-            )
-            taskSummaries[snapshot.id] = updated
-            count += 1
-        }
-        if count > 0 { onChange?() }
-        return count
     }
 
     // MARK: - Persistence Support

@@ -149,7 +149,7 @@ public struct UsageAggregator: Sendable {
 
     /// Groups records by configuration UUID and summarizes each group.
     public func byConfiguration(_ records: [UsageRecord]) -> [UUID?: UsageSummary] {
-        grouped(records, keyPath: \.configurationID) { id in
+        grouped(records, keyPath: \.configuration?.id) { id in
             id.map { "Config \($0.uuidString.prefix(8))" } ?? "(unknown)"
         }
     }

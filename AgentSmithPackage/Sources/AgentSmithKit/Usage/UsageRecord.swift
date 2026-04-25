@@ -25,16 +25,8 @@ public struct UsageRecord: Codable, Identifiable, Sendable {
     /// time. Preserves settings like context window size, temperature, max tokens,
     /// thinking budget, and extended cache TTL — all of which affect interpretation
     /// of the usage numbers. Immutable historical truth: even if the source config
-    /// is later deleted or edited, this embedded copy stays accurate. Optional only
-    /// because records persisted before this field was added decode with `nil`; the
-    /// startup migration backfills it where the lookup is unambiguous.
+    /// is later deleted or edited, this embedded copy stays accurate.
     public let configuration: ModelConfiguration?
-    /// Vestigial legacy field preserved so the one-shot migration can look up the
-    /// originating ModelConfiguration by UUID for records persisted before the full
-    /// `configuration` snapshot was captured. New records write both — this field
-    /// equals `configuration?.id`. Remove this and the migration together after May
-    /// 9 2026.
-    public let configurationID: UUID?
     /// Input (prompt + context) tokens.
     public let inputTokens: Int
     /// Output (completion) tokens.
@@ -106,7 +98,6 @@ public struct UsageRecord: Codable, Identifiable, Sendable {
         providerType: String,
         providerID: String?,
         configuration: ModelConfiguration?,
-        configurationID: UUID? = nil,
         inputTokens: Int,
         outputTokens: Int,
         cacheReadTokens: Int = 0,
@@ -130,10 +121,6 @@ public struct UsageRecord: Codable, Identifiable, Sendable {
         self.providerType = providerType
         self.providerID = providerID
         self.configuration = configuration
-        // Legacy key: prefer explicit argument, else derive from the embedded config so
-        // new records always carry both. Once the migration is removed after May 9 2026,
-        // this field — and this line — should be deleted.
-        self.configurationID = configurationID ?? configuration?.id
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
         self.cacheReadTokens = cacheReadTokens
@@ -150,57 +137,33 @@ public struct UsageRecord: Codable, Identifiable, Sendable {
         self.rawUsage = rawUsage
     }
 
-    /// Creates a copy of this record with specific fields replaced. Used by startup
-    /// migrations to patch historical records without spelling out all 20+ fields.
-    /// Double-optional parameters: outer nil = keep existing value, .some(x) = use x.
-    /// Non-optional parameters: nil = keep existing, .some(x) = use x.
-    /// TODO: Remove after 05/10/2026 when migrations are removed.
-    public func replacing(
-        taskID: UUID?? = nil,
-        providerID: String?? = nil,
-        configuration: ModelConfiguration?? = nil,
-        configurationID: UUID?? = nil,
-        cacheReadTokens: Int? = nil,
-        cacheWriteTokens: Int? = nil,
-        toolCallCount: Int?? = nil,
-        toolCallNames: [String]?? = nil,
-        rawUsage: String?? = nil
-    ) -> UsageRecord {
-        // When a new configuration is provided without an explicit configurationID,
-        // pass nil so the init's auto-derive logic (`configurationID ?? configuration?.id`)
-        // picks up the new configuration's ID instead of preserving the stale old one.
-        let resolvedConfigID: UUID?
-        if let explicitID = configurationID {
-            resolvedConfigID = explicitID  // Caller explicitly set it (possibly to nil)
-        } else if configuration != nil {
-            resolvedConfigID = nil  // New config without explicit ID — let init derive it
-        } else {
-            resolvedConfigID = self.configurationID  // No changes to either — preserve
-        }
-        return UsageRecord(
+    /// Returns a copy of this record with `taskID` set to the given value. Used by
+    /// `UsageStore` to attribute a record to a task that became known after the LLM
+    /// call completed.
+    public func withTaskID(_ taskID: UUID?) -> UsageRecord {
+        UsageRecord(
             id: id,
             timestamp: timestamp,
             agentRole: agentRole,
-            taskID: taskID ?? self.taskID,
+            taskID: taskID,
             modelID: modelID,
             providerType: providerType,
-            providerID: providerID ?? self.providerID,
-            configuration: configuration ?? self.configuration,
-            configurationID: resolvedConfigID,
+            providerID: providerID,
+            configuration: configuration,
             inputTokens: inputTokens,
             outputTokens: outputTokens,
-            cacheReadTokens: cacheReadTokens ?? self.cacheReadTokens,
-            cacheWriteTokens: cacheWriteTokens ?? self.cacheWriteTokens,
+            cacheReadTokens: cacheReadTokens,
+            cacheWriteTokens: cacheWriteTokens,
             latencyMs: latencyMs,
             preResetInputTokens: preResetInputTokens,
             outputCharCount: outputCharCount,
-            toolCallCount: toolCallCount ?? self.toolCallCount,
-            toolCallNames: toolCallNames ?? self.toolCallNames,
+            toolCallCount: toolCallCount,
+            toolCallNames: toolCallNames,
             toolCallArgumentsChars: toolCallArgumentsChars,
             totalToolExecutionMs: totalToolExecutionMs,
             totalToolResultChars: totalToolResultChars,
             sessionID: sessionID,
-            rawUsage: rawUsage ?? self.rawUsage
+            rawUsage: rawUsage
         )
     }
 }
