@@ -323,6 +323,19 @@ public actor OrchestrationRuntime {
         if let contextCallback = onContextChanged {
             await smithAgent.setOnContextChanged { messages in contextCallback(.smith, messages) }
         }
+        // Brown-activity digest assembler: pulls recent channel messages since the cutoff and
+        // formats a brief summary that Smith can react to without polling. Returns nil when
+        // there's nothing fresh to report so we suppress the wake entirely.
+        let digestChannel = channel
+        await smithAgent.setSmithDigestProvider { [weak digestChannel] since in
+            guard let digestChannel else { return nil }
+            return await Self.assembleBrownActivityDigest(channel: digestChannel, since: since)
+        }
+        // Cancel any task-scoped wakes when the task transitions to a terminal status the first time.
+        let scheduler = followUpScheduler
+        await taskStore.setOnTaskTerminated { taskID in
+            Task { await scheduler.cancelWakesForTask(taskID) }
+        }
 
         smith = smithAgent
         agents[id] = smithAgent
@@ -423,7 +436,7 @@ public actor OrchestrationRuntime {
                         Brown is already working on task "\(resumingTask.title)" (ID: \(resumingTaskID.uuidString)). \
                         The task description and any prior progress have been delivered to Brown automatically. \
                         Do NOT call `run_task`, `create_task`, or `message_brown` — Brown is already briefed and working. \
-                        Call `schedule_followup(delay_seconds: 240)` and wait for Brown to submit results.
+                        Brown will signal progress via task_update / task_complete; you'll also get an automatic 10-minute Brown-activity digest. Do NOT poll.
                         """)
                 } else {
                     smithParts.append("""
@@ -494,7 +507,7 @@ public actor OrchestrationRuntime {
                 parts.append("""
                     Brown has automatically resumed the interrupted task "\(resumed.title)" (ID: \(resumed.id.uuidString)). \
                     Do NOT call `message_brown` for this task — Brown is already briefed and working. \
-                    Call `schedule_followup(delay_seconds: 240)` to monitor progress.
+                    Brown will signal progress via task_update / task_complete; you'll also get an automatic 10-minute Brown-activity digest. Do NOT poll.
                     """)
             }
 
@@ -994,8 +1007,22 @@ public actor OrchestrationRuntime {
                 guard let self else { return }
                 Task { await self.notifyProcessingStateChange(role: .jones, isProcessing: isProcessing) }
             },
-            scheduleFollowUp: { [followUpScheduler] delay in
-                await followUpScheduler?.schedule(after: delay)
+            scheduleWake: { [followUpScheduler] wakeAt, reason, taskID, replacesID in
+                guard let followUpScheduler else { return .error("Scheduler not available.") }
+                return await followUpScheduler.scheduleWake(
+                    wakeAt: wakeAt,
+                    reason: reason,
+                    taskID: taskID,
+                    replacesID: replacesID
+                )
+            },
+            listScheduledWakes: { [followUpScheduler] in
+                guard let followUpScheduler else { return [] }
+                return await followUpScheduler.listScheduledWakes()
+            },
+            cancelScheduledWake: { [followUpScheduler] id in
+                guard let followUpScheduler else { return false }
+                return await followUpScheduler.cancelWake(id: id)
             },
             restartForNewTask: { [weak self] taskID in
                 guard let self else { return }
@@ -1113,4 +1140,75 @@ public actor OrchestrationRuntime {
         await taskStore.setLastBrownContext(id: task.id, context: truncated)
     }
 
+    /// Builds Smith's periodic Brown-activity digest from channel history since `since`.
+    /// Returns nil when nothing meaningful has happened (so the digest wake is suppressed).
+    static func assembleBrownActivityDigest(channel: MessageChannel, since: Date) async -> String? {
+        let all = await channel.allMessages()
+        let recent = all.filter { $0.timestamp >= since }
+        guard !recent.isEmpty else { return nil }
+
+        var taskUpdateCount = 0
+        var toolCallCount = 0
+        var toolBuckets: [String: Int] = [:]
+        var lastUpdate: String?
+        var lastUpdateAt: Date?
+        var jonesDenials = 0
+        var lastDenial: String?
+        var msgFromBrownToSmith: [(Date, String)] = []
+
+        for msg in recent {
+            // Brown public/tool messages — count tool calls once per request (not also per output).
+            if case .agent(let role) = msg.sender, role == .brown {
+                if case .string("tool_request") = msg.metadata?["messageKind"] {
+                    toolCallCount += 1
+                    if case .string(let name) = msg.metadata?["tool"] {
+                        toolBuckets[name, default: 0] += 1
+                    }
+                } else if msg.metadata?["tool"] != nil {
+                    // tool_output — already accounted for via tool_request, skip.
+                } else if case .string(let kind) = msg.metadata?["messageKind"] {
+                    if kind == "task_update" {
+                        taskUpdateCount += 1
+                        lastUpdate = msg.content
+                        lastUpdateAt = msg.timestamp
+                    } else if kind == "task_complete" {
+                        msgFromBrownToSmith.append((msg.timestamp, "task_complete: " + String(msg.content.prefix(120))))
+                    }
+                } else if msg.recipientID != nil {
+                    // Private Brown→Smith messages (other than the structured kinds above).
+                    msgFromBrownToSmith.append((msg.timestamp, String(msg.content.prefix(120))))
+                }
+            }
+            // Jones denial breadcrumbs are system-sender messages that mention security verdict.
+            if case .system = msg.sender, msg.content.contains("UNSAFE") || msg.content.contains("ABORT") {
+                jonesDenials += 1
+                lastDenial = msg.content
+            }
+        }
+
+        var lines: [String] = []
+        lines.append("- Brown made \(toolCallCount) tool call(s) and sent \(taskUpdateCount) task_update(s).")
+        if !toolBuckets.isEmpty {
+            let topTools = toolBuckets.sorted { $0.value > $1.value }.prefix(5)
+                .map { "\($0.key)×\($0.value)" }
+                .joined(separator: ", ")
+            lines.append("- Top tools: \(topTools)")
+        }
+        if let lastUpdate, let lastUpdateAt {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm:ss"
+            let preview = lastUpdate.replacingOccurrences(of: "\n", with: " ")
+            let trimmed = preview.count > 200 ? String(preview.prefix(200)) + "…" : preview
+            lines.append("- Last task_update at \(formatter.string(from: lastUpdateAt)): \(trimmed)")
+        } else {
+            lines.append("- No task_update from Brown in this window — likely deep in tool work or stuck.")
+        }
+        if jonesDenials > 0 {
+            lines.append("- Jones denied \(jonesDenials) call(s). Latest reason snippet: \((lastDenial ?? "").prefix(160))")
+        }
+        for (_, text) in msgFromBrownToSmith.prefix(3) {
+            lines.append("- Brown→Smith: \(text)")
+        }
+        return lines.joined(separator: "\n")
+    }
 }

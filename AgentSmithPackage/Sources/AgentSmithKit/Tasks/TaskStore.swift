@@ -4,12 +4,20 @@ import Foundation
 public actor TaskStore {
     private var tasks: [UUID: AgentTask] = [:]
     private var onChange: (@Sendable () -> Void)?
+    /// Fired the first time a task transitions to a terminal status (`.completed` or `.failed`).
+    /// Used by `OrchestrationRuntime` to cancel any scheduled wakes pinned to the task.
+    private var onTaskTerminated: (@Sendable (UUID) -> Void)?
 
     public init() {}
 
     /// Registers a callback fired whenever tasks change.
     public func setOnChange(_ handler: @escaping @Sendable () -> Void) {
         onChange = handler
+    }
+
+    /// Registers a callback fired when a task transitions to a terminal status for the first time.
+    public func setOnTaskTerminated(_ handler: @escaping @Sendable (UUID) -> Void) {
+        onTaskTerminated = handler
     }
 
     /// All tasks, newest first.
@@ -49,15 +57,19 @@ public actor TaskStore {
     /// Updates a task's status.
     /// If the new status is in-progress (pending, running, paused), the task is automatically
     /// restored to the active disposition — it cannot remain archived or deleted while active.
+    /// The first transition to a terminal status (`.completed`/`.failed`) fires `onTaskTerminated`
+    /// so the runtime can dispose any wakes scoped to the task.
     public func updateStatus(id: UUID, status: AgentTask.Status) {
         guard var task = tasks[id] else { return }
         let now = Date()
+        let wasTerminal = task.status == .completed || task.status == .failed
+        let isTerminal = status == .completed || status == .failed
         task.status = status
         task.updatedAt = now
         if status == .running && task.startedAt == nil {
             task.startedAt = now
         }
-        if status == .completed || status == .failed {
+        if isTerminal {
             task.completedAt = now
         }
         if status.isInProgress {
@@ -65,6 +77,27 @@ public actor TaskStore {
         }
         tasks[id] = task
         onChange?()
+        if isTerminal && !wasTerminal {
+            onTaskTerminated?(id)
+        }
+    }
+
+    /// Resets a failed task's terminal state so it can be retried via `run_task`. Clears
+    /// `result`, `commentary`, and `completedAt`; the caller is responsible for transitioning
+    /// the status back to `.pending` (or via run_task → restart). Returns false if the task
+    /// is missing or not in `.failed` state.
+    @discardableResult
+    public func resetFailedTask(id: UUID) -> Bool {
+        guard var task = tasks[id], task.status == .failed else { return false }
+        task.result = nil
+        task.commentary = nil
+        task.completedAt = nil
+        task.status = .pending
+        task.disposition = .active
+        task.updatedAt = Date()
+        tasks[id] = task
+        onChange?()
+        return true
     }
 
     /// Assigns an agent to a task.

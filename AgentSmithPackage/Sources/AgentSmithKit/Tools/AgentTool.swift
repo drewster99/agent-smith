@@ -109,8 +109,13 @@ public struct ToolContext: Sendable {
     public let onProcessingStateChange: @Sendable (Bool) -> Void
     /// Called with `true` when Jones begins a security evaluation LLM call, `false` when it completes.
     public let onJonesProcessingStateChange: @Sendable (Bool) -> Void
-    /// Schedules a deferred wake-up for the agent after the given number of seconds.
-    public let scheduleFollowUp: @Sendable (TimeInterval) async -> Void
+    /// Schedules a deferred wake-up. See `ScheduledWake` for the per-wake record. Returns
+    /// `.scheduled(wake)`, `.conflict(...)`, or `.error(...)`.
+    public let scheduleWake: @Sendable (Date, String, UUID?, UUID?) async -> ScheduleWakeOutcome
+    /// Returns all currently-scheduled wakes for the calling agent (sorted by `wakeAt`).
+    public let listScheduledWakes: @Sendable () async -> [ScheduledWake]
+    /// Cancels a single wake by id. Returns true on success.
+    public let cancelScheduledWake: @Sendable (UUID) async -> Bool
     /// Signals a full system restart for a new task. Called by create_task.
     public let restartForNewTask: @Sendable (UUID) async -> Void
     /// The task ID that the current session was started/restarted for, if any.
@@ -154,7 +159,9 @@ public struct ToolContext: Sendable {
         onSelfTerminate: @escaping @Sendable () async -> Void = {},
         onProcessingStateChange: @escaping @Sendable (Bool) -> Void = { _ in },
         onJonesProcessingStateChange: @escaping @Sendable (Bool) -> Void = { _ in },
-        scheduleFollowUp: @escaping @Sendable (TimeInterval) async -> Void = { _ in },
+        scheduleWake: @escaping @Sendable (Date, String, UUID?, UUID?) async -> ScheduleWakeOutcome = { _, _, _, _ in .error("Scheduling not configured.") },
+        listScheduledWakes: @escaping @Sendable () async -> [ScheduledWake] = { [] },
+        cancelScheduledWake: @escaping @Sendable (UUID) async -> Bool = { _ in false },
         restartForNewTask: @escaping @Sendable (UUID) async -> Void = { _ in },
         currentResumingTaskID: UUID? = nil,
         memoryStore: MemoryStore,
@@ -181,7 +188,9 @@ public struct ToolContext: Sendable {
         self.onSelfTerminate = onSelfTerminate
         self.onProcessingStateChange = onProcessingStateChange
         self.onJonesProcessingStateChange = onJonesProcessingStateChange
-        self.scheduleFollowUp = scheduleFollowUp
+        self.scheduleWake = scheduleWake
+        self.listScheduledWakes = listScheduledWakes
+        self.cancelScheduledWake = cancelScheduledWake
         self.restartForNewTask = restartForNewTask
         self.currentResumingTaskID = currentResumingTaskID
         self.memoryStore = memoryStore

@@ -1,8 +1,10 @@
 import Foundation
 
-/// Bridges the schedule_followup tool to an AgentActor.
-/// Created before the agent exists so it can be captured by the ToolContext,
-/// then wired to the real agent after creation.
+/// Bridges scheduled-wake tools to an AgentActor. Created before the agent exists so it can
+/// be captured by the ToolContext, then wired to the real agent after creation.
+///
+/// Exposes the multi-wake API (schedule/list/cancel) that replaced the single-slot
+/// `scheduleFollowUp` design — see `ScheduledWake` for the per-wake record.
 actor FollowUpScheduler {
     private weak var agent: AgentActor?
 
@@ -10,7 +12,37 @@ actor FollowUpScheduler {
         self.agent = agent
     }
 
-    func schedule(after delay: TimeInterval) async {
-        await agent?.scheduleFollowUp(after: delay)
+    func scheduleWake(
+        wakeAt: Date,
+        reason: String,
+        taskID: UUID? = nil,
+        replacesID: UUID? = nil
+    ) async -> ScheduleWakeOutcome {
+        guard let agent else {
+            return .error("Agent is not running.")
+        }
+        return await agent.scheduleWake(
+            wakeAt: wakeAt,
+            reason: reason,
+            taskID: taskID,
+            replacesID: replacesID
+        )
+    }
+
+    func listScheduledWakes() async -> [ScheduledWake] {
+        guard let agent else { return [] }
+        return await agent.listScheduledWakes()
+    }
+
+    @discardableResult
+    func cancelWake(id: UUID) async -> Bool {
+        guard let agent else { return false }
+        return await agent.cancelWake(id: id)
+    }
+
+    @discardableResult
+    func cancelWakesForTask(_ taskID: UUID) async -> [UUID] {
+        guard let agent else { return [] }
+        return await agent.cancelWakesForTask(taskID)
     }
 }

@@ -49,10 +49,14 @@ public actor AgentActor {
     /// the debounce window. Cleared once we commit to an LLM call. Stays false during
     /// an active tool loop so tool results are processed without unnecessary delay.
     private var debouncingForMessages = false
-    /// When non-nil, the agent wakes at this time even without new messages.
-    private var scheduledWakeAt: Date?
+    /// All scheduled wakes for this agent. Each carries an id, time, reason, and optional task
+    /// association. Sorted ascending by `wakeAt`. The earliest wake bounds the next idle sleep.
+    private var scheduledWakes: [ScheduledWake] = []
     /// The currently sleeping idle task. Cancelling it wakes the agent early.
     private var idleSleepTask: Task<Void, Never>?
+    /// Conflict window for `scheduleWake` — a new wake within this many seconds of an existing
+    /// one is treated as a conflict unless `replacesID` is provided.
+    private static let scheduleWakeConflictWindowSeconds: TimeInterval = 60
 
     /// Seconds of channel silence required before processing new messages.
     private let messageDebounceInterval: TimeInterval
@@ -94,6 +98,39 @@ public actor AgentActor {
     private var lastToolCallSignature: String?
     private var consecutiveIdenticalToolCalls = 0
     private static let maxConsecutiveIdenticalToolCalls = 4
+
+    /// Brown-only: time of the most recent successful task_acknowledged/task_update/task_complete.
+    /// Used by the silence nudge. Initialized when the run loop starts.
+    private var lastTaskCommunicationAt: Date?
+    /// Brown-only: tool calls Brown has executed since his last task communication.
+    /// Reset on every successful task_acknowledged/task_update/task_complete.
+    private var toolCallsSinceTaskCommunication = 0
+    /// Brown-only: armed = the nudge is allowed to fire. Cleared once the nudge fires,
+    /// re-armed when Brown sends a task communication. Prevents the nudge from re-firing
+    /// every iteration while Brown is still silent.
+    private var brownSilenceNudgeArmed = true
+    /// The nudge fires if EITHER:
+    ///   (a) ≥ minSeconds elapsed AND ≥ minToolCalls executed since last task communication, OR
+    ///   (b) ≥ hardCeilingSeconds elapsed regardless of tool-call count.
+    /// (a) catches the common drift case while ignoring brief tool-call bursts. (b) is the
+    /// hard ceiling for slow-tool cases — e.g. a long `pnpm install` followed by a slow build,
+    /// only a few tool calls in 20 minutes, but Brown is still silent and Smith deserves to know.
+    private static let brownSilenceNudgeMinSeconds: TimeInterval = 300       // 5 minutes
+    private static let brownSilenceNudgeMinToolCalls = 10
+    private static let brownSilenceNudgeHardCeilingSeconds: TimeInterval = 900  // 15 minutes
+
+    /// Smith-only: time of the last digest wake. Used to gate the periodic auto-digest.
+    /// Reset on every successful digest fire AND on inbound task_update / task_complete from
+    /// Brown (Smith already saw fresh signal that way). Initialized at agent start.
+    private var lastSmithDigestAt: Date?
+    /// Smith-only: how often to auto-digest. Paired with Brown's 9-minute silence-nudge ceiling
+    /// so by the time Smith digests, Brown has either responded to the nudge (Smith already saw)
+    /// or is still ignoring it (digest content).
+    private static let smithDigestIntervalSeconds: TimeInterval = 600
+    /// Smith-only: closure that builds a brief digest of Brown's recent activity. Set by the
+    /// orchestration runtime after Smith is constructed; nil = digest disabled. Argument is the
+    /// since-cutoff. Returns nil to suppress this fire (no fresh activity).
+    private var smithDigestProvider: (@Sendable (Date) async -> String?)?
 
     private var maxToolCallsPerIteration: Int
     /// Maximum concurrent Jones security evaluations to prevent overwhelming the LLM backend.
@@ -237,16 +274,79 @@ public actor AgentActor {
         syntheticFirstToolCall = toolName
     }
 
-    /// Schedules a follow-up wake after the given delay, replacing any existing scheduled wake.
-    public func scheduleFollowUp(after delay: TimeInterval) {
-        scheduledWakeAt = Date().addingTimeInterval(delay)
+    /// Schedules a wake. Returns `.scheduled(wake)` on success, `.conflict(...)` if a wake
+    /// already exists within `scheduleWakeConflictWindowSeconds` of the requested time and the
+    /// caller didn't pass `replacesID`, or `.error(...)` for validation failures.
+    /// If `replacesID` is supplied, that wake is cancelled before scheduling the new one and
+    /// conflict checking is skipped against it.
+    public func scheduleWake(
+        wakeAt: Date,
+        reason: String,
+        taskID: UUID? = nil,
+        replacesID: UUID? = nil
+    ) -> ScheduleWakeOutcome {
+        let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedReason.isEmpty else {
+            return .error("reason must not be empty — describe why the agent should be woken at that time.")
+        }
+
+        if let replacesID {
+            scheduledWakes.removeAll { $0.id == replacesID }
+        }
+
+        let window = Self.scheduleWakeConflictWindowSeconds
+        let conflicts = scheduledWakes.filter {
+            abs($0.wakeAt.timeIntervalSince(wakeAt)) <= window
+        }
+        if !conflicts.isEmpty {
+            return .conflict(existing: conflicts, requestedAt: wakeAt)
+        }
+
+        let wake = ScheduledWake(wakeAt: wakeAt, reason: trimmedReason, taskID: taskID)
+        scheduledWakes.append(wake)
+        scheduledWakes.sort { $0.wakeAt < $1.wakeAt }
         interruptIdleSleep()
+        return .scheduled(wake)
+    }
+
+    /// Returns all currently-scheduled wakes for this agent, sorted ascending by `wakeAt`.
+    public func listScheduledWakes() -> [ScheduledWake] {
+        scheduledWakes
+    }
+
+    /// Cancels a single wake by id. Returns true if it existed and was removed.
+    @discardableResult
+    public func cancelWake(id: UUID) -> Bool {
+        let before = scheduledWakes.count
+        scheduledWakes.removeAll { $0.id == id }
+        return scheduledWakes.count < before
+    }
+
+    /// Cancels every wake associated with the given task. Returns the ids of cancelled wakes.
+    @discardableResult
+    public func cancelWakesForTask(_ taskID: UUID) -> [UUID] {
+        let cancelled = scheduledWakes.filter { $0.taskID == taskID }.map { $0.id }
+        scheduledWakes.removeAll { $0.taskID == taskID }
+        return cancelled
+    }
+
+    /// Smith-only: registers the closure used to assemble periodic Brown-activity digests.
+    /// Idempotent — replaces any prior provider.
+    public func setSmithDigestProvider(_ provider: @escaping @Sendable (Date) async -> String?) {
+        smithDigestProvider = provider
     }
 
     /// Starts the agent's run loop.
     public func start(initialInstruction: String? = nil) {
         guard !isRunning else { return }
         isRunning = true
+        if configuration.role == .brown {
+            lastTaskCommunicationAt = Date()
+            toolCallsSinceTaskCommunication = 0
+            brownSilenceNudgeArmed = true
+        } else if configuration.role == .smith {
+            lastSmithDigestAt = Date()
+        }
 
         if let instruction = initialInstruction {
             conversationHistory.append(LLMMessage(role: .user, text: instruction))
@@ -352,6 +452,15 @@ public actor AgentActor {
             lastDirectUserMessageAt = Date()
         }
 
+        // Smith only: a task_update or task_complete from Brown is fresh signal — reset the
+        // digest clock so we don't fire an auto-digest seconds later that would just summarize
+        // what Smith already saw via this message.
+        if configuration.role == .smith,
+           case .string(let kind) = message.metadata?["messageKind"],
+           kind == "task_update" || kind == "task_complete" {
+            lastSmithDigestAt = Date()
+        }
+
         pendingChannelMessages.append(message)
         lastChannelMessageAt = Date()
         // Only start debouncing if the agent was idle — during an active tool loop
@@ -392,6 +501,8 @@ public actor AgentActor {
 
             drainPendingMessages()
             checkScheduledWake()
+            checkBrownSilenceNudge()
+            await checkSmithDigest()
             await pruneHistoryIfNeeded()
 
             guard hasUnprocessedInput else {
@@ -1327,6 +1438,57 @@ public actor AgentActor {
         if call.name == "reply_to_user" && result == "Reply sent to user." { sentMessage = true }
         if call.name == "task_complete" && result.hasPrefix("Task submitted for review:") { calledTaskComplete = true }
         if call.name == "run_task" && result.contains("System is restarting") { calledCreateTask = true }
+
+        if configuration.role == .brown {
+            let isSuccessfulTaskCommunication: Bool
+            switch call.name {
+            case "task_acknowledged":
+                isSuccessfulTaskCommunication = result.hasPrefix("Task acknowledged:") || result.hasPrefix("Task continuing:")
+            case "task_update":
+                isSuccessfulTaskCommunication = result == "Update sent to Agent Smith."
+            case "task_complete":
+                isSuccessfulTaskCommunication = result.hasPrefix("Task submitted for review:")
+            default:
+                isSuccessfulTaskCommunication = false
+            }
+            if isSuccessfulTaskCommunication {
+                lastTaskCommunicationAt = Date()
+                toolCallsSinceTaskCommunication = 0
+                brownSilenceNudgeArmed = true
+            } else {
+                toolCallsSinceTaskCommunication += 1
+            }
+        }
+    }
+
+    /// Brown-only: if it's been too long since Brown's last task communication, inject a
+    /// system-style user message instructing him to call task_update. Fires at most once per
+    /// silence period (re-armed when Brown actually communicates).
+    private func checkBrownSilenceNudge() {
+        guard configuration.role == .brown, brownSilenceNudgeArmed else { return }
+        guard let last = lastTaskCommunicationAt else { return }
+        let elapsed = Date().timeIntervalSince(last)
+        let drifting = elapsed >= Self.brownSilenceNudgeMinSeconds
+            && toolCallsSinceTaskCommunication >= Self.brownSilenceNudgeMinToolCalls
+        let hardCeiling = elapsed >= Self.brownSilenceNudgeHardCeilingSeconds
+        guard drifting || hardCeiling else { return }
+
+        let minutes = Int(elapsed / 60)
+        conversationHistory.append(LLMMessage(
+            role: .user,
+            text: """
+                [System] You have made \(toolCallsSinceTaskCommunication) tool calls and gone \(minutes) minute(s) without sending a task_update.
+
+                Smith and the user are blind to your progress until you do. Your next action MUST be a task_update tool call with a 1–2 sentence summary of:
+                1. What you have established or completed since your last update.
+                2. What you are about to try next.
+
+                After sending the update, continue your work normally.
+                """
+        ))
+        brownSilenceNudgeArmed = false
+        hasUnprocessedInput = true
+        pushLiveContext()
     }
 
     // MARK: - Wake / sleep helpers
@@ -1337,12 +1499,16 @@ public actor AgentActor {
     }
 
     /// Sleeps for up to `maxDuration` seconds, or until interrupted by a new message
-    /// or a scheduled follow-up that becomes due sooner.
+    /// or the earliest scheduled wake (whichever comes first).
     private func idleWait(maxDuration: TimeInterval? = nil) async {
         var duration = maxDuration ?? pollInterval
-        if let wakeAt = scheduledWakeAt {
-            let untilWake = max(0, wakeAt.timeIntervalSinceNow)
+        if let earliest = scheduledWakes.first {
+            let untilWake = max(0, earliest.wakeAt.timeIntervalSinceNow)
             duration = min(duration, untilWake)
+        }
+        if configuration.role == .smith, smithDigestProvider != nil, let last = lastSmithDigestAt {
+            let untilDigest = max(0, Self.smithDigestIntervalSeconds - Date().timeIntervalSince(last))
+            duration = min(duration, untilDigest)
         }
         duration = max(0.1, duration)
 
@@ -1366,29 +1532,74 @@ public actor AgentActor {
         return max(0, messageDebounceInterval - Date().timeIntervalSince(last))
     }
 
-    /// Fires a scheduled follow-up if its deadline has arrived, injecting a reminder
-    /// into the conversation so the LLM knows to review the current state.
+    /// Fires every scheduled wake whose deadline has arrived. Injects one combined `[System: ...]`
+    /// user-role marker that lists each elapsed wake (id, time, reason, taskID if any) so the
+    /// model can address them in order.
     private func checkScheduledWake() {
-        guard let wakeAt = scheduledWakeAt, Date() >= wakeAt else { return }
+        let now = Date()
+        let due = scheduledWakes.filter { $0.wakeAt <= now }
+        guard !due.isEmpty else { return }
         guard !awaitingTaskReview else {
-            // Don't wake during task review — the scheduled timer is stale.
-            scheduledWakeAt = nil
+            // Don't fire during task review — drop the elapsed wakes so we don't pile up.
+            // Wakes that fire mid-review are inherently stale by the time review completes.
+            scheduledWakes.removeAll { $0.wakeAt <= now }
             return
         }
-        scheduledWakeAt = nil
+        scheduledWakes.removeAll { $0.wakeAt <= now }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        let lines = due.map { wake -> String in
+            let timeStr = formatter.string(from: wake.wakeAt)
+            let taskFragment = wake.taskID.map { " (taskID: \($0.uuidString))" } ?? ""
+            return "  • [\(timeStr)] \(wake.reason)\(taskFragment)"
+        }
+        let header = due.count == 1
+            ? "[System: A scheduled wake has elapsed.]"
+            : "[System: \(due.count) scheduled wakes have elapsed.]"
         conversationHistory.append(LLMMessage(
             role: .user,
             text: """
-                [System: Your scheduled follow-up timer has elapsed.
+                \(header)
 
-                Brown is likely still working on the active task. Your job here is NOT to report status to the user. Your job is to verify Brown is still making progress and intervene ONLY if Brown appears stuck or off-track.
+                \(lines.joined(separator: "\n"))
 
-                REQUIRED steps, in order:
-                1. Call get_task_details on the running task to read Brown's latest task_updates.
-                2. If task_updates is empty or hasn't grown since your last check, Brown has not reported in — that is NOT evidence of completion. It usually means Brown is mid-tool-loop. Schedule another follow-up and STOP.
-                3. If the latest update indicates Brown is stuck, blocked, or going in circles, send a private message to Brown with concrete guidance — do NOT message the user.
-                4. NEVER call message_user from this wake-up. Brown will signal completion via task_complete, which will route through review_work. The user does NOT need nor WANT a status report from you.
-                5. If you have nothing actionable, schedule another follow-up and STOP.]
+                Address each wake in order. The wake's reason was set by the user (or by you, on the user's behalf) — act on it. If you no longer need to act, do nothing further. Do NOT schedule a fresh wake unless the user has asked you to follow up again.
+                """
+        ))
+        hasUnprocessedInput = true
+        pushLiveContext()
+    }
+
+    /// Smith-only: if the digest interval has elapsed, ask the runtime-supplied provider for a
+    /// brief Brown-activity summary since the last digest, append it as a `[System: ...]` user
+    /// message, and reset the digest clock. Skipped silently if no provider is set or if the
+    /// provider returns nil (no fresh activity to report).
+    private func checkSmithDigest() async {
+        guard configuration.role == .smith, let provider = smithDigestProvider else { return }
+        let now = Date()
+        let last = lastSmithDigestAt ?? now
+        // First call after start: just record `now` and wait a full interval.
+        if lastSmithDigestAt == nil {
+            lastSmithDigestAt = now
+            return
+        }
+        guard now.timeIntervalSince(last) >= Self.smithDigestIntervalSeconds else { return }
+        guard !awaitingTaskReview else {
+            // Skip during review — Smith is actively reading Brown's deliverable.
+            lastSmithDigestAt = now
+            return
+        }
+        lastSmithDigestAt = now
+        guard let digest = await provider(last), !digest.isEmpty else { return }
+        conversationHistory.append(LLMMessage(
+            role: .user,
+            text: """
+                [System: Brown activity digest — past \(Int(Self.smithDigestIntervalSeconds / 60)) minute(s)]
+
+                \(digest)
+
+                This is an automatic summary so you can supervise without waking on every Brown action. Act only if something looks wrong (Brown stuck, off-track, repeating failures). If everything looks fine, do nothing.
                 """
         ))
         hasUnprocessedInput = true

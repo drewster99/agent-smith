@@ -1,9 +1,12 @@
 import Foundation
 
-/// Allows Smith to run an existing pending or paused task without duplicating it.
+/// Allows Smith to run an existing pending, paused, interrupted, or failed task without
+/// duplicating it. When invoked on a failed task, the task's terminal state is reset (result,
+/// commentary, and completedAt are cleared and status returns to `.pending`) before the run
+/// begins — the user said "try again" means "rerun on the same task ID", not "create a new one."
 public struct RunTaskTool: AgentTool {
     public let name = "run_task"
-    public let toolDescription = "Run an existing pending, paused, or interrupted task. Restarts with a clean context and auto-spawns Brown+Jones. The `instructions` field is REQUIRED — include any updates, permissions, scope changes, or clarifications from the user. These are appended to the task description and survive the restart.\nIMPORTANT: Only one task can run at a time. Calling `run_task` will STOP any currently executing task."
+    public let toolDescription = "Run an existing pending, paused, interrupted, or failed task. Restarts with a clean context and auto-spawns Brown+Jones. Failed tasks are reset (prior result/commentary cleared) before running. The `instructions` field is REQUIRED — include any updates, permissions, scope changes, or clarifications from the user. These are appended to the task description and survive the restart.\nIMPORTANT: Only one task can run at a time. Calling `run_task` will STOP any currently executing task."
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
@@ -23,7 +26,7 @@ public struct RunTaskTool: AgentTool {
     public init() {}
 
     public func isAvailable(in context: ToolAvailabilityContext) -> Bool {
-        context.hasRunnableTasks && context.agentRole == .smith
+        context.agentRole == .smith
     }
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
@@ -33,12 +36,21 @@ public struct RunTaskTool: AgentTool {
         guard let taskID = UUID(uuidString: taskIDString) else {
             return "Invalid task_id: '\(taskIDString)' is not a valid UUID. Use list_tasks to find valid task IDs."
         }
-        guard let task = await context.taskStore.task(id: taskID) else {
+        guard var task = await context.taskStore.task(id: taskID) else {
             return "No task found with ID \(taskID). Use `list_tasks` to see available tasks."
         }
-        guard task.status.isRunnable else {
+        // Allow pending/paused/interrupted directly. For failed, reset the task back to pending
+        // first so the retry runs on the same task ID (preserving history and prior context).
+        if task.status == .failed {
+            _ = await context.taskStore.resetFailedTask(id: taskID)
+            // Re-fetch the now-reset task for the rest of this method.
+            guard let refreshed = await context.taskStore.task(id: taskID), refreshed.status.isRunnable else {
+                return "Could not reset task '\(task.title)' for retry."
+            }
+            task = refreshed
+        } else if !task.status.isRunnable {
             return """
-                Task '\(task.title)' has status '\(task.status.rawValue)' — run_task only works on pending, paused, or interrupted tasks. \
+                Task '\(task.title)' has status '\(task.status.rawValue)' — run_task only works on pending, paused, interrupted, or failed tasks. \
                 Use list_tasks to check current statuses, or create_task if you need a new task.
                 """
         }
@@ -65,7 +77,8 @@ public struct RunTaskTool: AgentTool {
         if context.currentResumingTaskID == taskID {
             return """
                 The system has already restarted for this task and Brown has been auto-spawned. \
-                Do NOT call run_task again. Monitor Brown's progress via `schedule_followup`.
+                Do NOT call run_task again. Brown will signal progress via task_update / task_complete; \
+                you'll also receive an automatic 10-minute Brown-activity digest.
                 """
         }
 

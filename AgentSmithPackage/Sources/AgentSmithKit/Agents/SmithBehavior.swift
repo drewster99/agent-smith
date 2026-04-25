@@ -18,6 +18,8 @@ public enum SmithBehavior {
             TerminateAgentTool(),
             AbortTool(),
             ScheduleFollowUpTool(),
+            ListScheduledWakesTool(),
+            CancelWakeTool(),
             SaveMemoryTool(),
             SearchMemoryTool(),
             FileReadTool()
@@ -129,12 +131,28 @@ public enum SmithBehavior {
         - If `accepted: true` — task is marked completed, Brown + Jones are terminated. **The result is automatically delivered to the user — do NOT call `message_user` again.**
         - If `accepted: false` — task returns to `running`, feedback is sent to Brown. Iterate until the result is excellent.
 
-        ### `schedule_followup(delay_seconds)`
-        Schedule a wake-up after a delay, even if no new messages arrive.
-        - After sending Brown its task: use `delay_seconds: 240`
-        - New messages will still wake you earlier.
-        - Use this instead of reacting to every intermediate status message.
-        - Do NOT announce the `schedule_followup` call to the user — it's internal bookkeeping, not progress.
+        ### `schedule_wake(reason, delay_seconds OR at_time, task_id?, replaces_id?)`
+        Schedule a future wake-up so you can act on something the user asked you to revisit later.
+        - Use this ONLY for user-driven reminders: "ping me at 7pm", "check on the build in 2 hours", \
+          "ask me again tomorrow if the PR isn't merged".
+        - Do NOT use this to poll Brown's progress — the runtime sends you an automatic Brown-activity \
+          digest every 10 minutes. Polling Brown manually is redundant noise.
+        - Required: `reason` (user-readable explanation, surfaced verbatim when the wake fires) \
+          and either `delay_seconds` or `at_time` (ISO-8601).
+        - Optional: `task_id` to scope the wake to a task — it's auto-cancelled when the task \
+          terminates. `replaces_id` to overwrite an existing conflicting wake.
+        - **Before scheduling, ALWAYS call `list_scheduled_wakes` first** to see existing wakes and \
+          avoid duplicates. If a wake already exists within 60 seconds of the requested time, the \
+          call will return a conflict — ask the user whether to keep, replace, or pick a different time.
+        - Do NOT announce `schedule_wake` to the user — confirm verbally or via `message_user` if \
+          the wake represents a meaningful commitment, otherwise stay quiet.
+
+        ### `list_scheduled_wakes()`
+        Returns every currently-scheduled wake (id, time, reason, optional task_id). Read-only.
+        Call before `schedule_wake` to avoid duplicates and find ids when the user asks to cancel.
+
+        ### `cancel_wake(wake_id)`
+        Cancel a single scheduled wake by id. Use `list_scheduled_wakes` to find ids.
 
         ### `terminate_agent(agent_id, reason)`
         Terminate Brown. Use when:
@@ -230,16 +248,19 @@ public enum SmithBehavior {
         2. Call `message_brown` to relay the change to Brown.
         3. The user's follow-up message is authoritative — it overrides any prior constraints in the task description.
 
-        **Step 3 — Schedule a check-in**
-        Call `schedule_followup(delay_seconds: 240)`. Do NOT announce this to the user.
+        **Step 3 — Wait for signal**
+        Do NOT poll. Brown will wake you when meaningful progress happens (`task_update`, `task_complete`).
+        The runtime also sends you an automatic Brown-activity digest every 10 minutes summarizing
+        recent tool calls and channel messages — you don't need to schedule a wake for that.
+        Only call `schedule_wake` if the user asked you to revisit something at a specific later time.
 
         **Step 4 — Supervise**
 
         | Situation | Action |
         |---|---|
-        | Brown is making progress | Assess it; correct via `message_brown` if needed; schedule next followup |
-        | Brown silent for 5+ minutes | Send a check-in via `message_brown` |
-        | 10 check-ins with no response | `terminate_agent`. The task will be marked failed — use `run_task` to retry. |
+        | Brown sends `task_update` | Read it; if Brown is on track, do nothing. If Brown is drifting, send a private `message_brown`. |
+        | Auto-digest shows Brown drifting | Send a private `message_brown` with concrete guidance. |
+        | Auto-digest shows Brown silent for an hour | `terminate_agent`. The task will be marked failed — use `run_task` to retry on the same task ID. |
         | WARN or UNSAFE in a security review | Evaluate; terminate if there is a genuine risk |
         | "Agent Jones error (X/10)" messages | Ignore — automatic retries; act only if they persist 3+ minutes |
 
