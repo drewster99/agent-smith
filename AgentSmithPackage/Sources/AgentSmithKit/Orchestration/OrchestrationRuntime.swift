@@ -714,6 +714,12 @@ public actor OrchestrationRuntime {
 
         let brownID = UUID()
 
+        // Tool-execution tracker shared between Brown's tool context (writer) and the
+        // SecurityEvaluator's Jones prompt (reader) so Jones can see whether an approved
+        // tool call actually succeeded or failed. Without this shared instance, retries
+        // after a tool error would be misread as duplicate operations and denied.
+        let executionTracker = ToolExecutionTracker()
+
         // Create SecurityEvaluator with Jones's LLM config — replaces the Jones agent.
         let jonesConfig = llmConfigs[.jones]
         let evaluator = SecurityEvaluator(
@@ -727,7 +733,13 @@ public actor OrchestrationRuntime {
             usageStore: usageStore,
             configuration: jonesConfig,
             providerType: providerAPITypes[.jones]?.rawValue ?? "",
-            sessionID: currentSessionID
+            sessionID: currentSessionID,
+            hasToolSucceeded: { [executionTracker] toolCallID in
+                await executionTracker.hasSucceeded(toolCallID: toolCallID)
+            },
+            hasToolFailed: { [executionTracker] toolCallID in
+                await executionTracker.hasFailed(toolCallID: toolCallID)
+            }
         )
         securityEvaluators[brownID] = evaluator
 
@@ -745,7 +757,12 @@ public actor OrchestrationRuntime {
         }
 
         let filesRead = FileReadTracker()
-        let brownContext = makeToolContext(agentID: brownID, role: .brown, filesReadInSession: filesRead)
+        let brownContext = makeToolContext(
+            agentID: brownID,
+            role: .brown,
+            filesReadInSession: filesRead,
+            executionTracker: executionTracker
+        )
 
         // Pre-flight `gh auth status` so Brown sees verified GitHub auth state in his tool list
         // from turn one. Capturing once at spawn is sufficient — auth doesn't change mid-task.
@@ -972,10 +989,15 @@ public actor OrchestrationRuntime {
         role: AgentRole,
         followUpScheduler: FollowUpScheduler? = nil,
         currentResumingTaskID: UUID? = nil,
-        filesReadInSession: FileReadTracker? = nil
+        filesReadInSession: FileReadTracker? = nil,
+        executionTracker: ToolExecutionTracker? = nil
     ) -> ToolContext {
-        // Create a tool execution tracker for this agent
-        let executionTracker = ToolExecutionTracker()
+        // Strong-capture the tracker so it survives beyond this stack frame. Callers that
+        // also need to read tool-execution outcomes (e.g. SecurityEvaluator) must pass the
+        // same instance via this parameter so writer (tool execute) and reader (Jones prompt)
+        // share state. When unset, a fresh tracker is created for this agent only — that
+        // agent's writes/reads stay consistent, but no one else can observe them.
+        let tracker = executionTracker ?? ToolExecutionTracker()
 
         return ToolContext(
             agentID: agentID,
@@ -1054,17 +1076,14 @@ public actor OrchestrationRuntime {
             hasFileBeenRead: { path in
                 filesReadInSession?.contains(path) ?? false
             },
-            setToolExecutionStatus: { [weak executionTracker] toolCallID, succeeded in
-                guard let executionTracker else { return }
-                await executionTracker.recordExecutionStatus(toolCallID: toolCallID, succeeded: succeeded)
+            setToolExecutionStatus: { [tracker] toolCallID, succeeded in
+                await tracker.recordExecutionStatus(toolCallID: toolCallID, succeeded: succeeded)
             },
-            hasToolSucceeded: { [weak executionTracker] toolCallID in
-                guard let executionTracker else { return false }
-                return await executionTracker.hasSucceeded(toolCallID: toolCallID)
+            hasToolSucceeded: { [tracker] toolCallID in
+                await tracker.hasSucceeded(toolCallID: toolCallID)
             },
-            hasToolFailed: { [weak executionTracker] toolCallID in
-                guard let executionTracker else { return false }
-                return await executionTracker.hasFailed(toolCallID: toolCallID)
+            hasToolFailed: { [tracker] toolCallID in
+                await tracker.hasFailed(toolCallID: toolCallID)
             }
         )
     }
