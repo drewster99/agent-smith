@@ -38,7 +38,15 @@ Always build via the xcode-mcp-server tools — never `xcodebuild`, `swift build
 
 - Build: `mcp__xcode-mcp-server__build_project --project_path /Users/andrew/cursor/agent-smith/AgentSmith/AgentSmith.xcodeproj` (scheme `AgentSmith`).
 - Run with the user driving the UI: `mcp__xcode-mcp-server__run_project_with_user_interaction` against the same project path.
-- Run tests: `mcp__xcode-mcp-server__run_project_tests` against the same project path. Tests live in the SPM target but are run through the app's scheme.
+- Run tests: **two commands required, not one.**
+  - `mcp__xcode-mcp-server__run_project_tests` against `AgentSmith.xcodeproj` covers any tests that live in the .xcodeproj test bundle. Today there are none here, but it's the right hook if .xcodeproj-side tests ever get added.
+  - **Package tests** (everything under `AgentSmithPackage/Tests/AgentSmithTests/` — the bulk of the suite) must be run manually from the terminal:
+    ```
+    cd /Users/andrew/cursor/agent-smith/AgentSmithPackage && swift test --skip MemoryStoreIntegrationTests
+    ```
+    Why two commands: the AgentSmith scheme's auto-created test plan does not include the local package's test target (Xcode 16 does not auto-discover test targets from referenced local Swift packages). Adding an explicit `.xctestplan` was attempted and reverted because Xcode's IDE-side index couldn't resolve the package test target reliably; the terminal command sidesteps that entirely.
+  - `MemoryStoreIntegrationTests` is skipped above because it requires Xcode's build pipeline to compile MLX Metal shaders (`swift test` alone can't). To run it, run the file's documented `xcodebuild` invocation by hand — but ask the user first; the project rule is xcode-mcp-only for builds.
+  - To run a subset, use `--filter`, e.g. `swift test --filter GhToolArgsFilterTests`.
 - After non-trivial changes, follow the smoke-test pattern noted in user memory (run app ~15s, screenshot, check logs).
 
 ## Architecture: the parts you must understand

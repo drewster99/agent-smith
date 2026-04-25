@@ -9,14 +9,37 @@ public struct GhTool: AgentTool {
     public let name = "gh"
     private let authStatusSnapshot: String
 
+    /// Substrings rejected before the args reach bash. Naive (not quote-aware) — false
+    /// positives just make the model retry with different phrasing, while a false negative
+    /// would let the forbidden sequence through to the shell. We optimize for the latter.
+    /// `$(` covers POSIX command substitution (functionally equivalent to backticks).
+    static let forbiddenSequences: [String] = [
+        "&&", "||", "<<<", "$(", "`", ";"
+    ]
+
+    /// Returns the first forbidden sequence found in `args`, or nil if the args are clean.
+    /// Order matches `forbiddenSequences`; multi-char sequences are listed first so that, e.g.,
+    /// `&&` is reported as `&&` rather than as the single `&` that isn't actually forbidden.
+    static func firstForbiddenSequence(in args: String) -> String? {
+        for needle in forbiddenSequences where args.contains(needle) {
+            return needle
+        }
+        return nil
+    }
+
     public init(authStatusSnapshot: String = "(auth status was not captured for this spawn)") {
         self.authStatusSnapshot = authStatusSnapshot
     }
 
     public var toolDescription: String {
         """
-        Run a GitHub CLI command. Args are passed through `/bin/bash -l -c "gh <args>"` so \
-        `~`, `$VAR`, pipes, and redirection all behave as in a normal shell. \
+        Run a GitHub CLI command. Args are passed through `/bin/bash -l -c "gh <args>"`. \
+        ALLOWED shell features: `~` expansion, `$VAR` expansion, pipes (`|`), redirection \
+        (`>`, `>>`, `<`, `2>`), single `&`. \
+        BLOCKED (call will be refused before bash sees it): `;`, `&&`, `||`, `<<<`, backticks, \
+        and `$(...)` command substitution. The block is naive substring matching — it triggers \
+        even inside quoted strings, so prefer plain identifiers. If you need to chain commands, \
+        issue separate gh calls instead. \
         You ARE authenticated to GitHub via `gh` — the `gh auth status` snapshot below was \
         captured at the start of this task and is verified. Do NOT try to "configure auth", \
         "log in", or run `gh auth login`. Just use `gh` directly.
@@ -69,6 +92,16 @@ public struct GhTool: AgentTool {
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
         guard case .string(let args) = arguments["args"] else {
             throw ToolCallError.missingRequiredArgument("args")
+        }
+
+        if let forbidden = Self.firstForbiddenSequence(in: args) {
+            return """
+                Refused: gh args contain forbidden shell sequence '\(forbidden)'. \
+                The gh tool allows ~ expansion, $VAR expansion, pipes, and redirection, \
+                but blocks ; && || <<< backticks and $(...) — including when they appear \
+                inside quoted strings. Reformulate the call without these sequences \
+                (e.g. run two gh calls separately instead of chaining with ;).
+                """
         }
 
         let timeoutSeconds: Int
