@@ -746,6 +746,15 @@ public actor OrchestrationRuntime {
 
         let filesRead = FileReadTracker()
         let brownContext = makeToolContext(agentID: brownID, role: .brown, filesReadInSession: filesRead)
+
+        // Pre-flight `gh auth status` so Brown sees verified GitHub auth state in his tool list
+        // from turn one. Capturing once at spawn is sufficient — auth doesn't change mid-task.
+        let ghAuthSnapshot = await GhAuthChecker.authStatus()
+        await channel.post(ChannelMessage(
+            sender: .system,
+            content: "GitHub CLI auth pre-flight (captured for Brown):\n\(ghAuthSnapshot)"
+        ))
+
         let brownAgent = AgentActor(
             id: brownID,
             configuration: AgentConfiguration(
@@ -761,7 +770,7 @@ public actor OrchestrationRuntime {
                 maxToolCallsPerIteration: agentTuning[.brown]?.maxToolCalls ?? 100
             ),
             provider: brownProvider,
-            tools: BrownBehavior.tools(),
+            tools: BrownBehavior.tools(ghAuthStatusSnapshot: ghAuthSnapshot),
             toolContext: brownContext
         )
         await brownAgent.setSecurityEvaluator(evaluator)

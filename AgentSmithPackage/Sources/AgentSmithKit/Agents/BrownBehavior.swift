@@ -18,14 +18,17 @@ public enum BrownBehavior {
         " may terminate you entirely. Termination is final and permanent."
 
 
-    /// Tools available to Brown agents.
-    public static func tools() -> [any AgentTool] {
+    /// Tools available to Brown agents. The `ghAuthStatusSnapshot`, when supplied, is baked into
+    /// `GhTool`'s description so Brown sees verified auth state on every turn — fixes a recurring
+    /// failure mode where the model claimed it had no GitHub access despite `gh` being logged in.
+    public static func tools(ghAuthStatusSnapshot: String? = nil) -> [any AgentTool] {
         [
             TaskAcknowledgedTool(),
             TaskUpdateTool(),
             TaskCompleteTool(),
             ReplyToUserTool(),
             BashTool(),
+            GhTool(authStatusSnapshot: ghAuthStatusSnapshot ?? "(auth status was not captured for this spawn)"),
             FileReadTool(),
             FileWriteTool(),
             FileEditTool(),
@@ -37,7 +40,8 @@ public enum BrownBehavior {
         ]
     }
 
-    /// Tool names for configuration.
+    /// Tool names for configuration. Auth-status snapshot is irrelevant for names, so the
+    /// default is fine here.
     public static var toolNames: [String] {
         tools().map(\.name)
     }
