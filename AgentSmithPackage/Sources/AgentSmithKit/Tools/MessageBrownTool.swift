@@ -26,12 +26,12 @@ public struct MessageBrownTool: AgentTool {
         context.agentRole == .smith && !context.hasAwaitingReviewTasks
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         // Defense-in-depth: reject if any task is awaiting review, even if the tool was
         // presented from a stale definition cache. Smith should use review_work instead.
         let activeTasks = await context.taskStore.allTasks().filter { $0.disposition == .active }
         if activeTasks.contains(where: { $0.status == .awaitingReview }) {
-            return "Cannot message Brown while a task is awaiting review. Use `review_work` to accept or reject the submission first."
+            return .failure("Cannot message Brown while a task is awaiting review. Use `review_work` to accept or reject the submission first.")
         }
 
         guard case .string(let message) = arguments["message"] else {
@@ -39,7 +39,7 @@ public struct MessageBrownTool: AgentTool {
         }
 
         guard let brownID = await context.agentIDForRole(.brown) else {
-            return "No active Brown agent found. Use `run_task` to start a task — it will spawn Brown automatically."
+            return .failure("No active Brown agent found. Use `run_task` to start a task — it will spawn Brown automatically.")
         }
 
         await context.post(ChannelMessage(
@@ -49,6 +49,6 @@ public struct MessageBrownTool: AgentTool {
             content: message
         ))
 
-        return "Message sent to Brown."
+        return .success("Message sent to Brown.")
     }
 }

@@ -22,12 +22,12 @@ public struct AbortTool: AgentTool {
         context.agentRole == .smith
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let reason) = arguments["reason"] else {
             throw ToolCallError.missingRequiredArgument("reason")
         }
 
         await context.abort(reason, context.agentRole)
-        return "ABORT executed. All agents stopped. User must restart the system."
+        return .success("ABORT executed. All agents stopped. User must restart the system.")
     }
 }

@@ -27,7 +27,7 @@ public struct MessageUserTool: AgentTool {
         context.agentRole == .smith
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let message) = arguments["message"] else {
             throw ToolCallError.missingRequiredArgument("message")
         }
@@ -39,6 +39,6 @@ public struct MessageUserTool: AgentTool {
             content: message
         ))
 
-        return "Message sent to user."
+        return .success("Message sent to user.")
     }
 }

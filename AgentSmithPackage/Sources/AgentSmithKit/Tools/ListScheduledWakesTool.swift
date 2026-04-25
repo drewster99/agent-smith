@@ -22,10 +22,10 @@ public struct ListScheduledWakesTool: AgentTool {
         context.agentRole == .smith
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         let wakes = await context.listScheduledWakes()
         guard !wakes.isEmpty else {
-            return "No wakes currently scheduled."
+            return .success("No wakes currently scheduled.")
         }
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
@@ -33,6 +33,6 @@ public struct ListScheduledWakesTool: AgentTool {
             let taskFragment = wake.taskID.map { " task=\($0.uuidString)" } ?? ""
             return "  • id=\(wake.id.uuidString) at=\(formatter.string(from: wake.wakeAt))\(taskFragment) reason=\"\(wake.reason)\""
         }
-        return "Scheduled wakes (\(wakes.count)):\n\(lines.joined(separator: "\n"))"
+        return .success("Scheduled wakes (\(wakes.count)):\n\(lines.joined(separator: "\n"))")
     }
 }

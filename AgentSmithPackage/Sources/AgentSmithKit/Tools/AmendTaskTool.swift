@@ -30,26 +30,26 @@ public struct AmendTaskTool: AgentTool {
         context.agentRole == .smith
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let taskIDString) = arguments["task_id"] else {
             throw ToolCallError.missingRequiredArgument("task_id")
         }
         guard let taskID = UUID(uuidString: taskIDString) else {
-            return "Invalid task ID format: \(taskIDString)"
+            return .failure("Invalid task ID format: \(taskIDString)")
         }
         guard case .string(let amendment) = arguments["amendment"] else {
             throw ToolCallError.missingRequiredArgument("amendment")
         }
         let trimmed = amendment.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            return "Error: amendment must not be empty."
+            return .failure("Error: amendment must not be empty.")
         }
 
         guard await context.taskStore.task(id: taskID) != nil else {
-            return "Task not found: \(taskIDString)"
+            return .failure("Task not found: \(taskIDString)")
         }
 
         await context.taskStore.amendDescription(id: taskID, amendment: trimmed)
-        return "Task \(taskIDString) amended. Immediately use the `message_brown` tool to relay this change to Brown."
+        return .success("Task \(taskIDString) amended. Immediately use the `message_brown` tool to relay this change to Brown.")
     }
 }

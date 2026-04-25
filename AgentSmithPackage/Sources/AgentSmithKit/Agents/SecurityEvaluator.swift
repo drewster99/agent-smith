@@ -172,8 +172,17 @@ public actor SecurityEvaluator {
         configuration: ModelConfiguration? = nil,
         providerType: String = "",
         sessionID: UUID? = nil,
-        hasToolSucceeded: @escaping @Sendable (String) async -> Bool = { _ in false },
-        hasToolFailed: @escaping @Sendable (String) async -> Bool = { _ in false }
+        // No silent no-op defaults: forgetting to wire these causes Jones to misclassify
+        // failed-then-retried calls as duplicates (the original 394bbbc bug). A fatalError
+        // default surfaces the wiring mistake immediately on first evaluation rather than
+        // producing wrong-but-plausible verdicts. Production callers (OrchestrationRuntime)
+        // and tests that exercise this code path MUST pass real closures.
+        hasToolSucceeded: @escaping @Sendable (String) async -> Bool = { _ in
+            fatalError("SecurityEvaluator.hasToolSucceeded was not configured — wire it through to a ToolExecutionTracker before evaluating tools.")
+        },
+        hasToolFailed: @escaping @Sendable (String) async -> Bool = { _ in
+            fatalError("SecurityEvaluator.hasToolFailed was not configured — wire it through to a ToolExecutionTracker before evaluating tools.")
+        }
     ) {
         self.provider = provider
         self.systemPrompt = systemPrompt

@@ -51,7 +51,7 @@ public struct FileEditTool: AgentTool {
         context.agentRole == .brown
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let rawFilePath) = arguments["file_path"] else {
             throw ToolCallError.missingRequiredArgument("file_path")
         }
@@ -72,7 +72,7 @@ public struct FileEditTool: AgentTool {
 
         // Validate absolute path.
         guard filePath.hasPrefix("/") else {
-            return "Error: file_path must be absolute (start with /). Got: \(filePath)"
+            return .failure("Error: file_path must be absolute (start with /). Got: \(filePath)")
         }
 
         let url = URL(fileURLWithPath: filePath)
@@ -86,32 +86,32 @@ public struct FileEditTool: AgentTool {
 
         // Safety check — reuse FileWriteTool's path restriction logic.
         if let rejection = FileWriteTool.checkPathRestriction(resolvedPath: resolvedPath) {
-            return rejection
+            return .failure(rejection)
         }
 
         let fm = FileManager.default
 
         // Check file exists.
         guard fm.fileExists(atPath: resolvedPath) else {
-            return "Error: File does not exist: \(filePath)"
+            return .failure("Error: File does not exist: \(filePath)")
         }
 
         // Check for hard links and file size before reading.
         do {
             let attrs = try fm.attributesOfItem(atPath: resolvedPath)
             if let linkCount = attrs[.referenceCount] as? Int, linkCount > 1 {
-                return "BLOCKED: File '\(filePath)' has \(linkCount) hard links. Editing would affect all linked paths."
+                return .failure("BLOCKED: File '\(filePath)' has \(linkCount) hard links. Editing would affect all linked paths.")
             }
             if let fileSize = attrs[.size] as? UInt64, fileSize > Self.maxCharacters {
-                return "Error: File is too large to edit (\(fileSize) bytes, maximum is \(Self.maxCharacters))."
+                return .failure("Error: File is too large to edit (\(fileSize) bytes, maximum is \(Self.maxCharacters)).")
             }
         } catch {
-            return "Error checking file attributes: \(error.localizedDescription)"
+            return .failure("Error checking file attributes: \(error.localizedDescription)")
         }
 
         // Validate old_string != new_string.
         guard oldString != newString else {
-            return "Error: `old_string` and `new_string` are identical. Nothing to change."
+            return .failure("Error: `old_string` and `new_string` are identical. Nothing to change.")
         }
 
         // Read file content.
@@ -119,22 +119,22 @@ public struct FileEditTool: AgentTool {
         do {
             content = try String(contentsOf: url, encoding: .utf8)
         } catch {
-            return "Error reading file: \(error.localizedDescription)"
+            return .failure("Error reading file: \(error.localizedDescription)")
         }
 
         guard content.count <= Self.maxCharacters else {
-            return "Error: File is too large to edit (\(content.count) characters, maximum is \(Self.maxCharacters))."
+            return .failure("Error: File is too large to edit (\(content.count) characters, maximum is \(Self.maxCharacters)).")
         }
 
         // Count occurrences.
         let occurrences = content.occurrenceCount(of: oldString)
 
         guard occurrences > 0 else {
-            return "Error: `old_string` not found in the file. Make sure it matches the file content exactly, including EXACT whitespace and indentation. Use `file_read` to inspect the file content"
+            return .failure("Error: `old_string` not found in the file. Make sure it matches the file content exactly, including EXACT whitespace and indentation. Use `file_read` to inspect the file content")
         }
 
         if !replaceAll && occurrences > 1 {
-            return "Error: `old_string` appears \(occurrences) times in the file. Provide more surrounding context to make it unique, or set `replace_all` to `true`. Use `file_read` to inspect the file content"
+            return .failure("Error: `old_string` appears \(occurrences) times in the file. Provide more surrounding context to make it unique, or set `replace_all` to `true`. Use `file_read` to inspect the file content")
         }
 
         // Perform replacement.
@@ -144,7 +144,7 @@ public struct FileEditTool: AgentTool {
         } else {
             // Replace only the first (and only) occurrence.
             guard let range = content.range(of: oldString) else {
-                return "Error: `old_string` not found in the file."
+                return .failure("Error: `old_string` not found in the file.")
             }
             newContent = content.replacingCharacters(in: range, with: newString)
         }
@@ -154,13 +154,13 @@ public struct FileEditTool: AgentTool {
         do {
             try newContent.write(to: resolvedURL, atomically: true, encoding: .utf8)
         } catch {
-            return "Error writing file: \(error.localizedDescription)"
+            return .failure("Error writing file: \(error.localizedDescription)")
         }
 
         if replaceAll {
-            return "Successfully replaced \(occurrences) occurrence\(occurrences == 1 ? "" : "s") in \(filePath)."
+            return .success("Successfully replaced \(occurrences) occurrence\(occurrences == 1 ? "" : "s") in \(filePath).")
         } else {
-            return "Successfully replaced 1 occurrence in \(filePath)."
+            return .success("Successfully replaced 1 occurrence in \(filePath).")
         }
     }
 }

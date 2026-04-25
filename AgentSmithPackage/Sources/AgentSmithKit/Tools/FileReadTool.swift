@@ -57,14 +57,14 @@ public struct FileReadTool: AgentTool {
         context.agentRole == .brown || context.agentRole == .smith || context.agentRole == .jones
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let rawPath) = arguments["path"] else {
             throw ToolCallError.missingRequiredArgument("path")
         }
         let path = (rawPath as NSString).expandingTildeInPath
 
         if let rejection = Self.checkPathRestriction(path) {
-            return rejection
+            return .failure(rejection)
         }
 
         let url = URL(fileURLWithPath: path)
@@ -80,25 +80,39 @@ public struct FileReadTool: AgentTool {
         // Detect content type.
         let contentType = Self.detectContentType(at: resolvedPath)
 
+        let raw: String
         switch contentType {
         case .pdf:
             let pagesParam: String?
             if case .string(let p) = arguments["pages"] { pagesParam = p } else { pagesParam = nil }
-            return Self.readPDF(at: url, pages: pagesParam)
+            raw = Self.readPDF(at: url, pages: pagesParam)
 
         case .image:
-            return Self.imageMetadata(at: resolvedPath, originalPath: path)
+            raw = Self.imageMetadata(at: resolvedPath, originalPath: path)
 
         case .text:
             let offset: Int
             if case .int(let o) = arguments["offset"] { offset = max(1, o) } else { offset = 1 }
             let limit: Int
             if case .int(let l) = arguments["limit"] { limit = max(1, l) } else { limit = Self.defaultLineLimit }
-            return Self.readText(at: url, resolvedPath: resolvedPath, offset: offset, limit: limit)
+            raw = Self.readText(at: url, resolvedPath: resolvedPath, offset: offset, limit: limit)
 
         case .binary:
-            return Self.binaryMetadata(at: resolvedPath, originalPath: path)
+            raw = Self.binaryMetadata(at: resolvedPath, originalPath: path)
         }
+        return Self.classify(raw)
+    }
+
+    /// Wraps a helper-function result in `.success` / `.failure`. Helper outputs that signal a
+    /// domain-level failure all begin with one of `Error`, `BLOCKED`, or the "specify a pages
+    /// parameter" prompt — keep this list in sync with the helpers if their format changes.
+    static func classify(_ output: String) -> ToolExecutionResult {
+        let trimmed = output.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("Error") || trimmed.hasPrefix("BLOCKED")
+            || trimmed.hasPrefix("PDF has ") {
+            return .failure(output)
+        }
+        return .success(output)
     }
 
     // MARK: - Content Type Detection

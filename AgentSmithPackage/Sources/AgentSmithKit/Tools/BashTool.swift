@@ -41,7 +41,7 @@ public struct BashTool: AgentTool {
         context.agentRole == .brown
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let command) = arguments["command"] else {
             throw ToolCallError.missingRequiredArgument("command")
         }
@@ -68,11 +68,11 @@ public struct BashTool: AgentTool {
         )
 
         if result.timedOut {
-            return "Command timed out after \(timeoutSeconds) seconds\n\(result.output)"
+            return .failure("Command timed out after \(timeoutSeconds) seconds\n\(result.output)")
         } else if result.exitCode == 0 {
-            return result.output.isEmpty ? "(no output)" : result.output
+            return .success(result.output.isEmpty ? "(no output)" : result.output)
         } else {
-            return "Exit code \(result.exitCode)\n\(result.output)"
+            return .failure("Exit code \(result.exitCode)\n\(result.output)")
         }
     }
 }

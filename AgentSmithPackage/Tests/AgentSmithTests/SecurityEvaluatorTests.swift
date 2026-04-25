@@ -142,7 +142,9 @@ struct SecurityEvaluatorTests {
             provider: provider,
             systemPrompt: "test",
             channel: channel,
-            abort: { reason, role in await abortInvocations.record(reason: reason, role: role) }
+            abort: { reason, role in await abortInvocations.record(reason: reason, role: role) },
+            hasToolSucceeded: { _ in false },
+            hasToolFailed: { _ in false }
         )
         _ = await evaluate(evaluator)
         let calls = await abortInvocations.calls
@@ -165,7 +167,9 @@ struct SecurityEvaluatorTests {
             provider: provider,
             systemPrompt: "test",
             channel: channel,
-            abort: { reason, role in await abortInvocations.record(reason: reason, role: role) }
+            abort: { reason, role in await abortInvocations.record(reason: reason, role: role) },
+            hasToolSucceeded: { _ in false },
+            hasToolFailed: { _ in false }
         )
         _ = await evaluate(evaluator)
         let calls = await abortInvocations.calls

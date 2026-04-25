@@ -42,7 +42,7 @@ public struct GlobTool: AgentTool {
         context.agentRole == .brown
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let pattern) = arguments["pattern"] else {
             throw ToolCallError.missingRequiredArgument("pattern")
         }
@@ -53,12 +53,12 @@ public struct GlobTool: AgentTool {
 
         // Validate absolute path.
         guard path.hasPrefix("/") else {
-            return "Error: path must be absolute (start with /). Got: \(path)"
+            return .failure("Error: path must be absolute (start with /). Got: \(path)")
         }
 
         // Reject path traversal in pattern.
         guard !pattern.contains("..") else {
-            return "Error: Pattern must not contain '..' (path traversal)."
+            return .failure("Error: Pattern must not contain '..' (path traversal).")
         }
 
         let fm = FileManager.default
@@ -67,7 +67,7 @@ public struct GlobTool: AgentTool {
 
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: resolvedBase, isDirectory: &isDir), isDir.boolValue else {
-            return "Error: Directory does not exist: \(path)"
+            return .failure("Error: Directory does not exist: \(path)")
         }
 
         // Convert glob pattern to regex.
@@ -76,7 +76,7 @@ public struct GlobTool: AgentTool {
             let regexPattern = Self.globToRegex(pattern)
             regex = try NSRegularExpression(pattern: "^\(regexPattern)$")
         } catch {
-            return "Error: Invalid glob pattern '\(pattern)': \(error.localizedDescription)"
+            return .failure("Error: Invalid glob pattern '\(pattern)': \(error.localizedDescription)")
         }
 
         // Enumerate all files recursively.
@@ -85,7 +85,7 @@ public struct GlobTool: AgentTool {
             includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else {
-            return "Error: Unable to enumerate directory: \(path)"
+            return .failure("Error: Unable to enumerate directory: \(path)")
         }
 
         // Collect all URLs from the enumerator synchronously to avoid
@@ -139,7 +139,8 @@ public struct GlobTool: AgentTool {
         matches.sort { $0.modDate > $1.modDate }
 
         if matches.isEmpty {
-            return "No files matched the pattern '\(pattern)' in \(path)."
+            // No matches is not a failure — the pattern just didn't hit. Successful empty result.
+            return .success("No files matched the pattern '\(pattern)' in \(path).")
         }
 
         let truncated = matches.count > Self.maxResults
@@ -150,7 +151,7 @@ public struct GlobTool: AgentTool {
             output += "\n\n[Results truncated: showing \(Self.maxResults) of \(matches.count) matches]"
         }
 
-        return output
+        return .success(output)
     }
 
     // MARK: - Glob to Regex Conversion

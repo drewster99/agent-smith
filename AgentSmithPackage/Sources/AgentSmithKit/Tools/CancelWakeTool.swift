@@ -26,16 +26,16 @@ public struct CancelWakeTool: AgentTool {
         context.agentRole == .smith
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let idString) = arguments["wake_id"] else {
             throw ToolCallError.missingRequiredArgument("wake_id")
         }
         guard let id = UUID(uuidString: idString) else {
-            return "Invalid wake_id: '\(idString)' is not a valid UUID."
+            return .failure("Invalid wake_id: '\(idString)' is not a valid UUID.")
         }
         let cancelled = await context.cancelScheduledWake(id)
         return cancelled
-            ? "Wake \(id.uuidString) cancelled."
-            : "No wake found with id \(id.uuidString). Use list_scheduled_wakes to see current ids."
+            ? .success("Wake \(id.uuidString) cancelled.")
+            : .failure("No wake found with id \(id.uuidString). Use list_scheduled_wakes to see current ids.")
     }
 }

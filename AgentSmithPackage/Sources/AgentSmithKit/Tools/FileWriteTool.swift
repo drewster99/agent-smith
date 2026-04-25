@@ -37,7 +37,7 @@ public struct FileWriteTool: AgentTool {
         context.agentRole == .brown
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let rawPath) = arguments["path"] else {
             throw ToolCallError.missingRequiredArgument("path")
         }
@@ -47,14 +47,14 @@ public struct FileWriteTool: AgentTool {
         }
 
         guard path.hasPrefix("/") else {
-            return "BLOCKED: Path must be absolute (start with /). Got: \(path)"
+            return .failure("BLOCKED: Path must be absolute (start with /). Got: \(path)")
         }
 
         let url = URL(fileURLWithPath: path)
         let resolvedURL = url.resolvingSymlinksInPath()
 
         if let rejection = Self.checkPathRestriction(resolvedPath: resolvedURL.path) {
-            return rejection
+            return .failure(rejection)
         }
         let fm = FileManager.default
         let resolvedPath = resolvedURL.path
@@ -62,7 +62,7 @@ public struct FileWriteTool: AgentTool {
         // Existing files require a prior file_read to prevent blind overwrites.
         if fm.fileExists(atPath: resolvedPath) {
             guard context.hasFileBeenRead(path) || context.hasFileBeenRead(resolvedPath) else {
-                return "Error: File already exists at '\(path)'. You must read it with `file_read` before overwriting."
+                return .failure("Error: File already exists at '\(path)'. You must read it with `file_read` before overwriting.")
             }
         }
 
@@ -72,10 +72,10 @@ public struct FileWriteTool: AgentTool {
             do {
                 let attrs = try fm.attributesOfItem(atPath: resolvedPath)
                 if let linkCount = attrs[.referenceCount] as? Int, linkCount > 1 {
-                    return "BLOCKED: File '\(path)' has \(linkCount) hard links. Writing would affect all linked paths."
+                    return .failure("BLOCKED: File '\(path)' has \(linkCount) hard links. Writing would affect all linked paths.")
                 }
             } catch {
-                return "Error checking file attributes: \(error.localizedDescription)"
+                return .failure("Error checking file attributes: \(error.localizedDescription)")
             }
         }
 
@@ -89,11 +89,11 @@ public struct FileWriteTool: AgentTool {
 
             // Report if the path traversed symlinks so the caller knows where the file actually landed.
             if resolvedURL.path != url.standardized.path {
-                return "File written successfully: \(path) (resolved to \(resolvedURL.path) via symlink)"
+                return .success("File written successfully: \(path) (resolved to \(resolvedURL.path) via symlink)")
             }
-            return "File written successfully: \(path)"
+            return .success("File written successfully: \(path)")
         } catch {
-            return "Error writing file: \(error.localizedDescription)"
+            return .failure("Error writing file: \(error.localizedDescription)")
         }
     }
 

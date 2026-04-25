@@ -3,14 +3,18 @@ import Foundation
 @testable import AgentSmithKit
 
 /// Tests for `GhTool.firstForbiddenSequence(in:)` — the pre-flight filter that rejects
-/// shell metasequences before the args reach `/bin/bash -l -c "gh <args>"`.
+/// shell metasequences before the args reach `/bin/bash -l -c "exec gh <args>"`.
 ///
 /// Allowed: `~`, `$VAR`, pipes (`|`), redirection (`>`, `>>`, `<`, `2>`, `<<` heredoc),
-/// single `&` (backgrounding), quoted strings with no other forbidden tokens.
-/// Blocked: `;`, `&&`, `||`, `<<<`, backticks, `$(...)`.
+/// `&` between word characters (URL query strings), quoted strings with no other forbidden tokens.
+/// Blocked: `;`, `&&`, `||`, `<<<`, backticks, `$(...)`, newlines, carriage returns, and any
+/// bare `&` used to background or chain commands (`& cmd`, trailing `&`, leading `& cmd`).
 ///
-/// The filter is naive substring matching — it does NOT understand shell quoting. Tests
-/// document that as a deliberate trade-off (false positives are fine; false negatives are not).
+/// The substring-list portion of the filter is naive substring matching — it does NOT
+/// understand shell quoting. Tests document that as a deliberate trade-off (false positives
+/// are fine; false negatives are not). The `&` check is more careful: it rejects an `&` only
+/// when it's adjacent to whitespace (i.e., functioning as a command separator), so URL queries
+/// like `?a=1&b=2` keep working.
 @Suite("GhTool args filter")
 struct GhToolArgsFilterTests {
 
@@ -57,15 +61,36 @@ struct GhToolArgsFilterTests {
         #expect(GhTool.firstForbiddenSequence(in: "api repos/foo --input - <<JSON") == nil)
     }
 
-    @Test("single ampersand is allowed (background, only `&&` is blocked)")
-    func singleAmpersandAllowed() {
-        #expect(GhTool.firstForbiddenSequence(in: "repo view foo &") == nil)
+    @Test("trailing `&` (background) is now blocked as a chaining vector")
+    func trailingAmpersandBlocked() {
+        // `cmd &` backgrounds the command and is a documented chaining vector
+        // (`gh foo & rm /tmp/x`) — block it. Jones can still gate intentional uses
+        // by approving them as a regular tool call.
+        #expect(GhTool.firstForbiddenSequence(in: "repo view foo &") == "&")
     }
 
-    @Test("ampersand inside a URL or query string is allowed")
+    @Test("`&` followed by whitespace + another command is blocked")
+    func ampersandThenCommandBlocked() {
+        #expect(GhTool.firstForbiddenSequence(in: "repo view foo & rm /tmp/x") == "&")
+    }
+
+    @Test("ampersand inside a URL or query string is allowed (between word chars)")
     func ampersandInUrlAllowed() {
-        // URLs commonly contain a single `&` but not `&&`.
+        // URLs commonly contain `&` between alphanumeric characters and not as a
+        // separator with surrounding whitespace.
         #expect(GhTool.firstForbiddenSequence(in: "api 'repos/foo/bar?state=open&per_page=100'") == nil)
+        #expect(GhTool.firstForbiddenSequence(in: "api 'repos/foo?a=1&b=2&c=3'") == nil)
+    }
+
+    @Test("newline is blocked (bash treats it as a command separator inside -c)")
+    func newlineBlocked() {
+        #expect(GhTool.firstForbiddenSequence(in: "auth status\nrm -rf /tmp") == "\n")
+        #expect(GhTool.firstForbiddenSequence(in: "auth status\n") == "\n")
+    }
+
+    @Test("carriage return is blocked")
+    func carriageReturnBlocked() {
+        #expect(GhTool.firstForbiddenSequence(in: "auth status\rrm -rf /tmp") == "\r")
     }
 
     @Test("single-quoted jq filter is allowed")

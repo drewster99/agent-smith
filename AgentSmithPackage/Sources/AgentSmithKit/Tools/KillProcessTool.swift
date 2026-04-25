@@ -22,22 +22,22 @@ public struct KillProcessTool: AgentTool {
 
     public init() {}
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         let pid: Int32
         switch arguments["pid"] {
         case .int(let value):
             guard let exact = Int32(exactly: value) else {
-                return "Invalid PID: value out of Int32 range."
+                return .failure("Invalid PID: value out of Int32 range.")
             }
             pid = exact
         case .double(let value):
             guard let exact = Int32(exactly: value) else {
-                return "Invalid PID: value out of Int32 range."
+                return .failure("Invalid PID: value out of Int32 range.")
             }
             pid = exact
         case .string(let value):
             guard let parsed = Int32(value) else {
-                return "Error: invalid PID '\(value)'"
+                return .failure("Error: invalid PID '\(value)'")
             }
             pid = parsed
         default:
@@ -46,20 +46,20 @@ public struct KillProcessTool: AgentTool {
 
         // Safety: refuse to kill PID 1 (launchd) or our own process
         guard pid > 1 else {
-            return "Error: refusing to kill PID \(pid) — system-critical process."
+            return .failure("Error: refusing to kill PID \(pid) — system-critical process.")
         }
         guard pid != ProcessInfo.processInfo.processIdentifier else {
-            return "Error: refusing to kill own process."
+            return .failure("Error: refusing to kill own process.")
         }
 
         // Verify the process is owned by the current user.
         // Fail closed: if ownership cannot be determined, refuse to kill.
         let currentUser = ProcessInfo.processInfo.userName
         guard let owner = Self.processOwner(pid: pid) else {
-            return "Error: cannot verify ownership of process \(pid) — refusing to kill."
+            return .failure("Error: cannot verify ownership of process \(pid) — refusing to kill.")
         }
         guard owner == currentUser else {
-            return "Error: refusing to kill process \(pid) — owned by '\(owner)', not current user '\(currentUser)'."
+            return .failure("Error: refusing to kill process \(pid) — owned by '\(owner)', not current user '\(currentUser)'.")
         }
 
         let force: Bool
@@ -78,10 +78,10 @@ public struct KillProcessTool: AgentTool {
                 sender: .system,
                 content: "Sent \(signalName) to process \(pid)."
             ))
-            return "Successfully sent \(signalName) to process \(pid)."
+            return .success("Successfully sent \(signalName) to process \(pid).")
         } else {
             let error = String(cString: strerror(errno))
-            return "Failed to kill process \(pid): \(error)"
+            return .failure("Failed to kill process \(pid): \(error)")
         }
     }
 

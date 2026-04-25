@@ -156,7 +156,7 @@ public enum SmithBehavior {
 
         ### `terminate_agent(agent_id, reason)`
         Terminate Brown. Use when:
-        - Brown is unresponsive after 3 check-ins spaced ~3 minutes apart
+        - The auto-digest shows Brown silent for ~an hour without progress (consistent with the Step 4 table — do NOT manually poll Brown to make this determination)
         - Brown poses a safety or security risk
         - You need a fresh Brown instance
 

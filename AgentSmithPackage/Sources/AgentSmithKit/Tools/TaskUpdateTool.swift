@@ -22,20 +22,20 @@ public struct TaskUpdateTool: AgentTool {
         context.agentRole == .brown
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let message) = arguments["message"] else {
             throw ToolCallError.missingRequiredArgument("message")
         }
 
         guard let task = await context.taskStore.taskForAgent(agentID: context.agentID) else {
-            return "No active task assigned to you."
+            return .failure("No active task assigned to you.")
         }
 
         // Persist on the task so it survives restarts.
         await context.taskStore.addUpdate(id: task.id, message: message)
 
         guard let smithID = await context.agentIDForRole(.smith) else {
-            return "Agent Smith is not available."
+            return .failure("Agent Smith is not available.")
         }
 
         // Post Brown's update as clean content — no system guidance embedded in it,
@@ -57,6 +57,6 @@ public struct TaskUpdateTool: AgentTool {
             metadata: ["messageKind": .string("task_update_guidance")]
         ))
 
-        return "Update sent to Agent Smith."
+        return .success("Update sent to Agent Smith.")
     }
 }

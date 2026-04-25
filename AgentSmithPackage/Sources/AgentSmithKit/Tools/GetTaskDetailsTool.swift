@@ -30,7 +30,7 @@ public struct GetTaskDetailsTool: AgentTool {
         true
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         // Accept the canonical `task_ids` array, and tolerate a single legacy `task_id` string
         // so the LLM can degrade gracefully if it forgets the new schema.
         var requestedIDStrings: [String] = []
@@ -49,7 +49,7 @@ public struct GetTaskDetailsTool: AgentTool {
         }
 
         if requestedIDStrings.count > Self.maxTaskIDs {
-            return "Too many task IDs requested (\(requestedIDStrings.count)). Maximum is \(Self.maxTaskIDs) per call. Split into multiple calls."
+            return .failure("Too many task IDs requested (\(requestedIDStrings.count)). Maximum is \(Self.maxTaskIDs) per call. Split into multiple calls.")
         }
 
         var sections: [String] = []
@@ -85,10 +85,12 @@ public struct GetTaskDetailsTool: AgentTool {
         }
 
         if output.isEmpty {
-            return "No tasks could be retrieved for the given IDs."
+            return .failure("No tasks could be retrieved for the given IDs.")
         }
 
-        return output.joined(separator: "\n\n")
+        // Failure if every requested ID was unresolvable; success if at least one task came back.
+        let succeeded = !sections.isEmpty
+        return ToolExecutionResult(output: output.joined(separator: "\n\n"), succeeded: succeeded)
     }
 
     /// Formats a single task's details. Each section is included only when present.

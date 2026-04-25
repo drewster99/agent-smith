@@ -1126,6 +1126,12 @@ public actor OrchestrationRuntime {
             }
         }
 
+        // Mirror the explicit `terminateAgent` cleanup: scrub this agent's UUID from every
+        // task's assignee list so stale UUIDs don't accumulate across self-terminations.
+        // Without this, the periodic "assigned to N agents" status grows monotonically
+        // every time an agent's run loop exits on its own.
+        await taskStore.unassignAgentFromAllTasks(agentID: id)
+
         if currentBrownID == id {
             currentBrownID = nil
         }

@@ -52,7 +52,7 @@ public struct SaveMemoryTool: AgentTool {
 
     public init() {}
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let content) = arguments["content"],
               !content.trimmingCharacters(in: .whitespaces).isEmpty else {
             throw ToolCallError.missingRequiredArgument("content")
@@ -137,7 +137,7 @@ public struct SaveMemoryTool: AgentTool {
                 )
 
                 let tagText = mergedTags.isEmpty ? "" : " [tags: \(mergedTags.joined(separator: ", "))]"
-                return "Consolidated into existing memory (ID: \(match.memory.id)).\(tagText)"
+                return .success("Consolidated into existing memory (ID: \(match.memory.id)).\(tagText)")
             }
         }
 
@@ -157,7 +157,7 @@ public struct SaveMemoryTool: AgentTool {
         sourceTaskID: UUID?,
         consolidated: Bool,
         context: ToolContext
-    ) async throws -> String {
+    ) async throws -> ToolExecutionResult {
         let entry = try await context.memoryStore.save(
             content: content,
             source: source,
@@ -171,7 +171,7 @@ public struct SaveMemoryTool: AgentTool {
         )
 
         let tagText = tags.isEmpty ? "" : " [tags: \(tags.joined(separator: ", "))]"
-        return "Memory saved (ID: \(entry.id)).\(tagText)"
+        return .success("Memory saved (ID: \(entry.id)).\(tagText)")
     }
 
     private func postChannelMessage(

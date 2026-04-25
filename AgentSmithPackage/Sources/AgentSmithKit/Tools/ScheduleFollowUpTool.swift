@@ -26,12 +26,20 @@ public struct ScheduleFollowUpTool: AgentTool {
         the conflicting wake's details and does NOT schedule — ask the user how to resolve.
         """
 
+    /// Minimum allowed delay (or distance from now for `at_time`). Floors short scheduling
+    /// errors so the wake doesn't fire on the next loop iteration before context has settled.
+    private static let minDelaySeconds: Double = 5
+    /// Maximum allowed delay (or distance from now for `at_time`). One year ahead.
+    /// The previous one-day cap was too short for legitimate user requests like "remind me
+    /// next quarter".
+    private static let maxDelaySeconds: Double = 365 * 24 * 60 * 60
+
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
         "properties": .dictionary([
             "delay_seconds": .dictionary([
                 "type": .string("number"),
-                "description": .string("Seconds from now to fire (5–86400). Either delay_seconds OR at_time is required.")
+                "description": .string("Seconds from now to fire (5–31_536_000, i.e. up to one year). Either delay_seconds OR at_time is required.")
             ]),
             "at_time": .dictionary([
                 "type": .string("string"),
@@ -59,25 +67,38 @@ public struct ScheduleFollowUpTool: AgentTool {
         context.agentRole == .smith
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let reason) = arguments["reason"] else {
             throw ToolCallError.missingRequiredArgument("reason")
         }
 
+        let now = Date()
         let wakeAt: Date
         if let value = arguments["at_time"], case .string(let isoString) = value {
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let parsed = formatter.date(from: isoString) {
-                wakeAt = parsed
+            let parsed: Date?
+            if let p = formatter.date(from: isoString) {
+                parsed = p
             } else {
                 let lenient = ISO8601DateFormatter()
                 lenient.formatOptions = [.withInternetDateTime]
-                guard let parsed = lenient.date(from: isoString) else {
-                    return "Invalid at_time: '\(isoString)' is not a valid ISO-8601 timestamp."
-                }
-                wakeAt = parsed
+                parsed = lenient.date(from: isoString)
             }
+            guard let parsed else {
+                return .failure("Invalid at_time: '\(isoString)' is not a valid ISO-8601 timestamp.")
+            }
+            // Reject `at_time` outside the [now+min, now+max] window. We don't silently
+            // clamp here because past or far-future times almost always indicate a model
+            // mistake; surfacing the rejection lets the model retry with a sane value.
+            let delta = parsed.timeIntervalSince(now)
+            if delta < Self.minDelaySeconds {
+                return .failure("Invalid at_time: '\(isoString)' is in the past or less than \(Int(Self.minDelaySeconds)) seconds from now. Pick a time at least \(Int(Self.minDelaySeconds)) seconds in the future.")
+            }
+            if delta > Self.maxDelaySeconds {
+                return .failure("Invalid at_time: '\(isoString)' is more than 1 year in the future. The maximum supported lead time is 1 year — pick a closer time.")
+            }
+            wakeAt = parsed
         } else {
             let rawDelay: Double
             switch arguments["delay_seconds"] {
@@ -85,27 +106,34 @@ public struct ScheduleFollowUpTool: AgentTool {
             case .double(let v): rawDelay = v
             case .string(let s):
                 guard let parsed = Double(s) else {
-                    return "Invalid delay_seconds: '\(s)' is not a number."
+                    return .failure("Invalid delay_seconds: '\(s)' is not a number.")
                 }
                 rawDelay = parsed
             default:
-                return "Either delay_seconds or at_time is required."
+                return .failure("Either delay_seconds or at_time is required.")
             }
-            let delay = min(max(rawDelay, 5), 86400)
-            wakeAt = Date().addingTimeInterval(delay)
+            // Reject (rather than clamp) out-of-range delays so the model retries with a
+            // sane value instead of silently waking sooner or later than intended.
+            if rawDelay < Self.minDelaySeconds {
+                return .failure("Invalid delay_seconds: \(rawDelay) is below the minimum of \(Int(Self.minDelaySeconds)).")
+            }
+            if rawDelay > Self.maxDelaySeconds {
+                return .failure("Invalid delay_seconds: \(rawDelay) exceeds the maximum of \(Int(Self.maxDelaySeconds)) (1 year).")
+            }
+            wakeAt = now.addingTimeInterval(rawDelay)
         }
 
         var taskID: UUID?
         if case .string(let tid) = arguments["task_id"] {
             guard let parsed = UUID(uuidString: tid) else {
-                return "Invalid task_id: '\(tid)' is not a valid UUID."
+                return .failure("Invalid task_id: '\(tid)' is not a valid UUID.")
             }
             taskID = parsed
         }
         var replacesID: UUID?
         if case .string(let rid) = arguments["replaces_id"] {
             guard let parsed = UUID(uuidString: rid) else {
-                return "Invalid replaces_id: '\(rid)' is not a valid UUID."
+                return .failure("Invalid replaces_id: '\(rid)' is not a valid UUID.")
             }
             replacesID = parsed
         }
@@ -116,20 +144,20 @@ public struct ScheduleFollowUpTool: AgentTool {
         switch outcome {
         case .scheduled(let wake):
             let taskFragment = wake.taskID.map { " (linked to task \($0.uuidString))" } ?? ""
-            return "Scheduled wake \(wake.id.uuidString) for \(formatter.string(from: wake.wakeAt))\(taskFragment). Reason: \(wake.reason)"
+            return .success("Scheduled wake \(wake.id.uuidString) for \(formatter.string(from: wake.wakeAt))\(taskFragment). Reason: \(wake.reason)")
         case .conflict(let existing, let requestedAt):
             let lines = existing.map { wake -> String in
                 let taskFragment = wake.taskID.map { " task=\($0.uuidString)" } ?? ""
                 return "  • id=\(wake.id.uuidString) at=\(formatter.string(from: wake.wakeAt))\(taskFragment) reason=\"\(wake.reason)\""
             }
-            return """
+            return .failure("""
                 Conflict: a wake is already scheduled within 60 seconds of \(formatter.string(from: requestedAt)). Existing wake(s):
                 \(lines.joined(separator: "\n"))
                 To overwrite, call schedule_wake again with `replaces_id` set to the existing wake's id. \
                 Otherwise, ask the user whether to keep the existing wake, replace it, or pick a different time.
-                """
+                """)
         case .error(let message):
-            return "Could not schedule wake: \(message)"
+            return .failure("Could not schedule wake: \(message)")
         }
     }
 }

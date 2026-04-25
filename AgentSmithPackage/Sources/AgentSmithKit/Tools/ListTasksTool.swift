@@ -46,7 +46,7 @@ public struct ListTasksTool: AgentTool {
         context.agentRole == .smith
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         // Disposition filter — defaults to active so the existing call pattern keeps working.
         let dispositionFilter: String
         if case .string(let value) = arguments["disposition_filter"] {
@@ -64,7 +64,7 @@ public struct ListTasksTool: AgentTool {
         case "all":
             allowedDispositions = [.active, .archived, .recentlyDeleted]
         default:
-            return "Invalid disposition_filter: '\(dispositionFilter)'. Valid values: active, inactive, all"
+            return .failure("Invalid disposition_filter: '\(dispositionFilter)'. Valid values: active, inactive, all")
         }
 
         var tasks = await context.taskStore.allTasks().filter { allowedDispositions.contains($0.disposition) }
@@ -72,7 +72,7 @@ public struct ListTasksTool: AgentTool {
         // Optional status filter applied after disposition.
         if case .string(let filterValue) = arguments["status_filter"] {
             guard let status = AgentTask.Status(rawValue: filterValue) else {
-                return "Invalid status_filter: '\(filterValue)'. Valid values: pending, running, paused, awaitingReview, completed, failed, interrupted"
+                return .failure("Invalid status_filter: '\(filterValue)'. Valid values: pending, running, paused, awaitingReview, completed, failed, interrupted")
             }
             tasks = tasks.filter { $0.status == status }
         }
@@ -97,13 +97,14 @@ public struct ListTasksTool: AgentTool {
         let offset = max(0, min(requestedOffset, totalMatching))
 
         guard totalMatching > 0 else {
-            return "No tasks found matching the given filters."
+            // Empty result is a successful query, not a failure.
+            return .success("No tasks found matching the given filters.")
         }
 
         // Empty page (offset already at or past the end) — surface a clear message instead
         // of a nonsensical "Showing tasks N+1–N of N" header.
         guard offset < totalMatching else {
-            return "Offset \(offset) is past the end of the result set (\(totalMatching) matching task(s)). Use a smaller offset or omit it to start from the beginning."
+            return .failure("Offset \(offset) is past the end of the result set (\(totalMatching) matching task(s)). Use a smaller offset or omit it to start from the beginning.")
         }
 
         let endIndex = min(offset + limit, totalMatching)
@@ -122,6 +123,6 @@ public struct ListTasksTool: AgentTool {
             header += ". \(remaining) more available — call `list_tasks` with offset=\(rangeEnd) to see the next page."
         }
 
-        return "\(header)\n\(lines.joined(separator: "\n"))"
+        return .success("\(header)\n\(lines.joined(separator: "\n"))")
     }
 }

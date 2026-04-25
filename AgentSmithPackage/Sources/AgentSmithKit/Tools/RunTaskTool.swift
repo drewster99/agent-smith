@@ -29,15 +29,15 @@ public struct RunTaskTool: AgentTool {
         context.agentRole == .smith
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let taskIDString) = arguments["task_id"] else {
             throw ToolCallError.missingRequiredArgument("task_id")
         }
         guard let taskID = UUID(uuidString: taskIDString) else {
-            return "Invalid task_id: '\(taskIDString)' is not a valid UUID. Use list_tasks to find valid task IDs."
+            return .failure("Invalid task_id: '\(taskIDString)' is not a valid UUID. Use list_tasks to find valid task IDs.")
         }
         guard var task = await context.taskStore.task(id: taskID) else {
-            return "No task found with ID \(taskID). Use `list_tasks` to see available tasks."
+            return .failure("No task found with ID \(taskID). Use `list_tasks` to see available tasks.")
         }
         // Allow pending/paused/interrupted directly. For failed, reset the task back to pending
         // first so the retry runs on the same task ID (preserving history and prior context).
@@ -45,41 +45,41 @@ public struct RunTaskTool: AgentTool {
             _ = await context.taskStore.resetFailedTask(id: taskID)
             // Re-fetch the now-reset task for the rest of this method.
             guard let refreshed = await context.taskStore.task(id: taskID), refreshed.status.isRunnable else {
-                return "Could not reset task '\(task.title)' for retry."
+                return .failure("Could not reset task '\(task.title)' for retry.")
             }
             task = refreshed
         } else if !task.status.isRunnable {
-            return """
+            return .failure("""
                 Task '\(task.title)' has status '\(task.status.rawValue)' — run_task only works on pending, paused, interrupted, or failed tasks. \
                 Use list_tasks to check current statuses, or create_task if you need a new task.
-                """
+                """)
         }
 
         // Refuse to restart if another task is running or awaiting review.
         // Running: would kill Brown mid-work. AwaitingReview: Smith should review first.
         let allTasks = await context.taskStore.allTasks()
         if let runningTask = allTasks.first(where: { $0.status == .running && $0.id != taskID }) {
-            return """
+            return .failure("""
                 Cannot start '\(task.title)' — task '\(runningTask.title)' is still running. \
                 Wait for the current task to complete (or fail) before calling run_task. \
                 The task has been created and is queued as pending.
-                """
+                """)
         }
         if let reviewTask = allTasks.first(where: { $0.status == .awaitingReview && $0.id != taskID }) {
-            return """
+            return .failure("""
                 Cannot start '\(task.title)' — task '\(reviewTask.title)' is awaiting your review. \
                 Call review_work to accept or reject it first, then run_task to start the next task.
-                """
+                """)
         }
 
         // Prevent restart loops: if the system already restarted for this exact task,
         // don't restart again — just tell Smith to spawn Brown directly.
         if context.currentResumingTaskID == taskID {
-            return """
+            return .failure("""
                 The system has already restarted for this task and Brown has been auto-spawned. \
                 Do NOT call run_task again. Brown will signal progress via task_update / task_complete; \
                 you'll also receive an automatic 10-minute Brown-activity digest.
-                """
+                """)
         }
 
         guard case .string(let instructions) = arguments["instructions"] else {
@@ -95,6 +95,6 @@ public struct RunTaskTool: AgentTool {
 
         await context.restartForNewTask(task.id)
 
-        return "Running task '\(task.title)' (ID: \(task.id)). System is restarting with a clean context to begin work."
+        return .success("Running task '\(task.title)' (ID: \(task.id)). System is restarting with a clean context to begin work.")
     }
 }

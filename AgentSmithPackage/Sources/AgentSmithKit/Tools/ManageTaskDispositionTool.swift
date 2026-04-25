@@ -39,52 +39,52 @@ public struct ManageTaskDispositionTool: AgentTool {
         context.agentRole == .smith
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let taskIDString) = arguments["task_id"] else {
             throw ToolCallError.missingRequiredArgument("task_id")
         }
         guard let taskID = UUID(uuidString: taskIDString) else {
-            return "Invalid task ID format: \(taskIDString)"
+            return .failure("Invalid task ID format: \(taskIDString)")
         }
         guard case .string(let action) = arguments["action"] else {
             throw ToolCallError.missingRequiredArgument("action")
         }
 
         guard let task = await context.taskStore.task(id: taskID) else {
-            return "Task not found: \(taskIDString)"
+            return .failure("Task not found: \(taskIDString)")
         }
 
         switch action {
         case "archive":
             let success = await context.taskStore.archive(id: taskID)
             if success {
-                return "Task '\(task.title)' archived."
+                return .success("Task '\(task.title)' archived.")
             }
-            return "Cannot archive task '\(task.title)' — it is currently \(task.status.rawValue). Only completed or failed tasks can be archived."
+            return .failure("Cannot archive task '\(task.title)' — it is currently \(task.status.rawValue). Only completed or failed tasks can be archived.")
 
         case "delete":
             let success = await context.taskStore.softDelete(id: taskID)
             if success {
-                return "Task '\(task.title)' moved to Recently Deleted."
+                return .success("Task '\(task.title)' moved to Recently Deleted.")
             }
-            return "Cannot delete task '\(task.title)' — it is currently \(task.status.rawValue). Only completed or failed tasks can be deleted."
+            return .failure("Cannot delete task '\(task.title)' — it is currently \(task.status.rawValue). Only completed or failed tasks can be deleted.")
 
         case "unarchive":
             guard task.disposition == .archived else {
-                return "Task '\(task.title)' is not archived (current disposition: \(task.disposition.rawValue))."
+                return .failure("Task '\(task.title)' is not archived (current disposition: \(task.disposition.rawValue)).")
             }
             await context.taskStore.unarchive(id: taskID)
-            return "Task '\(task.title)' restored to active list."
+            return .success("Task '\(task.title)' restored to active list.")
 
         case "undelete":
             guard task.disposition == .recentlyDeleted else {
-                return "Task '\(task.title)' is not in Recently Deleted (current disposition: \(task.disposition.rawValue))."
+                return .failure("Task '\(task.title)' is not in Recently Deleted (current disposition: \(task.disposition.rawValue)).")
             }
             await context.taskStore.undelete(id: taskID)
-            return "Task '\(task.title)' recovered to active list."
+            return .success("Task '\(task.title)' recovered to active list.")
 
         default:
-            return "Unknown action '\(action)'. Use: archive, delete, unarchive, or undelete."
+            return .failure("Unknown action '\(action)'. Use: archive, delete, unarchive, or undelete.")
         }
     }
 }

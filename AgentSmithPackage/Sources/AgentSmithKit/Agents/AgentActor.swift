@@ -1043,13 +1043,24 @@ public actor AgentActor {
                     var executionMs = 0
                     if disposition.approved {
                         let executionStart = Date()
+                        let succeeded: Bool
                         do {
                             let args = try entry.call.parsedArguments()
-                            result = try await entry.tool.execute(arguments: args, context: ctx)
+                            let outcome = try await entry.tool.execute(arguments: args, context: ctx)
+                            result = outcome.output
+                            succeeded = outcome.succeeded
                         } catch {
                             result = "Tool error: \(error.localizedDescription)"
+                            succeeded = false
                         }
                         executionMs = Int(Date().timeIntervalSince(executionStart) * 1000)
+                        // Mirror the sequential `directExecute` path: record the outcome on the
+                        // shared tracker so Jones's recent-tool-calls context shows whether this
+                        // approved call actually succeeded or failed. Without this, parallel
+                        // batches of approval-needing calls (e.g., file_read fan-out) leave
+                        // every entry tagged "[executed: not yet recorded]" and a legitimate
+                        // retry-after-failure looks like a duplicate operation.
+                        await ctx.setToolExecutionStatus(entry.call.id, succeeded)
                         await AgentActor.postToolOutputToChannel(
                             result: result, call: entry.call, role: role, context: ctx
                         )
@@ -1061,6 +1072,10 @@ public actor AgentActor {
                             await ctx.taskStore.addUpdate(id: taskID, message: update)
                         }
                         result = "Tool execution denied: \(disposition.message ?? "No reason given")"
+                        // Denial is a domain-level failure outcome from Brown's perspective,
+                        // even though no execution actually occurred — mark so retries are
+                        // not flagged as duplicates of successful operations.
+                        await ctx.setToolExecutionStatus(entry.call.id, false)
                     }
 
                     return ParallelToolResult(
@@ -1269,6 +1284,10 @@ public actor AgentActor {
                 )
                 await toolContext.taskStore.addUpdate(id: task.id, message: update)
             }
+            // Mirror the parallel-approval path: record the denial as a failed outcome so
+            // a retry of the same call is recognized as a legitimate response, not a
+            // duplicate operation.
+            await toolContext.setToolExecutionStatus(call.id, false)
             return "Tool execution denied: \(disposition.message ?? "No reason given")"
         }
     }
@@ -1276,11 +1295,12 @@ public actor AgentActor {
     private func directExecute(_ call: LLMToolCall, tool: any AgentTool) async -> String {
         let start = Date()
         let result: String
-        var executionSucceeded = false
+        let executionSucceeded: Bool
         do {
             let args = try call.parsedArguments()
-            result = try await tool.execute(arguments: args, context: toolContext)
-            executionSucceeded = true
+            let outcome = try await tool.execute(arguments: args, context: toolContext)
+            result = outcome.output
+            executionSucceeded = outcome.succeeded
         } catch {
             result = "Tool error: \(error.localizedDescription)"
             executionSucceeded = false
@@ -1288,9 +1308,9 @@ public actor AgentActor {
         let elapsedMs = Int(Date().timeIntervalSince(start) * 1000)
         turnToolExecutionMs += elapsedMs
         turnToolResultChars += result.count
-        
+
         await toolContext.setToolExecutionStatus(call.id, executionSucceeded)
-        
+
         return result
     }
 

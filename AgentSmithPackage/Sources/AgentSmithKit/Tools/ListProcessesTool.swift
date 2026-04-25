@@ -18,7 +18,7 @@ public struct ListProcessesTool: AgentTool {
 
     public init() {}
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         let filter: String?
         if case .string(let f) = arguments["filter"], !f.isEmpty {
             filter = f
@@ -32,6 +32,13 @@ public struct ListProcessesTool: AgentTool {
             workingDirectory: nil,
             timeout: 10
         )
+
+        if result.timedOut {
+            return .failure("ps timed out\n\(result.output)")
+        }
+        if result.exitCode != 0 {
+            return .failure("ps exit code \(result.exitCode)\n\(result.output)")
+        }
 
         let output = result.output
 
@@ -47,6 +54,6 @@ public struct ListProcessesTool: AgentTool {
             lines = allLines
         }
 
-        return lines.joined(separator: "\n")
+        return .success(lines.joined(separator: "\n"))
     }
 }

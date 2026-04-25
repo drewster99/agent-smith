@@ -17,13 +17,13 @@ public struct TaskAcknowledgedTool: AgentTool {
         context.agentRole == .brown
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard let task = await context.taskStore.taskForAgent(agentID: context.agentID) else {
-            return "No active task assigned to you."
+            return .failure("No active task assigned to you.")
         }
 
         guard task.status.isRunnable || task.status == .running else {
-            return "Task '\(task.title)' cannot be acknowledged in its current state (\(task.status.rawValue))."
+            return .failure("Task '\(task.title)' cannot be acknowledged in its current state (\(task.status.rawValue)).")
         }
 
         // Bump the explicit ack counter and use its post-increment value to decide
@@ -38,7 +38,7 @@ public struct TaskAcknowledgedTool: AgentTool {
 
         // Notify Smith privately
         guard let smithID = await context.agentIDForRole(.smith) else {
-            return "Task acknowledged: \(task.title)"
+            return .success("Task acknowledged: \(task.title)")
         }
 
         let content: String
@@ -59,8 +59,8 @@ public struct TaskAcknowledgedTool: AgentTool {
             metadata: ["messageKind": .string(messageKind)]
         ))
 
-        return isContinuation
+        return .success(isContinuation
             ? "Task continuing: \(task.title)"
-            : "Task acknowledged: \(task.title)"
+            : "Task acknowledged: \(task.title)")
     }
 }

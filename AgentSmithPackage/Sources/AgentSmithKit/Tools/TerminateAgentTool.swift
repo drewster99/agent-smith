@@ -35,7 +35,7 @@ public struct TerminateAgentTool: AgentTool {
         context.agentRole == .smith
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let agentIDString) = arguments["agent_id"] else {
             throw ToolCallError.missingRequiredArgument("agent_id")
         }
@@ -43,16 +43,16 @@ public struct TerminateAgentTool: AgentTool {
             throw ToolCallError.missingRequiredArgument("reason")
         }
         guard let agentID = UUID(uuidString: agentIDString) else {
-            return "Invalid agent ID format: \(agentIDString)"
+            return .failure("Invalid agent ID format: \(agentIDString)")
         }
 
         guard let targetRole = await context.agentRoleForID(agentID) else {
-            return "No agent found with ID \(agentIDString). It may have already been terminated."
+            return .failure("No agent found with ID \(agentIDString). It may have already been terminated.")
         }
 
         // Smith may only terminate Brown agents.
         guard targetRole == .brown else {
-            return "Smith may only terminate Brown agents. Agent \(agentIDString) is a \(targetRole.displayName) agent."
+            return .failure("Smith may only terminate Brown agents. Agent \(agentIDString) is a \(targetRole.displayName) agent.")
         }
 
         let success = await context.terminateAgent(agentID, context.agentID)
@@ -61,9 +61,9 @@ public struct TerminateAgentTool: AgentTool {
                 sender: .system,
                 content: "Agent \(agentIDString) terminated by \(context.agentRole.displayName): \(reason)"
             ))
-            return "Agent \(agentIDString) terminated successfully."
+            return .success("Agent \(agentIDString) terminated successfully.")
         } else {
-            return "Failed to terminate agent \(agentIDString) — agent not found or already stopped."
+            return .failure("Failed to terminate agent \(agentIDString) — agent not found or already stopped.")
         }
     }
 }

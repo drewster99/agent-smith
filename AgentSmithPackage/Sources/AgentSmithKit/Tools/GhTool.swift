@@ -12,19 +12,54 @@ public struct GhTool: AgentTool {
     /// Substrings rejected before the args reach bash. Naive (not quote-aware) — false
     /// positives just make the model retry with different phrasing, while a false negative
     /// would let the forbidden sequence through to the shell. We optimize for the latter.
+    ///
     /// `$(` covers POSIX command substitution (functionally equivalent to backticks).
+    /// `\n` / `\r` are command separators in `bash -c "..."` — JSON tool args trivially decode
+    /// into strings containing literal newlines, so they MUST be on the list.
     static let forbiddenSequences: [String] = [
-        "&&", "||", "<<<", "$(", "`", ";"
+        "&&", "||", "<<<", "$(", "`", ";", "\n", "\r"
     ]
 
     /// Returns the first forbidden sequence found in `args`, or nil if the args are clean.
+    ///
     /// Order matches `forbiddenSequences`; multi-char sequences are listed first so that, e.g.,
     /// `&&` is reported as `&&` rather than as the single `&` that isn't actually forbidden.
+    /// In addition to the substring list, a bare `&` used to background or chain commands
+    /// (`& cmd`, trailing `&`) is rejected — but `&` between `=`/word characters (URL query
+    /// strings like `?a=1&b=2`) stays allowed so the common `gh api '...'` use case still works.
     static func firstForbiddenSequence(in args: String) -> String? {
         for needle in forbiddenSequences where args.contains(needle) {
             return needle
         }
+        if containsCommandChainingAmpersand(args) {
+            return "&"
+        }
         return nil
+    }
+
+    /// Detects an unquoted-style chaining `&`: either `& ` followed by something, a trailing
+    /// `&`, or an isolated `&` with whitespace on at least one side. Allows URL-query
+    /// `name=value&name=value` and any `&` immediately surrounded by word characters.
+    static func containsCommandChainingAmpersand(_ args: String) -> Bool {
+        let chars = Array(args)
+        for (i, c) in chars.enumerated() where c == "&" {
+            // Skip `&&` — already handled by the substring list (and consume both halves).
+            if i + 1 < chars.count, chars[i + 1] == "&" { continue }
+            if i > 0, chars[i - 1] == "&" { continue }
+
+            let prev: Character? = i > 0 ? chars[i - 1] : nil
+            let next: Character? = i + 1 < chars.count ? chars[i + 1] : nil
+
+            // Trailing `&` (backgrounding) or `&` followed by whitespace = chaining.
+            guard let next else { return true }
+            if next == " " || next == "\t" { return true }
+
+            // Leading `&` or `&` preceded by whitespace + non-word next = also chaining.
+            if let prev, prev == " " || prev == "\t" {
+                return true
+            }
+        }
+        return false
     }
 
     public init(authStatusSnapshot: String = "(auth status was not captured for this spawn)") {
@@ -33,13 +68,17 @@ public struct GhTool: AgentTool {
 
     public var toolDescription: String {
         """
-        Run a GitHub CLI command. Args are passed through `/bin/bash -l -c "gh <args>"`. \
+        Run a GitHub CLI command. Args are passed through `/bin/bash -l -c "exec gh <args>"` so \
+        gh's exit status is the literal return value (no intermediate shell layer). \
         ALLOWED shell features: `~` expansion, `$VAR` expansion, pipes (`|`), redirection \
-        (`>`, `>>`, `<`, `2>`), single `&`. \
+        (`>`, `>>`, `<`, `2>`). \
         BLOCKED (call will be refused before bash sees it): `;`, `&&`, `||`, `<<<`, backticks, \
-        and `$(...)` command substitution. The block is naive substring matching — it triggers \
-        even inside quoted strings, so prefer plain identifiers. If you need to chain commands, \
-        issue separate gh calls instead. \
+        `$(...)` command substitution, newlines/carriage returns, and any bare `&` that would \
+        background or chain commands (URL-query `&` between word characters is still allowed). \
+        The block is naive substring matching — it triggers even inside quoted strings, so \
+        prefer plain identifiers. If you need to chain commands, issue separate gh calls instead. \
+        Non-zero exit from `gh` is reported as a tool-call FAILURE — retrying after a failure is \
+        a legitimate response, not a duplicate operation. \
         You ARE authenticated to GitHub via `gh` — the `gh auth status` snapshot below was \
         captured at the start of this task and is verified. Do NOT try to "configure auth", \
         "log in", or run `gh auth login`. Just use `gh` directly.
@@ -89,19 +128,26 @@ public struct GhTool: AgentTool {
         context.agentRole == .brown
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let args) = arguments["args"] else {
             throw ToolCallError.missingRequiredArgument("args")
         }
 
         if let forbidden = Self.firstForbiddenSequence(in: args) {
-            return """
-                Refused: gh args contain forbidden shell sequence '\(forbidden)'. \
-                The gh tool allows ~ expansion, $VAR expansion, pipes, and redirection, \
-                but blocks ; && || <<< backticks and $(...) — including when they appear \
-                inside quoted strings. Reformulate the call without these sequences \
-                (e.g. run two gh calls separately instead of chaining with ;).
-                """
+            let displayed: String
+            switch forbidden {
+            case "\n": displayed = "\\n (newline)"
+            case "\r": displayed = "\\r (carriage return)"
+            default: displayed = forbidden
+            }
+            return .failure("""
+                Refused: gh args contain forbidden shell sequence '\(displayed)'. \
+                The gh tool allows ~ expansion, $VAR expansion, pipes, and redirection, but \
+                blocks ; && || <<< backticks $(...), newlines/carriage returns, and any bare `&` \
+                used to background or chain commands — including when they appear inside quoted \
+                strings. Reformulate the call without these sequences (e.g. run two gh calls \
+                separately instead of chaining with ;).
+                """)
         }
 
         let timeoutSeconds: Int
@@ -118,19 +164,21 @@ public struct GhTool: AgentTool {
             workingDir = nil
         }
 
+        // `exec gh ...` makes bash hand off the process to gh, so the returned exit code is
+        // gh's own (no shell wrapper to swallow or transform it).
         let result = try await ProcessRunner.run(
             executable: "/bin/bash",
-            arguments: ["-l", "-c", "gh \(args)"],
+            arguments: ["-l", "-c", "exec gh \(args)"],
             workingDirectory: workingDir,
             timeout: TimeInterval(timeoutSeconds)
         )
 
         if result.timedOut {
-            return "Command timed out after \(timeoutSeconds) seconds\n\(result.output)"
+            return .failure("Command timed out after \(timeoutSeconds) seconds\n\(result.output)")
         } else if result.exitCode == 0 {
-            return result.output.isEmpty ? "(no output)" : result.output
+            return .success(result.output.isEmpty ? "(no output)" : result.output)
         } else {
-            return "Exit code \(result.exitCode)\n\(result.output)"
+            return .failure("Exit code \(result.exitCode)\n\(result.output)")
         }
     }
 }

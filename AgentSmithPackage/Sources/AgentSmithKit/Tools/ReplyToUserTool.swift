@@ -30,7 +30,7 @@ public struct ReplyToUserTool: AgentTool {
         return Date().timeIntervalSince(lastMessage) <= Self.availabilityWindow
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let message) = arguments["message"] else {
             throw ToolCallError.missingRequiredArgument("message")
         }
@@ -42,6 +42,6 @@ public struct ReplyToUserTool: AgentTool {
             content: message
         ))
 
-        return "Reply sent to user."
+        return .success("Reply sent to user.")
     }
 }

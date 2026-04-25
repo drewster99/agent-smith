@@ -50,12 +50,12 @@ public struct ReviewWorkTool: AgentTool {
         context.agentRole == .smith && context.hasAwaitingReviewTasks
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let taskIDString) = arguments["task_id"] else {
             throw ToolCallError.missingRequiredArgument("task_id")
         }
         guard let taskID = UUID(uuidString: taskIDString) else {
-            return "Invalid task ID format: \(taskIDString)"
+            return .failure("Invalid task ID format: \(taskIDString)")
         }
 
         guard let accepted = resolveBool(arguments["accepted"]) else {
@@ -63,14 +63,14 @@ public struct ReviewWorkTool: AgentTool {
         }
 
         guard let task = await context.taskStore.task(id: taskID) else {
-            return "Task not found: \(taskIDString)"
+            return .failure("Task not found: \(taskIDString)")
         }
 
         guard task.status == .awaitingReview else {
-            return """
+            return .failure("""
                 Task '\(task.title)' is not awaiting review (current status: \(task.status.rawValue)). \
                 `review_work` can only be called after Brown submits via `task_complete`.
-                """
+                """)
         }
 
         if accepted {
@@ -111,14 +111,14 @@ public struct ReviewWorkTool: AgentTool {
             // Trigger background summarization and embedding of the completed task.
             await context.summarizeCompletedTask(taskID)
 
-            return "Task '\(completedTask.title)' accepted and marked COMPLETE. Agents terminated. Result ALREADY delivered to user (do not deliver it again yourself, Agent Smith). **STOP** — your turn ends here. Do not call message_user, run_task, list_tasks, or any other tool. The system handles what happens next."
+            return .success("Task '\(completedTask.title)' accepted and marked COMPLETE. Agents terminated. Result ALREADY delivered to user (do not deliver it again yourself, Agent Smith). **STOP** — your turn ends here. Do not call message_user, run_task, list_tasks, or any other tool. The system handles what happens next.")
         } else {
             // ---- Reject path ----
             let feedback: String
             if case .string(let f) = arguments["feedback"], !f.trimmingCharacters(in: .whitespaces).isEmpty {
                 feedback = f
             } else {
-                return "`feedback` is required when `accepted` is `false`. Provide specific details about what needs to change."
+                return .failure("`feedback` is required when `accepted` is `false`. Provide specific details about what needs to change.")
             }
 
             await context.taskStore.updateStatus(id: taskID, status: .running)
@@ -143,7 +143,7 @@ public struct ReviewWorkTool: AgentTool {
             }
 
             guard let brownID else {
-                return "Task returned to running, but failed to spawn a Brown agent. Check provider configuration."
+                return .failure("Task returned to running, but failed to spawn a Brown agent. Check provider configuration.")
             }
 
             let content: String
@@ -176,9 +176,9 @@ public struct ReviewWorkTool: AgentTool {
                 ]
             ))
 
-            return brownWasSpawned
+            return .success(brownWasSpawned
                 ? "Changes requested. A new Brown has been spawned and briefed with the full task context and your feedback."
-                : "Changes requested. Feedback sent to Brown."
+                : "Changes requested. Feedback sent to Brown.")
         }
     }
 

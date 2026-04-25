@@ -1,6 +1,28 @@
 import Foundation
 import SwiftLLMKit
 
+/// Result of a tool execution. The `output` string is the message presented to the LLM as
+/// the tool result; `succeeded` is the domain-level outcome propagated to the
+/// `ToolExecutionTracker` so the security evaluator can tell a legitimate retry-after-failure
+/// from a duplicate operation.
+public struct ToolExecutionResult: Sendable {
+    public let output: String
+    public let succeeded: Bool
+
+    public init(output: String, succeeded: Bool) {
+        self.output = output
+        self.succeeded = succeeded
+    }
+
+    public static func success(_ output: String) -> ToolExecutionResult {
+        ToolExecutionResult(output: output, succeeded: true)
+    }
+
+    public static func failure(_ output: String) -> ToolExecutionResult {
+        ToolExecutionResult(output: output, succeeded: false)
+    }
+}
+
 /// A tool that an agent can invoke via LLM tool calling.
 public protocol AgentTool: Sendable {
     /// Unique name for this tool (must match the LLM tool definition).
@@ -12,8 +34,12 @@ public protocol AgentTool: Sendable {
     /// JSON Schema parameters definition.
     var parameters: [String: AnyCodable] { get }
 
-    /// Executes the tool with the given arguments and returns a result string.
-    func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String
+    /// Executes the tool with the given arguments and returns the output plus a domain-level
+    /// success/failure flag. Tools that wrap external processes (bash, gh) MUST mark the
+    /// result as failed when the underlying process exited non-zero or timed out; tools
+    /// that detect their own domain failures (file-not-found, invalid input, etc.) should
+    /// likewise return `.failure(...)` so Jones's recent-tool-calls context is accurate.
+    func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult
 
     /// Whether this tool should be included in the LLM's tool definitions for this turn.
     /// Default is `true`. Override to conditionally hide tools based on context.
@@ -170,9 +196,19 @@ public struct ToolContext: Sendable {
         autoAdvanceEnabled: @escaping @Sendable () async -> Bool = { true },
         recordFileRead: @escaping @Sendable (String) -> Void = { _ in },
         hasFileBeenRead: @escaping @Sendable (String) -> Bool = { _ in false },
-        setToolExecutionStatus: @escaping @Sendable (String, Bool) async -> Void = { _, _ in },
-        hasToolSucceeded: @escaping @Sendable (String) async -> Bool = { _ in false },
-        hasToolFailed: @escaping @Sendable (String) async -> Bool = { _ in false }
+        // No silent no-op defaults: every production code path wires these through to the
+        // shared ToolExecutionTracker. A missing wiring is a programming error — surface
+        // it via fatalError so it can't pass tests with a no-op stub. Tests that exercise
+        // the tracker-aware code paths MUST pass real closures.
+        setToolExecutionStatus: @escaping @Sendable (String, Bool) async -> Void = { _, _ in
+            fatalError("ToolContext.setToolExecutionStatus was not configured — wire it through to a ToolExecutionTracker.")
+        },
+        hasToolSucceeded: @escaping @Sendable (String) async -> Bool = { _ in
+            fatalError("ToolContext.hasToolSucceeded was not configured — wire it through to a ToolExecutionTracker.")
+        },
+        hasToolFailed: @escaping @Sendable (String) async -> Bool = { _ in
+            fatalError("ToolContext.hasToolFailed was not configured — wire it through to a ToolExecutionTracker.")
+        }
     ) {
         self.agentID = agentID
         self.agentRole = agentRole

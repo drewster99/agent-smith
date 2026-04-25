@@ -36,7 +36,8 @@ struct AgentActorTests {
             arguments: ["command": .string("echo hello")],
             context: makeContext()
         )
-        #expect(result.contains("hello"))
+        #expect(result.output.contains("hello"))
+        #expect(result.succeeded)
     }
 
     @Test("BashTool allows ls")
@@ -46,7 +47,8 @@ struct AgentActorTests {
             arguments: ["command": .string("ls /tmp")],
             context: makeContext()
         )
-        #expect(result.contains("BLOCKED") == false)
+        #expect(result.output.contains("BLOCKED") == false)
+        #expect(result.succeeded)
     }
 
     // MARK: - CreateTaskTool
@@ -65,7 +67,7 @@ struct AgentActorTests {
             context: context
         )
 
-        #expect(result.contains("Task created"))
+        #expect(result.output.contains("Task created"))
         let tasks = await taskStore.allTasks()
         #expect(tasks.count == 1)
         #expect(tasks[0].title == "Test task")
@@ -103,9 +105,10 @@ struct AgentActorTests {
             context: makeContext(taskStore: taskStore)
         )
 
-        #expect(result.contains("Showing tasks 1–2 of 2"))
-        #expect(result.contains("Task A"))
-        #expect(result.contains("Task B"))
+        #expect(result.output.contains("Showing tasks 1–2 of 2"))
+        #expect(result.output.contains("Task A"))
+        #expect(result.output.contains("Task B"))
+        #expect(result.succeeded)
     }
 
     @Test("ListTasksTool filters by status")
@@ -121,9 +124,10 @@ struct AgentActorTests {
             context: makeContext(taskStore: taskStore)
         )
 
-        #expect(result.contains("Showing tasks 1–1 of 1"))
-        #expect(result.contains("Done task"))
-        #expect(!result.contains("Pending task"))
+        #expect(result.output.contains("Showing tasks 1–1 of 1"))
+        #expect(result.output.contains("Done task"))
+        #expect(!result.output.contains("Pending task"))
+        #expect(result.succeeded)
     }
 
     @Test("ListTasksTool returns empty message when no tasks")
@@ -133,7 +137,9 @@ struct AgentActorTests {
             arguments: [:],
             context: makeContext()
         )
-        #expect(result == "No tasks found matching the given filters.")
+        #expect(result.output == "No tasks found matching the given filters.")
+        // Empty result is a successful query — the search worked, nothing matched.
+        #expect(result.succeeded)
     }
 
     // MARK: - ChannelMessage Codable
@@ -197,7 +203,8 @@ struct AgentActorTests {
             context: makeContext(taskStore: taskStore)
         )
 
-        #expect(result.contains("Invalid status"))
+        #expect(result.output.contains("Invalid status"))
+        #expect(!result.succeeded)
         let stored = await taskStore.task(id: task.id)
         #expect(stored?.status == .pending)
     }

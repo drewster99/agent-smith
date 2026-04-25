@@ -55,7 +55,7 @@ public struct GrepTool: AgentTool {
         context.agentRole == .brown
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let pattern) = arguments["pattern"] else {
             throw ToolCallError.missingRequiredArgument("pattern")
         }
@@ -65,7 +65,7 @@ public struct GrepTool: AgentTool {
         let path = (rawPath as NSString).expandingTildeInPath
 
         guard path.hasPrefix("/") else {
-            return "Error: path must be absolute (start with /). Got: \(path)"
+            return .failure("Error: path must be absolute (start with /). Got: \(path)")
         }
 
         // Compile the search regex.
@@ -73,14 +73,14 @@ public struct GrepTool: AgentTool {
         do {
             regex = try NSRegularExpression(pattern: pattern)
         } catch {
-            return "Error: Invalid regex pattern '\(pattern)': \(error.localizedDescription)"
+            return .failure("Error: Invalid regex pattern '\(pattern)': \(error.localizedDescription)")
         }
 
         // Parse output mode.
         let contentMode: Bool
         if case .string(let mode) = arguments["output_mode"] {
             guard mode == "files_with_matches" || mode == "content" else {
-                return "Error: `output_mode` must be 'files_with_matches' or 'content'. Got: '\(mode)'"
+                return .failure("Error: `output_mode` must be 'files_with_matches' or 'content'. Got: '\(mode)'")
             }
             contentMode = mode == "content"
         } else {
@@ -92,13 +92,13 @@ public struct GrepTool: AgentTool {
         let globMatchesBasename: Bool
         if case .string(let globPattern) = arguments["glob"] {
             guard !globPattern.contains("..") else {
-                return "Error: Glob pattern must not contain '..' (path traversal)."
+                return .failure("Error: Glob pattern must not contain '..' (path traversal).")
             }
             do {
                 let regexPattern = GlobTool.globToRegex(globPattern)
                 globRegex = try NSRegularExpression(pattern: "^\(regexPattern)$")
             } catch {
-                return "Error: Invalid glob pattern '\(globPattern)': \(error.localizedDescription)"
+                return .failure("Error: Invalid glob pattern '\(globPattern)': \(error.localizedDescription)")
             }
             // Patterns without / match against basename only (like ripgrep).
             globMatchesBasename = !globPattern.contains("/")
@@ -113,7 +113,7 @@ public struct GrepTool: AgentTool {
 
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: resolvedBase, isDirectory: &isDir), isDir.boolValue else {
-            return "Error: Directory does not exist: \(path)"
+            return .failure("Error: Directory does not exist: \(path)")
         }
 
         guard let enumerator = fm.enumerator(
@@ -121,7 +121,7 @@ public struct GrepTool: AgentTool {
             includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
             options: [.skipsHiddenFiles]
         ) else {
-            return "Error: Unable to enumerate directory: \(path)"
+            return .failure("Error: Unable to enumerate directory: \(path)")
         }
 
         // Collect URLs synchronously to avoid async-context restrictions on NSDirectoryEnumerator.
@@ -219,25 +219,25 @@ public struct GrepTool: AgentTool {
             }
         }
 
-        // Format output.
+        // Format output. "no matches" is a successful empty result, not a failure.
         if contentMode {
             if contentLines.isEmpty {
-                return "No matches found for pattern '\(pattern)' in \(path)."
+                return .success("No matches found for pattern '\(pattern)' in \(path).")
             }
             var output = contentLines.joined(separator: "\n")
             if truncated {
                 output += "\n\n[Results truncated: \(contentLines.count) lines from \(matchingFiles.count) files shown]"
             }
-            return output
+            return .success(output)
         } else {
             if matchingFiles.isEmpty {
-                return "No files matched pattern '\(pattern)' in \(path)."
+                return .success("No files matched pattern '\(pattern)' in \(path).")
             }
             var output = matchingFiles.joined(separator: "\n")
             if truncated {
                 output += "\n\n[Results truncated: showing \(Self.maxFileMatches) of potentially more matches]"
             }
-            return output
+            return .success(output)
         }
     }
 }

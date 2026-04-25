@@ -36,7 +36,7 @@ public struct SearchMemoryTool: AgentTool {
 
     public init() {}
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let query) = arguments["query"],
               !query.trimmingCharacters(in: .whitespaces).isEmpty else {
             throw ToolCallError.missingRequiredArgument("query")
@@ -66,7 +66,8 @@ public struct SearchMemoryTool: AgentTool {
                     "taskCount": .int(0)
                 ]
             ))
-            return "No relevant memories or prior tasks found for: \"\(query)\""
+            // Empty result is a successful query — the search worked, nothing matched.
+            return .success("No relevant memories or prior tasks found for: \"\(query)\"")
         }
 
         var sections: [String] = []
@@ -123,6 +124,6 @@ public struct SearchMemoryTool: AgentTool {
             metadata: bannerMetadata
         ))
 
-        return sections.joined(separator: "\n\n")
+        return .success(sections.joined(separator: "\n\n"))
     }
 }

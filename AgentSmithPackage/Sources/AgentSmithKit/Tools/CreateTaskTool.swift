@@ -28,7 +28,7 @@ public struct CreateTaskTool: AgentTool {
         context.agentRole == .smith
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let title) = arguments["title"] else {
             throw ToolCallError.missingRequiredArgument("title")
         }
@@ -42,11 +42,11 @@ public struct CreateTaskTool: AgentTool {
         if let duplicate = existingTasks.first(where: {
             $0.disposition == .active && actionableStatuses.contains($0.status) && $0.title.caseInsensitiveCompare(title) == .orderedSame
         }) {
-            return """
+            return .failure("""
                 A task with the same title already exists: "\(duplicate.title)" \
                 (ID: \(duplicate.id), status: \(duplicate.status.rawValue)). \
                 Use the existing task instead of creating a duplicate.
-                """
+                """)
         }
 
         let task = await context.taskStore.addTask(title: title, description: description)
@@ -125,6 +125,6 @@ public struct CreateTaskTool: AgentTool {
             metadata: meta
         ))
 
-        return "Task created (ID: \(task.id), title: \"\(title)\").\(contextNote) Call `run_task` with this task ID to start it."
+        return .success("Task created (ID: \(task.id), title: \"\(title)\").\(contextNote) Call `run_task` with this task ID to start it.")
     }
 }

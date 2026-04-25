@@ -33,25 +33,25 @@ public struct UpdateTaskTool: AgentTool {
         context.agentRole == .smith
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let taskIDString) = arguments["task_id"] else {
             throw ToolCallError.missingRequiredArgument("task_id")
         }
         guard let taskID = UUID(uuidString: taskIDString) else {
-            return "Invalid `task_id` format: \(taskIDString)"
+            return .failure("Invalid `task_id` format: \(taskIDString)")
         }
         guard case .string(let statusString) = arguments["status"] else {
             throw ToolCallError.missingRequiredArgument("status")
         }
         guard let status = AgentTask.Status(rawValue: statusString) else {
-            return "Invalid status: \(statusString). Valid values: pending, running, awaitingReview, completed, failed"
+            return .failure("Invalid status: \(statusString). Valid values: pending, running, awaitingReview, completed, failed")
         }
 
         guard await context.taskStore.task(id: taskID) != nil else {
-            return "Task not found: \(taskIDString)"
+            return .failure("Task not found: \(taskIDString)")
         }
 
         await context.taskStore.updateStatus(id: taskID, status: status)
-        return "Task \(taskIDString) updated to \(statusString)."
+        return .success("Task \(taskIDString) updated to \(statusString).")
     }
 }

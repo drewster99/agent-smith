@@ -29,13 +29,13 @@ public struct TaskCompleteTool: AgentTool {
         context.agentRole == .brown
     }
 
-    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> String {
+    public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let result) = arguments["result"] else {
             throw ToolCallError.missingRequiredArgument("result")
         }
 
         guard !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return "Error: result must contain a meaningful summary of the completed work. Re-read the task requirements and provide the full result."
+            return .failure("Error: result must contain a meaningful summary of the completed work. Re-read the task requirements and provide the full result.")
         }
 
         let commentary: String?
@@ -46,12 +46,13 @@ public struct TaskCompleteTool: AgentTool {
         }
 
         guard let task = await context.taskStore.taskForAgent(agentID: context.agentID) else {
-            return "No active task assigned to you."
+            return .failure("No active task assigned to you.")
         }
 
-        // Idempotency guard
+        // Idempotency guard — a duplicate submission isn't really a failure, but it's
+        // not a fresh successful submission either. Return success with a clear message.
         if task.status == .awaitingReview || task.status == .completed {
-            return "Task already submitted for review."
+            return .success("Task already submitted for review.")
         }
 
         // Store result on the task (survives restarts) and transition status
@@ -60,7 +61,7 @@ public struct TaskCompleteTool: AgentTool {
 
         // Notify Smith privately
         guard let smithID = await context.agentIDForRole(.smith) else {
-            return "Task submitted for review: \(task.title)"
+            return .success("Task submitted for review: \(task.title)")
         }
 
         var message = "Task '\(task.title)' is ready for review.\n\nResult:\n\(result)"
@@ -79,6 +80,6 @@ public struct TaskCompleteTool: AgentTool {
             ]
         ))
 
-        return "Task submitted for review: \(task.title)"
+        return .success("Task submitted for review: \(task.title)")
     }
 }
