@@ -147,33 +147,11 @@ final class SessionManager {
         await persistSessions()
     }
 
-    /// Closes a session: stops its runtime, removes it from the list, and deletes its
-    /// on-disk data. Call only after confirming with the user — the delete is permanent.
-    func closeSession(id: UUID) async {
-        // Route the delete through the VM's own PersistenceManager (actor) so any pending
-        // detached saves from `stopAll`'s fire-and-forget `persistMessages`/`persistTasks`
-        // drain BEFORE the delete runs. Creating a fresh PM here would not serialize with
-        // those pending writes, and the delete could race in between a save and its
-        // implicit `ensureDirectories()` — leaving an orphan directory behind.
-        let vm = viewModels[id]
-        if let vm {
-            await vm.stopAll()
-        }
-        viewModels.removeValue(forKey: id)
-        sessions.removeAll { $0.id == id }
-
-        let pm = vm?.persistenceManager ?? PersistenceManager(sessionID: id)
-        do {
-            try await pm.deleteSessionData()
-        } catch {
-            logger.error("Failed to delete session data for \(id.uuidString): \(error.localizedDescription)")
-        }
-
-        // Also delete the session's message-history UserDefaults key.
-        UserDefaults.standard.removeObject(forKey: "messageHistory.\(id.uuidString)")
-
-        await persistSessions()
-    }
+    // closeSession was removed in 2026-04. Closing a window must NEVER mutate or delete the
+    // underlying session — Cmd-W is now a UI-only operation and there is no destructive
+    // "Close Session…" command anywhere in the app. Sessions remain on disk indefinitely
+    // and can be reopened from the Session menu. A future "Manage Sessions" sheet will
+    // bring deletion back as an explicit, separately-confirmed action — see ROADMAP.md.
 
     /// Stops agents in every session and silences all speech (emergency-stop semantics).
     func stopAll() async {

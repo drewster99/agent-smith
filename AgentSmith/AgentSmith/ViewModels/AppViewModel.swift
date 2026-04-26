@@ -756,10 +756,10 @@ final class AppViewModel {
             }
         }
 
-        // Flush persistence synchronously here so that callers (notably SessionManager.closeSession,
-        // which deletes the session directory immediately after) can rely on no pending writes
-        // racing the delete. The hot-path persists during message streaming still use detached
-        // tasks for performance; this is the quiescent, stop-of-world flush.
+        // Flush persistence synchronously here so callers can rely on no pending writes
+        // racing whatever they do next (e.g. quitting the app, reading the session's files
+        // for diagnostics). The hot-path persists during message streaming still use
+        // detached tasks for performance; this is the quiescent, stop-of-world flush.
         await flushPersistence()
         await shared.usageStore.flush()
     }

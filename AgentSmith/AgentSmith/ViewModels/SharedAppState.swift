@@ -75,11 +75,9 @@ final class SharedAppState {
     /// Cmd+N and Close Session so they target the focused tab, not an arbitrary one.
     var focusedSessionID: UUID?
     /// Signal from the File menu → the focused `SessionScene` that it should show a
-    /// close-confirmation sheet for this session ID. Cleared by the scene after handling.
-    /// Only the scene whose session matches acts on it, so the menu command correctly
-    /// routes to the frontmost tab.
-    var closeSessionRequestID: UUID?
-    /// Same pattern for rename.
+    /// rename sheet for this session ID. Cleared by the scene after handling. Only the
+    /// scene whose session matches acts on it, so the menu command correctly routes to
+    /// the frontmost tab.
     var renameSessionRequestID: UUID?
     /// Set to true after `loadPersistedState()` finishes.
     var hasLoadedPersistedState = false

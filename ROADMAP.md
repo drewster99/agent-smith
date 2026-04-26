@@ -2,6 +2,18 @@
 
 ## Planned
 
+### Manage Sessions sheet (with deletion)
+The previous "Close Session…" menu command was removed in 2026-04 because closing a window must NEVER mutate or delete the underlying session — Cmd-W is now strictly a UI operation, and there's no destructive command anywhere in the app. The Session menu lists all sessions and clicking one either focuses an existing window or opens a new one.
+
+This means sessions accumulate forever until we add a deliberate management UI. Plan: a "Manage Sessions" sheet (probably in Settings or as a standalone window) that shows every session with last-used date, message count, task count, and disk size. Each row gets:
+- Reveal in Finder (the session's data directory)
+- Export (zip the session dir for archival)
+- Delete (explicit confirmation, separate from any window action)
+
+Deletion calls `PersistenceManager.deleteSessionData()` (which already exists, currently has no callers). Until this lands, sessions persist indefinitely on disk. `SessionManager.closeSession` is gone; do not reintroduce it as a window-close hook — the lesson from the previous design was that bundling deletion with window lifecycle made the destructive action too easy to hit.
+
+Related: archived and recently-deleted **tasks** are still per-session (they live in the same `tasks.json` as active tasks, just with different `disposition`). When a session is eventually deleted via the Manage Sessions sheet, those buckets go with it. If we want a global trash that survives session deletion, that's a separate, larger refactor — promote `disposition: .recentlyDeleted` rows to a shared `recently_deleted_tasks.json` at the base level.
+
 ### Save API keys to Keychain ✅
 API keys (e.g. Anthropic, OpenAI-compatible provider keys) are currently stored in plain text (UserDefaults or configuration files). Move all API key storage to the macOS Keychain using the Security framework (`SecItemAdd`/`SecItemCopyMatching`). This improves security by keeping secrets out of plist files and app defaults exports.
 

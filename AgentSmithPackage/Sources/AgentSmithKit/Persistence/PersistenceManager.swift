@@ -85,6 +85,11 @@ public actor PersistenceManager {
 
     /// Deletes this session's subdirectory (channel_log, tasks, attachments, state).
     /// No-op if the directory doesn't exist. Only valid on a session-scoped manager.
+    ///
+    /// As of 2026-04 this method has NO callers in the app — the previous "Close Session…"
+    /// menu was removed because window-close should never mutate session state. Kept in the
+    /// API surface for a future "Manage Sessions" sheet that will bring deletion back as
+    /// an explicit action with its own confirmation. See ROADMAP.md.
     public func deleteSessionData() throws {
         guard FileManager.default.fileExists(atPath: sessionDirectory.path) else { return }
         try FileManager.default.removeItem(at: sessionDirectory)

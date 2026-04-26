@@ -42,15 +42,28 @@ struct AgentSmithApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(shared.focusedSessionID == nil)
-
-                Divider()
-
-                Button("Close Session\u{2026}") {
-                    if let id = shared.focusedSessionID {
-                        shared.closeSessionRequestID = id
-                    }
+            }
+            CommandMenu("Session") {
+                // Every session shows up here. Clicking switches focus to its open window
+                // (if any), or stashes the id and opens a fresh window so the next
+                // `SessionScene.bootstrapIfNeeded` adopts it. Window-close is now a UI-only
+                // operation — sessions are never deleted from this menu (or anywhere in the
+                // app's current build). Per ROADMAP: deletion will return as an explicit
+                // "Manage Sessions" sheet later, separate from window lifecycle.
+                ForEach(sessionManager.sessions, id: \.id) { session in
+                    Button(action: {
+                        showOrOpenSession(id: session.id)
+                    }, label: {
+                        if session.id == shared.focusedSessionID {
+                            Label(session.name, systemImage: "checkmark")
+                        } else {
+                            Text(session.name)
+                        }
+                    })
                 }
-                .disabled(shared.focusedSessionID == nil)
+                if sessionManager.sessions.isEmpty {
+                    Text("No sessions").disabled(true)
+                }
             }
             CommandGroup(after: .appInfo) {
                 Button("Emergency Stop") {
@@ -141,6 +154,28 @@ struct AgentSmithApp: App {
             SettingsView(shared: shared, sessionManager: sessionManager)
         }
     }
+
+    /// Brings an open window for `id` to the front if one exists, otherwise stashes the id
+    /// for the next bootstrapping `SessionScene` and opens a new app-main window. Windows
+    /// are tagged by `WindowKeyObserver` with a custom `NSUserInterfaceItemIdentifier`
+    /// (`"agent-smith-session-<uuid>"`), namespaced to avoid colliding with SwiftUI's own
+    /// auto-assigned identifiers.
+    @MainActor
+    private func showOrOpenSession(id: UUID) {
+        let target = AgentSmithApp.windowIdentifier(for: id)
+        for window in NSApp.windows where window.isVisible {
+            if window.identifier?.rawValue == target {
+                window.makeKeyAndOrderFront(nil)
+                return
+            }
+        }
+        pendingNewSessionIDs.append(id)
+        openWindow(id: "app-main")
+    }
+
+    static func windowIdentifier(for sessionID: UUID) -> String {
+        "agent-smith-session-\(sessionID.uuidString)"
+    }
 }
 
 /// Cross-scene handoff queue for "which session should the next fresh window adopt?".
@@ -162,7 +197,6 @@ struct SessionScene: View {
 
     @SceneStorage("sessionID") private var sessionIDString: String = ""
     @State private var bootstrapped = false
-    @State private var showCloseConfirm = false
     @State private var showRenameSheet = false
     @State private var renameDraft = ""
 
@@ -178,7 +212,7 @@ struct SessionScene: View {
                 ContentUnavailableView {
                     Label("No Session", systemImage: "rectangle.stack.badge.plus")
                 } description: {
-                    Text("This session has been closed. Open a new one to continue.")
+                    Text("This window has no session bound to it yet. Open one from the Session menu, or create a new one.")
                 } actions: {
                     Button("New Session") {
                         Task { await createAndAdoptSession() }
@@ -188,11 +222,6 @@ struct SessionScene: View {
         }
         .task { await bootstrapIfNeeded() }
         .background(WindowKeyObserver(sessionID: resolvedID, shared: shared))
-        .onChange(of: shared.closeSessionRequestID) { _, newValue in
-            guard let id = newValue, id == resolvedID else { return }
-            shared.closeSessionRequestID = nil
-            showCloseConfirm = true
-        }
         .onChange(of: shared.renameSessionRequestID) { _, newValue in
             guard let id = newValue, id == resolvedID,
                   let session = sessionManager.sessions.first(where: { $0.id == id }) else {
@@ -202,26 +231,6 @@ struct SessionScene: View {
             renameDraft = session.name
             showRenameSheet = true
         }
-        .confirmationDialog(
-            "Close this session?",
-            isPresented: $showCloseConfirm,
-            titleVisibility: .visible,
-            actions: {
-                Button("Close Session", role: .destructive, action: {
-                    if let id = resolvedID {
-                        Task { await closeAndDropScene(id: id) }
-                    }
-                })
-                Button("Cancel", role: .cancel, action: {})
-            },
-            message: {
-                if let id = resolvedID, let s = sessionManager.sessions.first(where: { $0.id == id }) {
-                    Text("“\(s.name)” will be removed and its channel log, tasks, and attachments deleted from disk. This cannot be undone.")
-                } else {
-                    Text("This session will be removed and its data deleted from disk. This cannot be undone.")
-                }
-            }
-        )
         .sheet(isPresented: $showRenameSheet) {
             RenameSessionSheet(
                 name: $renameDraft,
@@ -275,17 +284,6 @@ struct SessionScene: View {
         let session = await sessionManager.createSession(templateSessionID: shared.focusedSessionID)
         sessionIDString = session.id.uuidString
     }
-
-    /// Deletes the session's on-disk data and the SessionManager entry, then clears this
-    /// scene's stored ID so the view flips to the "No Session" placeholder. The window
-    /// itself stays open — the user can pick New Session or close the tab natively.
-    private func closeAndDropScene(id: UUID) async {
-        await sessionManager.closeSession(id: id)
-        sessionIDString = ""
-        if shared.focusedSessionID == id {
-            shared.focusedSessionID = nil
-        }
-    }
 }
 
 /// Observes the containing NSWindow's key state and publishes the session ID as
@@ -305,6 +303,16 @@ private struct WindowKeyObserver: NSViewRepresentable {
         guard let view = nsView as? KeyTrackingView else { return }
         view.sessionID = sessionID
         view.shared = shared
+        // Stamp the session id onto the window's identifier so the Session menu's
+        // `showOrOpenSession` can find this window later and bring it to front. We use a
+        // namespaced identifier (`agent-smith-session-<uuid>`) so we don't collide with
+        // SwiftUI's auto-assigned identifiers (which look like "app-main-1").
+        if let window = view.window, let id = sessionID {
+            let target = AgentSmithApp.windowIdentifier(for: id)
+            if window.identifier?.rawValue != target {
+                window.identifier = NSUserInterfaceItemIdentifier(target)
+            }
+        }
         // If this view is currently inside the key window and the effective focused ID
         // differs, republish it. Guarded equality avoids spamming @Observable notifications
         // (which would invalidate any view reading `focusedSessionID`) on every update pass.
