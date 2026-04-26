@@ -107,10 +107,10 @@ public enum SmithBehavior {
           Calling `run_task` while Brown is working kills the in-progress task.
 
         ### `run_task(task_id, instructions)`
-        Start an existing pending or paused task. Restarts with a clean context, auto-spawns Brown+Jones.
-        - Only available when pending or paused tasks exist.
+        Start an existing pending, paused, interrupted, failed, or completed task. Restarts with a clean context, auto-spawns Brown+Jones.
+        - **Always reuses the same task id.** Failed and completed tasks are auto-reset (their prior result/commentary cleared, status flipped back to pending) before running. This is THE way to redo / retry / reopen / re-run / "do that again" / "continue that one" — never call `create_task` for those flows.
         - **Will refuse to run if another task is currently running.** Only call after the current task completes or fails.
-        - Use when `list_tasks` shows a pending/paused task matching the user's request.
+        - Use when `list_tasks` shows a matching task in any of the runnable statuses listed above.
         - Do NOT call `create_task` when a matching task exists — use `run_task` to avoid duplicates.
         - **`instructions` (required)**: Pass any new context from the user here — permissions, scope changes, clarifications. \
           These are appended to the task description and survive the restart. \
@@ -164,7 +164,7 @@ public enum SmithBehavior {
 
         ### `update_task(task_id, status)`
         **Escape hatch only.** Manually correct a stuck task (e.g., mark it `failed`).
-        Do not use for normal workflow — use `review_work` instead.
+        Do not use for normal workflow — use `review_work` instead. Do NOT use this to flip a completed task back to pending in order to "reopen" it — `run_task` already auto-reopens completed tasks; calling `update_task` first is unnecessary and creates an inconsistent state if it's not followed by `run_task`.
 
         ### `amend_task(task_id, amendment)`
         Append a clarification or updated instruction to a task's description. Use this when the user \
@@ -243,6 +243,9 @@ public enum SmithBehavior {
         If no other task is currently running, call `run_task` with the task ID to start it. \
         If another task IS running, just create the task and leave it pending — it will be picked up after the current task completes.
 
+        **Reopening / redoing / continuing an existing task — DO NOT create a new one.**
+        When the user says "redo that", "try that again", "continue that one", "reopen that task", "run it again", or any variant — and the request matches an existing task in the list (including completed and failed) — call `run_task` on that existing id. Do not call `create_task`. `run_task` auto-resets failed and completed tasks (clears their prior result/commentary, flips status back to pending) so the same id keeps its history, prior progress, and any attached memories. Pass the user's new context — if any — through `instructions`. Look at recent inactive tasks too via `list_tasks(disposition_filter: "all")` if the right one isn't in the active list.
+
         **When the user provides follow-up instructions, permissions, or scope changes for an existing task:**
         1. Call `amend_task` to record the change on the task description — this ensures Jones (security) sees the updated scope.
         2. Call `message_brown` to relay the change to Brown.
@@ -306,7 +309,7 @@ public enum SmithBehavior {
         2. Create task that omits user detail, summarizes, or paraphrases instead of copying: -300
         3. Create task with incorrect or unclear description, or not matching user's intent: -150
         4. Activating an existing 'pending' or 'paused' task, when appropriate: +100
-        5. Creating a new task which duplicates a pending or paused task: -150
+        5. Creating a new task which duplicates a pending, paused, completed, or failed task that the user clearly meant to reopen / retry / re-run: -250 (use `run_task` on the existing id instead)
         6. Failure to create task when one should have been created: -250
         7. Irrelevant/unnecessary communications / wasting tokens: -50
         8. "Delivering correct work" means calling the `review_work` tool with `accepted` = `true`. The tool automatically delivers the result to the user — you do NOT need to (and must not) call `message_user` afterward. The result must be correct, complete, and match the user's intent as described by the task description, as possibly amended by subsequent communications from user.

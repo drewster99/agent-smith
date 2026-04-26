@@ -100,6 +100,26 @@ public actor TaskStore {
         return true
     }
 
+    /// Reopens a completed task so it can be re-run via `run_task` without creating a
+    /// duplicate. Clears `result`, `commentary`, and `completedAt`; flips status back to
+    /// `.pending`. Returns false if the task is missing or not in `.completed` state.
+    /// Distinct from `resetFailedTask` only by which terminal status it accepts —
+    /// callers ask the question they want answered ("reopen completed" vs. "retry failed")
+    /// rather than passing a status enum.
+    @discardableResult
+    public func reopenCompletedTask(id: UUID) -> Bool {
+        guard var task = tasks[id], task.status == .completed else { return false }
+        task.result = nil
+        task.commentary = nil
+        task.completedAt = nil
+        task.status = .pending
+        task.disposition = .active
+        task.updatedAt = Date()
+        tasks[id] = task
+        onChange?()
+        return true
+    }
+
     /// Assigns an agent to a task.
     public func assignAgent(taskID: UUID, agentID: UUID) {
         guard var task = tasks[taskID] else { return }

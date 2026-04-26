@@ -1,19 +1,20 @@
 import Foundation
 
-/// Allows Smith to run an existing pending, paused, interrupted, or failed task without
-/// duplicating it. When invoked on a failed task, the task's terminal state is reset (result,
-/// commentary, and completedAt are cleared and status returns to `.pending`) before the run
-/// begins — the user said "try again" means "rerun on the same task ID", not "create a new one."
+/// Allows Smith to run an existing pending, paused, interrupted, failed, or completed task
+/// without duplicating it. When invoked on a failed or completed task, the task's terminal
+/// state is reset (result, commentary, and completedAt are cleared and status returns to
+/// `.pending`) before the run begins — the user said "try again" / "redo that" / "reopen
+/// that" means "rerun on the same task ID", not "create a new one."
 public struct RunTaskTool: AgentTool {
     public let name = "run_task"
-    public let toolDescription = "Run an existing pending, paused, interrupted, or failed task. Restarts with a clean context and auto-spawns Brown+Jones. Failed tasks are reset (prior result/commentary cleared) before running. The `instructions` field is REQUIRED — include any updates, permissions, scope changes, or clarifications from the user. These are appended to the task description and survive the restart.\nIMPORTANT: Only one task can run at a time. Calling `run_task` will STOP any currently executing task."
+    public let toolDescription = "Run an existing pending, paused, interrupted, failed, or completed task. Restarts with a clean context and auto-spawns Brown+Jones. Failed and completed tasks are auto-reset (prior result/commentary cleared, status flipped back to pending) before running — this is how you reopen a completed task without creating a duplicate. The `instructions` field is REQUIRED — include any updates, permissions, scope changes, or clarifications from the user. These are appended to the task description and survive the restart.\nIMPORTANT: Only one task can run at a time. Calling `run_task` will STOP any currently executing task."
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
         "properties": .dictionary([
             "task_id": .dictionary([
                 "type": .string("string"),
-                "description": .string("UUID of the pending or paused task to run.")
+                "description": .string("UUID of the pending, paused, interrupted, failed, or completed task to run. Completed tasks are reopened (terminal state cleared) so the same id keeps its history.")
             ]),
             "instructions": .dictionary([
                 "type": .string("string"),
@@ -39,18 +40,25 @@ public struct RunTaskTool: AgentTool {
         guard var task = await context.taskStore.task(id: taskID) else {
             return .failure("No task found with ID \(taskID). Use `list_tasks` to see available tasks.")
         }
-        // Allow pending/paused/interrupted directly. For failed, reset the task back to pending
-        // first so the retry runs on the same task ID (preserving history and prior context).
+        // Allow pending/paused/interrupted directly. For failed, reset the task back to
+        // pending first so the retry runs on the same task ID (preserving history and prior
+        // context). Completed tasks get the same reopen-in-place treatment so the user's
+        // "redo that one" never silently turns into a new duplicate task.
         if task.status == .failed {
             _ = await context.taskStore.resetFailedTask(id: taskID)
-            // Re-fetch the now-reset task for the rest of this method.
             guard let refreshed = await context.taskStore.task(id: taskID), refreshed.status.isRunnable else {
                 return .failure("Could not reset task '\(task.title)' for retry.")
             }
             task = refreshed
+        } else if task.status == .completed {
+            _ = await context.taskStore.reopenCompletedTask(id: taskID)
+            guard let refreshed = await context.taskStore.task(id: taskID), refreshed.status.isRunnable else {
+                return .failure("Could not reopen completed task '\(task.title)'.")
+            }
+            task = refreshed
         } else if !task.status.isRunnable {
             return .failure("""
-                Task '\(task.title)' has status '\(task.status.rawValue)' — run_task only works on pending, paused, interrupted, or failed tasks. \
+                Task '\(task.title)' has status '\(task.status.rawValue)' — run_task only works on pending, paused, interrupted, failed, or completed tasks. \
                 Use list_tasks to check current statuses, or create_task if you need a new task.
                 """)
         }
@@ -72,11 +80,14 @@ public struct RunTaskTool: AgentTool {
                 """)
         }
 
-        // Prevent restart loops: if the system already restarted for this exact task,
-        // don't restart again — just tell Smith to spawn Brown directly.
-        if context.currentResumingTaskID == taskID {
+        // Prevent restart loops: if the system *just* restarted for this exact task AND
+        // Brown is still actively running it, don't restart again. After a pause/stop the
+        // task's status drops out of `.running`, Brown is gone, and `currentResumingTaskID`
+        // is stale — a legitimate resume must NOT be blocked by a stale flag, otherwise
+        // Smith loops forever telling the user "Brown is auto-spawned" while nothing happens.
+        if context.currentResumingTaskID == taskID, task.status == .running {
             return .failure("""
-                The system has already restarted for this task and Brown has been auto-spawned. \
+                The system has already restarted for this task and Brown is actively working on it. \
                 Do NOT call run_task again. Brown will signal progress via task_update / task_complete; \
                 you'll also receive an automatic 10-minute Brown-activity digest.
                 """)
