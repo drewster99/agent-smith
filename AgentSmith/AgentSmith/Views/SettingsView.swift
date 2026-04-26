@@ -172,6 +172,7 @@ struct SettingsView: View {
     private func configRow(_ config: ModelConfiguration) -> some View {
         let provider = shared.llmKit.providers.first { $0.id == config.providerID }
         let modelInfo = shared.llmKit.modelInfo(providerID: config.providerID, modelID: config.modelID)
+        let behaviorFlags = shared.llmKit.behaviorFlags(forProviderID: config.providerID, modelID: config.modelID)
         return GroupBox {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -211,6 +212,9 @@ struct SettingsView: View {
                             pricingLabel(for: info)
                         }
                     }
+                    if !behaviorFlags.isAllDefault {
+                        behaviorFlagRow(behaviorFlags)
+                    }
                 }
                 Spacer()
                 Button("Duplicate") {
@@ -233,6 +237,29 @@ struct SettingsView: View {
     }
 
     // MARK: - (Agent Assignments moved to InspectorView)
+
+    /// Read-only display of resolved behavior flags for this config's model.
+    /// Resolved by `LLMKitManager.behaviorFlags(forProviderID:modelID:)` —
+    /// merged from bundled provider-defaults, bundled per-model entries,
+    /// LiteLLM (where applicable), and user overrides. Editing flows through
+    /// the user-overrides JSON file, not this row.
+    private func behaviorFlagRow(_ flags: BehaviorFlags) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "slider.horizontal.below.rectangle")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            ForEach(flags.displayLabels, id: \.self) { label in
+                Text(label)
+                    .font(.caption2)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Color.blue.opacity(0.15))
+                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                    .foregroundStyle(.blue)
+            }
+        }
+        .help("Per-model behavior flags resolved from bundled defaults + user overrides. Edit via the user model overrides JSON.")
+    }
 
     /// Compact pricing label showing input/output cost per million tokens.
     @ViewBuilder
