@@ -380,7 +380,9 @@ struct AgentModelSettingsSection: View {
     // MARK: - Model info bar
 
     private func modelInfoBar(for info: ModelInfo) -> some View {
-        HStack(spacing: 8) {
+        // Use a wrapping flow so the chips ride to subsequent rows when the
+        // sheet is narrow rather than truncating into "Max ou…", "Conte…", etc.
+        WrappingHStack(spacing: 8, lineSpacing: 4) {
             if let maxOut = info.maxOutputTokens {
                 let exceeds = maxOutputTokens > maxOut
                 Text("Max output: \(formatTokenCount(maxOut))")
@@ -486,5 +488,67 @@ struct AgentModelSettingsSection: View {
         // updateAgentConfig handles undo registration internally when given a manager.
         viewModel.shared.updateAgentConfig(updated, undoManager: undoManager)
         lastSavedAt = Date()
+    }
+}
+
+/// Horizontal stack that wraps to additional rows when its proposed width is too
+/// narrow for the next subview. Drop-in replacement for a single-row `HStack` in
+/// places like the model-info chips bar where truncation is worse than wrapping.
+struct WrappingHStack: Layout {
+    let spacing: CGFloat
+    let lineSpacing: CGFloat
+
+    init(spacing: CGFloat = 8, lineSpacing: CGFloat = 4) {
+        self.spacing = spacing
+        self.lineSpacing = lineSpacing
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var lineWidth: CGFloat = 0
+        var lineMaxHeight: CGFloat = 0
+        var totalHeight: CGFloat = 0
+        var maxLineWidth: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            let widthIfAppended = lineWidth == 0 ? size.width : lineWidth + spacing + size.width
+            if widthIfAppended <= maxWidth || lineWidth == 0 {
+                lineWidth = widthIfAppended
+                lineMaxHeight = max(lineMaxHeight, size.height)
+            } else {
+                totalHeight += lineMaxHeight + lineSpacing
+                maxLineWidth = max(maxLineWidth, lineWidth)
+                lineWidth = size.width
+                lineMaxHeight = size.height
+            }
+        }
+        totalHeight += lineMaxHeight
+        maxLineWidth = max(maxLineWidth, lineWidth)
+        return CGSize(width: min(maxLineWidth, maxWidth), height: totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) {
+        let maxWidth = bounds.width
+        var x = bounds.minX
+        var y = bounds.minY
+        var lineMaxHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            let widthIfAppended = x == bounds.minX ? size.width : (x - bounds.minX) + spacing + size.width
+            if widthIfAppended > maxWidth && x > bounds.minX {
+                x = bounds.minX
+                y += lineMaxHeight + lineSpacing
+                lineMaxHeight = 0
+            }
+            subview.place(
+                at: CGPoint(x: x, y: y),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: size.width, height: size.height)
+            )
+            x += (x == bounds.minX ? 0 : spacing) + size.width
+            lineMaxHeight = max(lineMaxHeight, size.height)
+        }
     }
 }

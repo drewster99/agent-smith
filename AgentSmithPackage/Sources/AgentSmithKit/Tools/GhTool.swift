@@ -189,7 +189,48 @@ public struct GhTool: AgentTool {
         } else if result.exitCode == 0 {
             return .success(result.output.isEmpty ? "(no output)" : result.output)
         } else {
-            return .failure("Exit code \(result.exitCode)\n\(result.output)")
+            // Non-zero exit. If the output looks like an auth-failure (`gh` exits 4 on
+            // unauthenticated calls, but the wording matters too because the same exit
+            // code is reused for other classes of error), invalidate the cached
+            // `gh auth status` snapshot so the *next* Brown spawn re-reads reality and
+            // surfaces the correct state in the tool description. We don't try to
+            // hot-update Brown's current description — that prompt is baked at spawn —
+            // but we do tell Brown explicitly that the snapshot may now be stale.
+            let staleHint: String
+            if Self.outputLooksLikeAuthFailure(result.output, exitCode: result.exitCode) {
+                await GhAuthChecker.invalidate()
+                staleHint = """
+
+                    NOTE: The `gh auth status` snapshot in this tool's description was \
+                    captured at task start and may now be out of date — the failure above \
+                    looks like an auth issue. Ask the user to verify `gh auth status` and \
+                    (if needed) re-spawn this task. The snapshot will refresh on the next \
+                    Brown spawn; do NOT attempt `gh auth login` from here.
+                    """
+            } else {
+                staleHint = ""
+            }
+            return .failure("Exit code \(result.exitCode)\n\(result.output)\(staleHint)")
         }
+    }
+
+    /// Heuristic: does this `gh` failure look like an authentication problem (rather than
+    /// a 404, rate limit, malformed args, etc.)? Substring-matches against the standard
+    /// `gh` auth-failure phrasings — false positives just trigger a single extra
+    /// `gh auth status` re-check on the next Brown spawn, which is cheap.
+    static func outputLooksLikeAuthFailure(_ output: String, exitCode: Int32) -> Bool {
+        let lowered = output.lowercased()
+        let phrases = [
+            "you are not logged in",
+            "not logged in to",
+            "authentication required",
+            "401 unauthorized",
+            "bad credentials",
+            "must authenticate",
+            "gh auth login",
+            "no oauth token",
+            "token has expired"
+        ]
+        return phrases.contains(where: { lowered.contains($0) })
     }
 }

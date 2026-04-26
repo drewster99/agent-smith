@@ -1194,7 +1194,7 @@ private struct AgentConfigSheet: View {
                 .padding(20)
             }
         }
-        .frame(minWidth: 500, minHeight: 540)
+        .frame(minWidth: 560, idealWidth: 720, minHeight: 540, idealHeight: 720)
         .onAppear {
             availableVoices = AVSpeechSynthesisVoice.speechVoices()
                 .sorted { $0.name < $1.name }
