@@ -68,8 +68,22 @@ struct InspectorView: View {
                     }
 
                     SummarizerCard(
+                        viewModel: viewModel,
                         messages: viewModel.messages,
-                        isProcessing: viewModel.processingRoles.contains(.summarizer)
+                        isProcessing: viewModel.processingRoles.contains(.summarizer),
+                        currentSystemPrompt: store.systemPrompt(for: .summarizer),
+                        pollInterval: viewModel.agentPollIntervals[.summarizer] ?? 5,
+                        maxToolCalls: viewModel.agentMaxToolCalls[.summarizer] ?? 100,
+                        speechController: viewModel.shared.speechController,
+                        onUpdateSystemPrompt: { prompt in
+                            Task { await viewModel.updateSystemPrompt(for: .summarizer, prompt: prompt) }
+                        },
+                        onUpdatePollInterval: { interval in
+                            Task { await viewModel.updatePollInterval(for: .summarizer, interval: interval) }
+                        },
+                        onUpdateMaxToolCalls: { count in
+                            Task { await viewModel.updateMaxToolCalls(for: .summarizer, count: count) }
+                        }
                     )
                 }
             }
@@ -1275,10 +1289,19 @@ struct VoicePickerRow: View {
 /// The summarizer is transient (fires once per task completion), so it doesn't have
 /// persistent context, tools, or LLM turns. Instead, we show activity history and stats.
 private struct SummarizerCard: View {
+    @Bindable var viewModel: AppViewModel
     let messages: [ChannelMessage]
     let isProcessing: Bool
+    let currentSystemPrompt: String
+    let pollInterval: TimeInterval
+    let maxToolCalls: Int
+    let speechController: SpeechController
+    let onUpdateSystemPrompt: (String) -> Void
+    let onUpdatePollInterval: (TimeInterval) -> Void
+    let onUpdateMaxToolCalls: (Int) -> Void
 
     @State private var expanded = true
+    @State private var showingConfig = false
 
     private var summarizerMessages: [ChannelMessage] {
         messages.filter {
@@ -1353,13 +1376,16 @@ private struct SummarizerCard: View {
                 Image(systemName: "speaker.slash")
                     .font(.caption)
                     .foregroundStyle(Color.secondary.opacity(0.3))
-                    .help("Coming soon")
+                    .help("Speech configuration coming soon")
 
-                Image(systemName: "gearshape")
-                    .font(.caption)
-                    .foregroundStyle(Color.secondary.opacity(0.3))
-                    .padding(.leading, 4)
-                    .help("Coming soon")
+                Button(action: { showingConfig = true }, label: {
+                    Image(systemName: "gearshape")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                })
+                .buttonStyle(.plain)
+                .padding(.leading, 4)
+                .help("Configure summarizer")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
@@ -1400,6 +1426,22 @@ private struct SummarizerCard: View {
             }
 
             Divider()
+        }
+        .sheet(isPresented: $showingConfig) {
+            AgentConfigSheet(
+                viewModel: viewModel,
+                role: .summarizer,
+                roleColor: Self.roleColor,
+                initialSystemPrompt: currentSystemPrompt,
+                initialPollInterval: pollInterval,
+                initialMaxToolCalls: maxToolCalls,
+                speechController: speechController,
+                onSave: { prompt, interval, maxCalls in
+                    onUpdateSystemPrompt(prompt)
+                    onUpdatePollInterval(interval)
+                    onUpdateMaxToolCalls(maxCalls)
+                }
+            )
         }
     }
 }
