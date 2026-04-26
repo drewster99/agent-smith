@@ -105,6 +105,14 @@ public actor OrchestrationRuntime {
         await smith?.cancelWake(id: id) ?? false
     }
 
+    /// Replays a previously-persisted set of wakes onto Smith's actor. Called by the app
+    /// layer at cold-launch *before* `start()` so any wake that elapsed while the app was
+    /// quit fires on the next loop iteration. Replacing rather than merging is intentional:
+    /// after this call the actor's wake list IS the persisted snapshot.
+    public func restoreScheduledWakes(_ wakes: [ScheduledWake]) async {
+        await smith?.restoreScheduledWakes(wakes)
+    }
+
     public init(
         providers: [AgentRole: any LLMProvider],
         configurations: [AgentRole: ModelConfiguration],

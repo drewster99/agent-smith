@@ -101,6 +101,10 @@ final class AppViewModel {
     let persistenceManager: PersistenceManager
     /// Full message history — a superset of `messages`. Never cleared; always written to disk.
     private var allPersistedMessages: [ChannelMessage] = []
+    /// Wakes loaded from disk in `loadPersistedState()` and consumed by `start()` to seed
+    /// Smith's actor before the run loop begins. Drops to nil after consumption — subsequent
+    /// snapshots are taken live from the runtime via `currentScheduledWakes()`.
+    private var persistedWakesSnapshot: [ScheduledWake] = []
 
     init(session: Session, shared: SharedAppState) {
         self.session = session
@@ -259,6 +263,17 @@ final class AppViewModel {
             timerHistory = savedEvents.sorted { $0.timestamp > $1.timestamp }
         } catch {
             logger.error("Failed to load timer events: \(error.localizedDescription)")
+        }
+
+        // Load persisted scheduled wakes so reminders survive app restart. The list is
+        // replayed onto Smith's actor in `start()` before the run loop begins, so any
+        // wakes whose `wakeAt` already elapsed during downtime fire on the first loop
+        // iteration. Empty list is the normal case for a fresh session.
+        do {
+            persistedWakesSnapshot = try await persistenceManager.loadScheduledWakes()
+        } catch {
+            logger.error("Failed to load scheduled wakes: \(error.localizedDescription)")
+            persistedWakesSnapshot = []
         }
 
         hasLoadedPersistedState = true
@@ -434,24 +449,44 @@ final class AppViewModel {
         }
 
         // Surface timer events into the channel as system messages when the user has the
-        // Debug → Show Timer Activity toggle enabled.
+        // Debug → Show Timer Activity toggle enabled, and snapshot the wake list to disk
+        // on every lifecycle event so reminders survive an app quit. We snapshot here
+        // (rather than only on `.scheduled`) because cancellations and fires also mutate
+        // the in-memory list (cancellation removes a wake; recurrence-fire replaces one
+        // wake with the next-occurrence wake).
         await newRuntime.setOnTimerEventForChannel { [weak self] event in
             await MainActor.run {
-                guard let self, self.shared.showTimerActivityInTranscript else { return }
-                let line = AppViewModel.transcriptLine(for: event)
+                guard let self else { return }
+                if self.shared.showTimerActivityInTranscript {
+                    let line = AppViewModel.transcriptLine(for: event)
+                    Task { @MainActor [weak self] in
+                        guard let self, let runtime = self.runtime else { return }
+                        let channel = await runtime.channel
+                        await channel.post(ChannelMessage(
+                            sender: .system,
+                            content: line,
+                            metadata: [
+                                "messageKind": .string("timer_activity"),
+                                "timerEventID": .string(event.id.uuidString)
+                            ]
+                        ))
+                    }
+                }
                 Task { @MainActor [weak self] in
-                    guard let self, let runtime = self.runtime else { return }
-                    let channel = await runtime.channel
-                    await channel.post(ChannelMessage(
-                        sender: .system,
-                        content: line,
-                        metadata: [
-                            "messageKind": .string("timer_activity"),
-                            "timerEventID": .string(event.id.uuidString)
-                        ]
-                    ))
+                    guard let self else { return }
+                    await self.snapshotAndPersistWakes()
                 }
             }
+        }
+
+        // Replay wakes that survived a prior quit. We do this BEFORE `start()` so any wake
+        // whose `wakeAt` is already in the past fires on the first loop iteration — the
+        // user's "remind me at 9pm daily" doesn't silently miss days because the app was
+        // closed. After replay we drop the snapshot; subsequent persistence is driven by
+        // `onTimerEventForChannel` (every schedule/fire/cancel triggers a fresh snapshot).
+        if !persistedWakesSnapshot.isEmpty {
+            await newRuntime.restoreScheduledWakes(persistedWakesSnapshot)
+            persistedWakesSnapshot = []
         }
 
         await newRuntime.start()
@@ -508,6 +543,23 @@ final class AppViewModel {
                 try await persistenceManager.saveTimerEvents(events)
             } catch {
                 logger.error("Failed to save timer events: \(error)")
+            }
+        }
+    }
+
+    /// Snapshots the runtime's current wake list and writes it to disk. Also refreshes the
+    /// `activeTimers` published property so the View → Timers panel updates immediately.
+    /// Called from the `onTimerEventForChannel` callback on every schedule/fire/cancel.
+    private func snapshotAndPersistWakes() async {
+        guard let runtime else { return }
+        let wakes = await runtime.currentScheduledWakes()
+        activeTimers = wakes
+        let snapshot = wakes
+        Task.detached { [persistenceManager, logger] in
+            do {
+                try await persistenceManager.saveScheduledWakes(snapshot)
+            } catch {
+                logger.error("Failed to save scheduled wakes: \(error)")
             }
         }
     }

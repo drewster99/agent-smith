@@ -281,6 +281,18 @@ public actor AgentActor {
         syntheticFirstToolCall = toolName
     }
 
+    /// Replaces the actor's scheduled-wake list with the supplied set. Used by the runtime at
+    /// cold-launch to replay wakes persisted from a prior process. Bypasses the
+    /// `onWakeScheduled` callback so the timer-event log isn't double-stamped (the original
+    /// `.scheduled` events are already persisted in the timer history). Wakes with `wakeAt`
+    /// in the past relative to `now` are kept as-is — `checkScheduledWake()` on the next
+    /// loop iteration will fire them, which is the correct recovery behavior for a wake that
+    /// elapsed while the app was quit.
+    public func restoreScheduledWakes(_ wakes: [ScheduledWake]) {
+        scheduledWakes = wakes.sorted { $0.wakeAt < $1.wakeAt }
+        interruptIdleSleep()
+    }
+
     /// Schedules a wake. Returns `.scheduled(wake)` on success, or `.error(...)` for
     /// validation failures. If `replacesID` is supplied, that wake is cancelled before
     /// scheduling the new one. Multiple wakes can share a wake time without conflict —

@@ -156,6 +156,24 @@ public actor PersistenceManager {
         return try JSONDecoder().decode([TimerEvent].self, from: data)
     }
 
+    // MARK: - Scheduled Wakes (per-session)
+
+    /// Persists the active scheduled-wake list so reminders survive app restart. Saved on
+    /// every wake-list mutation (schedule / cancel / fire-with-recurrence) by the app layer.
+    public func saveScheduledWakes(_ wakes: [ScheduledWake]) throws {
+        try ensureDirectories()
+        let data = try JSONEncoder().encode(wakes)
+        let url = sessionDirectory.appendingPathComponent("scheduled_wakes.json")
+        try data.write(to: url, options: .atomic)
+    }
+
+    public func loadScheduledWakes() throws -> [ScheduledWake] {
+        let url = sessionDirectory.appendingPathComponent("scheduled_wakes.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode([ScheduledWake].self, from: data)
+    }
+
     // MARK: - Memories (shared)
 
     public func saveMemories(_ memories: [MemoryEntry]) throws {
