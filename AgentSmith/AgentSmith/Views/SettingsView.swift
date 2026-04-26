@@ -89,6 +89,15 @@ struct SettingsView: View {
 
     @State private var editingConfig: ModelConfiguration?
     @State private var isCreatingConfig = false
+    /// (providerID, modelID) of the model whose behavior flags are being edited.
+    /// Drives the `BehaviorFlagsEditorSheet` presentation.
+    @State private var editingFlagsFor: FlagsEditTarget?
+
+    private struct FlagsEditTarget: Identifiable {
+        let providerID: String
+        let modelID: String
+        var id: String { "\(providerID)/\(modelID)" }
+    }
 
     private var configurationsTab: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -159,6 +168,13 @@ struct SettingsView: View {
                 onDismiss: { editingConfig = nil }
             )
         }
+        .sheet(item: $editingFlagsFor) { target in
+            BehaviorFlagsEditorSheet(
+                shared: shared,
+                providerID: target.providerID,
+                modelID: target.modelID
+            )
+        }
         .alert("Export Error", isPresented: Binding(
             get: { exportError != nil },
             set: { if !$0 { exportError = nil } }
@@ -221,6 +237,14 @@ struct SettingsView: View {
                     shared.llmKit.duplicateConfiguration(id: config.id)
                 }
                 .buttonStyle(.borderless)
+                Button("Flags") {
+                    editingFlagsFor = FlagsEditTarget(
+                        providerID: config.providerID,
+                        modelID: config.modelID
+                    )
+                }
+                .buttonStyle(.borderless)
+                .help("Edit per-model behavior flags (GLM salvage, max_completion_tokens, parallel tools)")
                 Button("Edit") {
                     editingConfig = config
                 }

@@ -62,6 +62,12 @@ final class SharedAppState {
     /// All stored task summaries, refreshed when the memory store changes.
     var storedTaskSummaries: [TaskSummaryEntry] = []
 
+    /// User-edited model overrides cache, keyed by `"providerID/modelID"`. Mirrors what
+    /// `llmKit` was last `setUserOverrides`'d with so the Settings UI can read individual
+    /// entries without going through `LLMKitManager`'s private state. Writes flow through
+    /// `setUserModelOverride(...)` which also persists and re-pushes to `llmKit`.
+    private(set) var userModelOverrides: [String: ModelMetadataOverride] = [:]
+
     /// Set when a load/decode operation fails during startup; drives the error alert.
     var startupError: String?
     /// ID of the session whose window is currently key (frontmost). Updated by
@@ -183,8 +189,11 @@ final class SharedAppState {
         }
 
         // Load user model metadata overrides and inject into LLMKitManager.
+        // Keep a local copy (`userModelOverrides`) so the Settings UI can edit
+        // individual entries without re-loading from disk every read.
         do {
             let overrides = try await basePersistence.loadUserModelOverrides()
+            userModelOverrides = overrides
             if !overrides.isEmpty {
                 llmKit.setUserOverrides(overrides)
             }
@@ -307,6 +316,60 @@ final class SharedAppState {
             target.updateAgentConfig(previous, undoManager: undoManager)
         }
         undoManager.setActionName("Change \(config.name)")
+    }
+
+    /// Updates a single per-(providerID, modelID) user override entry. Pushes the merged
+    /// dictionary to `llmKit` so it takes effect immediately, then persists to disk so
+    /// the change survives restart. Pass `nil` to remove the entry entirely (revert to
+    /// bundled defaults). The `llmKit` model catalog is re-validated implicitly on the
+    /// next refresh cycle; live `OpenAICompatibleProvider` / `OllamaProvider` instances
+    /// already constructed for the prior flag state will keep using their snapshot until
+    /// rebuilt at next agent spawn.
+    func setUserModelOverride(
+        providerID: String,
+        modelID: String,
+        override: ModelMetadataOverride?
+    ) {
+        let key = "\(providerID)/\(modelID)"
+        if let override, !overrideIsEmpty(override) {
+            userModelOverrides[key] = override
+        } else {
+            userModelOverrides.removeValue(forKey: key)
+        }
+        llmKit.setUserOverrides(userModelOverrides)
+        let snapshot = userModelOverrides
+        let basePersistence = self.basePersistence
+        let logger = self.logger
+        Task.detached {
+            do {
+                try await basePersistence.saveUserModelOverrides(snapshot)
+            } catch {
+                logger.error("Failed to persist user model overrides: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Returns true when every field on the override is at its no-op value. Used by
+    /// `setUserModelOverride` to remove rather than persist an empty patch — keeps the
+    /// on-disk JSON tidy and means "revert to bundled" is a single-call operation.
+    private func overrideIsEmpty(_ override: ModelMetadataOverride) -> Bool {
+        if override.displayName != nil { return false }
+        if override.maxInputTokens != nil { return false }
+        if override.maxOutputTokens != nil { return false }
+        if override.pricing != nil { return false }
+        if override.supportsChatCompletions != nil { return false }
+        if let cap = override.capabilities, capabilitiesOverrideHasContent(cap) { return false }
+        if let flags = override.behaviorFlags, !flags.isEmpty { return false }
+        return true
+    }
+
+    private func capabilitiesOverrideHasContent(_ cap: ModelCapabilitiesOverride) -> Bool {
+        cap.toolUse != nil || cap.vision != nil || cap.reasoning != nil
+            || cap.codeExecution != nil || cap.promptCaching != nil || cap.computerUse != nil
+            || cap.audioInput != nil || cap.audioOutput != nil || cap.videoInput != nil
+            || cap.responseSchema != nil || cap.parallelToolCalls != nil || cap.pdfInput != nil
+            || cap.webSearch != nil || cap.systemMessages != nil || cap.assistantPrefill != nil
+            || cap.toolChoice != nil
     }
 
     // MARK: - Memory
