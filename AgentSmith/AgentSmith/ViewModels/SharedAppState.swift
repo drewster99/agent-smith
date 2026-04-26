@@ -444,6 +444,14 @@ final class SharedAppState {
         try await store.update(id: id, content: content, tags: tags, updatedBy: .user)
     }
 
+    /// Saves a brand-new memory authored by the user from the Memory Browser. Source is
+    /// always `.user`; the memory store auto-embeds and triggers the on-change refresh.
+    @discardableResult
+    func saveMemory(content: String, tags: [String]) async throws -> MemoryEntry? {
+        guard let store = memoryStore else { return nil }
+        return try await store.save(content: content, source: .user, tags: tags)
+    }
+
     private func runUsageHealthCheck() async {
         let allRecords = await usageStore.allRecords()
         let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60)

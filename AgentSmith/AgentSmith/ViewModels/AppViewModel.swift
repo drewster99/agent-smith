@@ -516,25 +516,63 @@ final class AppViewModel {
     }
 
     /// Renders a single transcript line for a timer event when the Debug toggle is on.
+    /// Surfaces a clock icon, a smart time (date elided when today, "Tomorrow" when relevant),
+    /// and a friendly action summary parsed from the imperative — `run_task: "Title"` rather
+    /// than the verbose `Call \`run_task\` on <UUID> to start the task "Title".` form.
     private static func transcriptLine(for event: TimerEvent) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        let scheduledStr: String = {
-            guard let d = event.scheduledFireAt else { return "" }
-            return formatter.string(from: d)
-        }()
+        let action = friendlyAction(from: event.instructions) ?? event.instructions
         switch event.kind {
         case .scheduled:
+            let timeStr = event.scheduledFireAt.map(formatScheduledTime) ?? "(no time)"
             let recur = event.recurrenceDescription.map { " (\($0))" } ?? ""
-            let task = event.taskID.map { " task=\($0.uuidString.prefix(8))" } ?? ""
-            return "[Timer] scheduled at \(scheduledStr)\(task)\(recur): \(event.instructions)"
+            return "⏰ scheduled \(timeStr)\(recur) — \(action)"
         case .fired:
+            let timeStr = event.scheduledFireAt.map(formatScheduledTime) ?? "(no time)"
             let coalesced = event.coalescedCount.map { " (+\($0 - 1) more)" } ?? ""
-            return "[Timer] fired at \(scheduledStr)\(coalesced): \(event.instructions)"
+            return "⏰ fired \(timeStr)\(coalesced) — \(action)"
         case .cancelled:
-            let cause = event.cancellationCause?.rawValue ?? "unknown"
-            return "[Timer] cancelled (\(cause)): \(event.instructions)"
+            let label: String
+            switch event.cancellationCause {
+            case .replaced:        label = "rescheduled"
+            case .taskTerminated:  label = "cancelled (task ended)"
+            case .agentTerminated: label = "cancelled (agent ended)"
+            case .userRequest, .none: label = "cancelled"
+            }
+            return "⏰ \(label) — \(action)"
         }
+    }
+
+    /// Parses the controlled `TaskActionKind.imperativeText` shape into `verb: "title"`.
+    /// Returns `nil` for free-form `schedule_reminder` instructions, where the caller
+    /// should fall back to the raw text.
+    private static func friendlyAction(from imperative: String) -> String? {
+        let verb = imperative.firstMatch(of: /`([a-z_]+)`/).map { String($0.output.1) }
+        let title = imperative.firstMatch(of: /"([^"]+)"/).map { String($0.output.1) }
+        guard let verb, let title else { return nil }
+        return "\(verb): \"\(title)\""
+    }
+
+    /// Formats `date` as a short user-facing wake time. Drops the date when it's today,
+    /// uses "Tomorrow" for the next day, and falls back to a short month/day label otherwise.
+    private static func formatScheduledTime(_ date: Date) -> String {
+        let timeFormatter = DateFormatter()
+        timeFormatter.locale = Locale.current
+        timeFormatter.timeZone = TimeZone.current
+        timeFormatter.dateFormat = "h:mm a"
+        let timeStr = timeFormatter.string(from: date)
+
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) {
+            return timeStr
+        }
+        if calendar.isDateInTomorrow(date) {
+            return "Tomorrow \(timeStr)"
+        }
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale.current
+        dateFormatter.timeZone = TimeZone.current
+        dateFormatter.dateFormat = "MMM d, h:mm a"
+        return dateFormatter.string(from: date)
     }
 
     private func persistTimerEvents(_ events: [TimerEvent]) {

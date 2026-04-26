@@ -69,6 +69,22 @@ extension AgentTool {
     /// Default: tool is always available.
     public func isAvailable(in context: ToolAvailabilityContext) -> Bool { true }
 
+    /// One-line summary of what the tool does, suitable for inclusion in *another* agent's
+    /// system prompt (notably Smith's "Brown's tools" manifest). Returns the first sentence
+    /// of `toolDescription` with intra-line wrapping collapsed — strips parameter detail and
+    /// the Brown-only safety/approval-gate framing that lives further down most descriptions.
+    /// Override on tools whose first sentence is awkward or uninformative for cross-agent use.
+    public var smithFacingSummary: String {
+        let collapsed = toolDescription
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        if let firstSentenceEnd = collapsed.range(of: ". ") {
+            return String(collapsed[..<firstSentenceEnd.lowerBound]) + "."
+        }
+        return collapsed
+    }
+
     /// Returns the description to present to the LLM for a given agent role.
     /// Defaults to `toolDescription`. Override to provide role-specific instructions.
     public func description(for role: AgentRole) -> String {

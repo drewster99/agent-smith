@@ -892,11 +892,9 @@ public actor AgentActor {
                 // marker so each new injection starts a fresh turn.
                 conversationHistory.append(LLMMessage(role: .assistant, text: "(no response)"))
                 pushLiveContext()
-                await toolContext.post(ChannelMessage(
-                    sender: .system,
-                    content: "Agent \(configuration.role.displayName) returned an empty response (no text, no tool calls). Closing turn.",
-                    metadata: ["isWarning": .bool(true), "agentRole": .string(configuration.role.rawValue)]
-                ))
+                Self.agentLogger.debug(
+                    "Agent \(self.configuration.role.displayName, privacy: .public) returned an empty response; closing turn with synthetic marker."
+                )
             }
 
             // Circuit breaker: if the model keeps returning text without tool calls,

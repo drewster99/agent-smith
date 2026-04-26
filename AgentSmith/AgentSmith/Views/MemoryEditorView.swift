@@ -13,6 +13,10 @@ struct MemoryEditorView: View {
     @State private var editTags = ""
     @State private var showTaskSummaries = false
     @State private var editError: String?
+    @State private var isAddingMemory = false
+    @State private var newMemoryContent = ""
+    @State private var newMemoryTags = ""
+    @State private var memoryPendingDeletionID: UUID?
     @State private var memorySimilarities: [UUID: Double] = [:]
     @State private var taskSummarySimilarities: [UUID: Double] = [:]
     @State private var searchTask: Task<Void, Never>?
@@ -124,6 +128,26 @@ struct MemoryEditorView: View {
         } message: {
             Text(editError ?? "")
         }
+        .confirmationDialog(
+            "Delete this memory?",
+            isPresented: Binding(
+                get: { memoryPendingDeletionID != nil },
+                set: { if !$0 { memoryPendingDeletionID = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let id = memoryPendingDeletionID {
+                    Task { await shared.deleteMemory(id: id) }
+                }
+                memoryPendingDeletionID = nil
+            }
+            Button("Cancel", role: .cancel) {
+                memoryPendingDeletionID = nil
+            }
+        } message: {
+            Text("This cannot be undone.")
+        }
     }
 
     // MARK: - Footer
@@ -234,6 +258,16 @@ struct MemoryEditorView: View {
             .opacity(showTaskSummaries ? 0 : 1)
             .disabled(showTaskSummaries)
 
+            if !showTaskSummaries {
+                Button {
+                    beginAddingMemory()
+                } label: {
+                    Label("Add Memory", systemImage: "plus")
+                }
+                .controlSize(.small)
+                .disabled(isAddingMemory || shared.memoryStore == nil)
+            }
+
             Spacer()
 
             TextField("Semantic search…", text: $searchText)
@@ -241,6 +275,13 @@ struct MemoryEditorView: View {
                 .frame(maxWidth: 250)
         }
         .padding(12)
+    }
+
+    private func beginAddingMemory() {
+        newMemoryContent = ""
+        newMemoryTags = ""
+        isAddingMemory = true
+        editingMemoryID = nil
     }
 
     // MARK: - Memory List
@@ -273,10 +314,11 @@ struct MemoryEditorView: View {
                 systemImage: "exclamationmark.triangle",
                 description: Text(error)
             )
-        } else if !searchText.isEmpty && !isSearching && filtered.isEmpty {
+        } else if !searchText.isEmpty && !isSearching && filtered.isEmpty && !isAddingMemory {
             // Only show "no matches" when the search has actually completed. While typing,
             // we keep showing stale results (or the full list on first search) so the UI
-            // doesn't blank out between keystrokes.
+            // doesn't blank out between keystrokes. Suppress while the composer is open
+            // so the user can see/save the new entry without dismissing the search first.
             ContentUnavailableView(
                 "No matches",
                 systemImage: "magnifyingglass",
@@ -288,13 +330,13 @@ struct MemoryEditorView: View {
                 systemImage: "play.circle",
                 description: Text("Start a session from any window's toolbar to load memories from disk.")
             )
-        } else if shared.storedMemories.isEmpty {
+        } else if shared.storedMemories.isEmpty && !isAddingMemory {
             ContentUnavailableView(
                 "No Memories Saved",
                 systemImage: "brain",
                 description: Text("Memories will appear here as they're saved by you or the agents.")
             )
-        } else if filterSource != nil && searchText.isEmpty && filtered.isEmpty {
+        } else if filterSource != nil && searchText.isEmpty && filtered.isEmpty && !isAddingMemory {
             ContentUnavailableView(
                 "No Matching Memories",
                 systemImage: "line.3.horizontal.decrease.circle",
@@ -302,6 +344,9 @@ struct MemoryEditorView: View {
             )
         } else {
             List {
+                if isAddingMemory {
+                    newMemoryRow
+                }
                 ForEach(filtered) { memory in
                     if editingMemoryID == memory.id {
                         editRow(memory: memory)
@@ -312,6 +357,60 @@ struct MemoryEditorView: View {
             }
             .listStyle(.inset(alternatesRowBackgrounds: true))
         }
+    }
+
+    /// Inline composer pinned to the top of the list while `isAddingMemory` is true.
+    /// Mirrors `editRow`'s shape so users get a consistent affordance for content + tags.
+    private var newMemoryRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("New Memory")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            TextEditor(text: $newMemoryContent)
+                .font(.body)
+                .frame(minHeight: 60, maxHeight: 120)
+                .border(Color.secondary.opacity(0.2))
+
+            LabeledContent("Tags") {
+                TextField("comma-separated tags", text: $newMemoryTags)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            HStack {
+                Button("Cancel") {
+                    isAddingMemory = false
+                    newMemoryContent = ""
+                    newMemoryTags = ""
+                }
+                .controlSize(.small)
+
+                Button("Save") {
+                    let trimmed = newMemoryContent.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let tags = newMemoryTags
+                        .split(separator: ",")
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty }
+                    Task {
+                        do {
+                            _ = try await shared.saveMemory(content: trimmed, tags: tags)
+                            isAddingMemory = false
+                            newMemoryContent = ""
+                            newMemoryTags = ""
+                        } catch {
+                            editError = "Failed to save memory: \(error.localizedDescription)"
+                        }
+                    }
+                }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+                .disabled(newMemoryContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(8)
+        .background(Color.accentColor.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     private func memoryRow(memory: MemoryEntry) -> some View {
@@ -395,7 +494,7 @@ struct MemoryEditorView: View {
                 .controlSize(.small)
 
                 Button("Delete") {
-                    Task { await shared.deleteMemory(id: memory.id) }
+                    memoryPendingDeletionID = memory.id
                 }
                 .controlSize(.small)
                 .foregroundStyle(.red)

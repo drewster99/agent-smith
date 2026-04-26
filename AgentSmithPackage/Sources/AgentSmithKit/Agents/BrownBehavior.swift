@@ -39,7 +39,8 @@ public enum BrownBehavior {
             GetTaskDetailsTool(),
             ListScriptableAppsTool(),
             GetAppScriptingSchemaTool(),
-            RunAppleScriptTool()
+            RunAppleScriptTool(),
+            CurrentTimeTool()
         ]
     }
 
@@ -47,6 +48,17 @@ public enum BrownBehavior {
     /// default is fine here.
     public static var toolNames: [String] {
         tools().map(\.name)
+    }
+
+    /// Markdown bullet list describing Brown's tool surface, suitable for inclusion in
+    /// Smith's system prompt so Smith only suggests tools Brown actually has. Built from
+    /// the same `tools()` list Brown uses, so the two cannot drift. Each line is
+    /// `- `tool_name`: <one-line summary>` — no parameter detail or safety boilerplate.
+    public static func smithFacingToolManifest() -> String {
+        tools().map { tool in
+            "- `\(tool.name)`: \(tool.smithFacingSummary)"
+        }
+        .joined(separator: "\n")
     }
 
     /// System prompt for Brown agents.

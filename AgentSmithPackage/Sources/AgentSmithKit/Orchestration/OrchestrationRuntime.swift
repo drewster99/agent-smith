@@ -862,11 +862,9 @@ public actor OrchestrationRuntime {
 
         // Pre-flight `gh auth status` so Brown sees verified GitHub auth state in his tool list
         // from turn one. Capturing once at spawn is sufficient — auth doesn't change mid-task.
+        // The snapshot lands inside `GhTool.toolDescription`; it is intentionally NOT posted to
+        // the channel so it does not clutter the user-visible transcript.
         let ghAuthSnapshot = await GhAuthChecker.authStatus()
-        await channel.post(ChannelMessage(
-            sender: .system,
-            content: "GitHub CLI auth pre-flight (captured for Brown):\n\(ghAuthSnapshot)"
-        ))
 
         let brownAgent = AgentActor(
             id: brownID,
