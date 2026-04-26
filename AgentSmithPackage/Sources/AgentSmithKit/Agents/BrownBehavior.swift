@@ -36,7 +36,10 @@ public enum BrownBehavior {
             GrepTool(),
             SaveMemoryTool(),
             SearchMemoryTool(),
-            GetTaskDetailsTool()
+            GetTaskDetailsTool(),
+            ListScriptableAppsTool(),
+            GetAppScriptingSchemaTool(),
+            RunAppleScriptTool()
         ]
     }
 

@@ -47,6 +47,68 @@ public struct InstalledApplication: Sendable, Hashable {
     }
 }
 
+/// Process-wide cache of the installed-application scan. Built lazily on first
+/// access so multiple tools share a single scan instead of each triggering a
+/// fresh disk walk.
+public actor InstalledApplicationsRegistry {
+    public static let shared = InstalledApplicationsRegistry()
+
+    private let scanner = InstalledApplicationsScanner()
+    private var cached: [InstalledApplication]?
+    private var indexByBundleID: [String: InstalledApplication] = [:]
+
+    public init() {}
+
+    /// Returns the cached scan, performing a fresh scan on first access.
+    public func all() async -> [InstalledApplication] {
+        if let cached { return cached }
+        let apps = await scanner.scan()
+        cached = apps
+        indexByBundleID = Dictionary(
+            apps.compactMap { app in app.bundleIdentifier.map { ($0, app) } },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return apps
+    }
+
+    /// Look up an app by exact bundle identifier (case-insensitive).
+    public func find(bundleID: String) async -> InstalledApplication? {
+        _ = await all()
+        if let exact = indexByBundleID[bundleID] { return exact }
+        let lower = bundleID.lowercased()
+        return indexByBundleID.first { $0.key.lowercased() == lower }?.value
+    }
+
+    /// Fuzzy match by bundle identifier or app filename. Substring, case-insensitive.
+    /// Returned entries are ranked: exact bundle-ID match first, then prefix
+    /// matches on app name, then any substring match.
+    public func find(matching query: String) async -> [InstalledApplication] {
+        let apps = await all()
+        let q = query.lowercased()
+        guard !q.isEmpty else { return apps }
+
+        var exact: [InstalledApplication] = []
+        var prefix: [InstalledApplication] = []
+        var contains: [InstalledApplication] = []
+
+        for app in apps {
+            let name = app.url.deletingPathExtension().lastPathComponent.lowercased()
+            let bid = app.bundleIdentifier?.lowercased() ?? ""
+            if bid == q || name == q { exact.append(app) }
+            else if name.hasPrefix(q) || bid.hasPrefix(q) { prefix.append(app) }
+            else if name.contains(q) || bid.contains(q) { contains.append(app) }
+        }
+        return exact + prefix + contains
+    }
+
+    /// Force a fresh disk scan, replacing the cache.
+    public func refresh() async {
+        cached = nil
+        indexByBundleID = [:]
+        _ = await all()
+    }
+}
+
 /// Enumerates `.app` bundles in every standard macOS Applications directory
 /// (`/Applications`, `~/Applications`, `/System/Applications`, the Cryptexes
 /// system-app paths, `Utilities`, etc.) by querying
