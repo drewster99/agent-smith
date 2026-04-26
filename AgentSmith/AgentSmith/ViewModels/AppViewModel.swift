@@ -150,6 +150,23 @@ final class AppViewModel {
             }
         }
 
+        // Auto-heal missing required-role assignments by picking a valid config from
+        // the catalog. Without this, deleting bundled "default smith / brown / jones"
+        // configs leaves every session permanently stuck on "No configuration assigned"
+        // because `defaultAgentAssignments` keeps pointing at the now-deleted bundled
+        // ids and the prune above wipes them on every launch. By falling forward onto
+        // any remaining valid catalog entry, new sessions and pruned-stale sessions
+        // both come up with a working assignment that the user can customize via the
+        // gear sheet (which clones-on-edit when shared across roles, so this never
+        // accidentally entangles roles together).
+        let validConfigs = shared.llmKit.configurations.filter(\.isValid)
+        if let fallback = validConfigs.first {
+            for role in AgentRole.requiredRoles where agentAssignments[role] == nil {
+                agentAssignments[role] = fallback.id
+                print("[AgentSmith] Auto-assigned \(role.rawValue) → \(fallback.name) (\(fallback.id)) in session \(session.name)")
+            }
+        }
+
         // Load message history for up-arrow recall (per-session).
         if let data = UserDefaults.standard.data(forKey: sessionHistoryKey),
            let history = try? JSONDecoder().decode([String].self, from: data) {
