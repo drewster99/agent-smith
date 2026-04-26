@@ -11,8 +11,62 @@ import Foundation
 /// already nulls stdin at the FileHandle level, but the `</dev/null` redirection inside the
 /// `bash -lc` invocation belts-and-suspenders the same protection through the shell's own
 /// rc-file processing.
-enum GhAuthChecker {
-    static func authStatus() async -> String {
+///
+/// The checker is an actor with a TTL cache so back-to-back Brown spawns don't each pay the
+/// 30s upper-bound latency of `gh auth status`. The default TTL is four hours — long enough
+/// to amortize the cost across a typical work session, short enough that auth changes are
+/// reflected within the same day. Callers can force a refresh via `invalidate()`.
+public actor GhAuthChecker {
+    /// How long a cached snapshot is considered fresh. Four hours covers a typical
+    /// session of back-to-back tasks while keeping auth state from going stale across days.
+    public static let cacheTTL: TimeInterval = 4 * 60 * 60
+
+    /// Process-wide shared instance. Constructed lazily; the actor isolation makes the
+    /// shared cache safe to read/write from concurrent Brown spawns.
+    public static let shared = GhAuthChecker()
+
+    private var cachedSnapshot: String?
+    private var cachedAt: Date?
+
+    public init() {}
+
+    /// Returns the current `gh auth status` snapshot, using the cached value if it is
+    /// younger than `cacheTTL`. Otherwise re-runs `gh auth status` and caches the result.
+    /// Always returns a string — runtime errors and timeouts produce a human-readable
+    /// fallback instead of throwing, so the tool description always has *something* to show.
+    public func authStatus() async -> String {
+        if let snapshot = cachedSnapshot, let cachedAt,
+           Date().timeIntervalSince(cachedAt) < Self.cacheTTL {
+            return snapshot
+        }
+        let fresh = await runGhAuthStatus()
+        cachedSnapshot = fresh
+        cachedAt = Date()
+        return fresh
+    }
+
+    /// Forces the next `authStatus()` call to re-run `gh auth status` instead of returning
+    /// a cached value. Intended for the future stale-snapshot recovery path: when a `gh`
+    /// tool call exits with auth-failure-shaped output, the tool can call this so the next
+    /// Brown spawn picks up reality.
+    public func invalidate() {
+        cachedSnapshot = nil
+        cachedAt = nil
+    }
+
+    /// Module-static convenience that delegates to `shared.authStatus()`. Preserves the
+    /// pre-cache call sites (`await GhAuthChecker.authStatus()`) without making them
+    /// reach into the actor explicitly.
+    public static func authStatus() async -> String {
+        await shared.authStatus()
+    }
+
+    /// Module-static convenience for `shared.invalidate()`.
+    public static func invalidate() async {
+        await shared.invalidate()
+    }
+
+    private func runGhAuthStatus() async -> String {
         do {
             let result = try await ProcessRunner.run(
                 executable: "/bin/bash",
