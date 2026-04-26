@@ -89,6 +89,10 @@ struct BehaviorFlagsEditorSheet: View {
                         .textSelection(.enabled)
                 }
                 Spacer()
+                Button("Cancel") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
                 Button("Done") {
                     save()
                     dismiss()
