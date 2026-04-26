@@ -136,8 +136,8 @@ public struct ToolContext: Sendable {
     /// Called with `true` when Jones begins a security evaluation LLM call, `false` when it completes.
     public let onJonesProcessingStateChange: @Sendable (Bool) -> Void
     /// Schedules a deferred wake-up. See `ScheduledWake` for the per-wake record. Returns
-    /// `.scheduled(wake)` or `.error(...)`.
-    public let scheduleWake: @Sendable (Date, String, UUID?, UUID?) async -> ScheduleWakeOutcome
+    /// `.scheduled(wake)` or `.error(...)`. Args: wakeAt, instructions, taskID, replacesID, recurrence.
+    public let scheduleWake: @Sendable (Date, String, UUID?, UUID?, Recurrence?) async -> ScheduleWakeOutcome
     /// Returns all currently-scheduled wakes for the calling agent (sorted by `wakeAt`).
     public let listScheduledWakes: @Sendable () async -> [ScheduledWake]
     /// Cancels a single wake by id. Returns true on success.
@@ -185,7 +185,7 @@ public struct ToolContext: Sendable {
         onSelfTerminate: @escaping @Sendable () async -> Void = {},
         onProcessingStateChange: @escaping @Sendable (Bool) -> Void = { _ in },
         onJonesProcessingStateChange: @escaping @Sendable (Bool) -> Void = { _ in },
-        scheduleWake: @escaping @Sendable (Date, String, UUID?, UUID?) async -> ScheduleWakeOutcome = { _, _, _, _ in .error("Scheduling not configured.") },
+        scheduleWake: @escaping @Sendable (Date, String, UUID?, UUID?, Recurrence?) async -> ScheduleWakeOutcome = { _, _, _, _, _ in .error("Scheduling not configured.") },
         listScheduledWakes: @escaping @Sendable () async -> [ScheduledWake] = { [] },
         cancelScheduledWake: @escaping @Sendable (UUID) async -> Bool = { _ in false },
         restartForNewTask: @escaping @Sendable (UUID) async -> Void = { _ in },

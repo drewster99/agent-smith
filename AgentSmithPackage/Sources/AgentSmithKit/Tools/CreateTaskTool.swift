@@ -2,10 +2,24 @@ import Foundation
 
 /// Allows Smith to create new tasks.
 ///
-/// Always creates the task as pending. Smith must call `run_task` to start it.
+/// Tasks default to `.pending`. When `scheduled_run_at` is supplied with a future time, the
+/// task is created with status `.scheduled` and a paired `schedule_task_action(action: run)`
+/// timer is auto-registered against the new task — the timer fires at `scheduled_run_at` and
+/// instructs Smith to call `run_task`. The auto-runner skips `.scheduled` tasks so this
+/// closes the previous "user expected fire-time, queue jumped ahead" race.
 public struct CreateTaskTool: AgentTool {
     public let name = "create_task"
-    public let toolDescription = "Create a new pending task. The task is always queued — call `run_task` to start it when ready. You can create multiple tasks before running any of them."
+    public let toolDescription = """
+        Create a new task. Tasks default to pending — call `run_task` to start when ready. \
+        \
+        Optional `scheduled_run_at`: an ISO-8601 timestamp at which the task should run. When \
+        set, the task is created with status `scheduled` and the auto-runner will not pick it \
+        up early; a timer is auto-scheduled to fire at that time and instruct you to call \
+        `run_task`. Do NOT call `schedule_task_action` separately when you've already passed \
+        `scheduled_run_at` — that would double-schedule the run. \
+        \
+        You can create multiple tasks before running any of them.
+        """
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
@@ -17,6 +31,10 @@ public struct CreateTaskTool: AgentTool {
             "description": .dictionary([
                 "type": .string("string"),
                 "description": .string("Detailed description of what needs to be done. This description should include (1) A detailed description of the goal or problem being solved, (2) A markdown-formatted step by step list of all the things that need to be done, including any relevant inputs, data files, or user directives, (3) The desired result/output of the task, (4) A brief list of verifications, tests, or other steps to be taken to confirm successful completion and a second section for success verification / things to test or double-check for completeness.")
+            ]),
+            "scheduled_run_at": .dictionary([
+                "type": .string("string"),
+                "description": .string("Optional ISO-8601 timestamp. When set and in the future, the task is created with status `scheduled` and a paired timer fires at that time to run it. Use when the user says \"do X at <time>\".")
             ])
         ]),
         "required": .array([.string("title"), .string("description")])
@@ -36,9 +54,28 @@ public struct CreateTaskTool: AgentTool {
             throw ToolCallError.missingRequiredArgument("description")
         }
 
+        var scheduledRunAt: Date?
+        if case .string(let isoString) = arguments["scheduled_run_at"] {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            var parsed = formatter.date(from: isoString)
+            if parsed == nil {
+                let lenient = ISO8601DateFormatter()
+                lenient.formatOptions = [.withInternetDateTime]
+                parsed = lenient.date(from: isoString)
+            }
+            guard let resolved = parsed else {
+                return .failure("Invalid scheduled_run_at: '\(isoString)' is not a valid ISO-8601 timestamp.")
+            }
+            if resolved <= Date().addingTimeInterval(5) {
+                return .failure("scheduled_run_at must be at least 5 seconds in the future. To run immediately, omit the field.")
+            }
+            scheduledRunAt = resolved
+        }
+
         // Refuse to create a duplicate of an existing active task with the same title.
         let existingTasks = await context.taskStore.allTasks()
-        let actionableStatuses: Set<AgentTask.Status> = [.pending, .running, .paused, .awaitingReview, .interrupted]
+        let actionableStatuses: Set<AgentTask.Status> = [.pending, .running, .paused, .awaitingReview, .interrupted, .scheduled]
         if let duplicate = existingTasks.first(where: {
             $0.disposition == .active && actionableStatuses.contains($0.status) && $0.title.caseInsensitiveCompare(title) == .orderedSame
         }) {
@@ -49,7 +86,11 @@ public struct CreateTaskTool: AgentTool {
                 """)
         }
 
-        let task = await context.taskStore.addTask(title: title, description: description)
+        let task = await context.taskStore.addTask(
+            title: title,
+            description: description,
+            scheduledRunAt: scheduledRunAt
+        )
 
         // Search semantic memory for relevant context to attach to this task.
         let searchQuery = title + " " + description
@@ -125,6 +166,36 @@ public struct CreateTaskTool: AgentTool {
             metadata: meta
         ))
 
+        // If the caller asked for a scheduled run, register the matching wake immediately so
+        // the user-visible chain is one tool call → one timer + one task.
+        if let scheduledRunAt {
+            let imperative = TaskActionKind.run.imperativeText(
+                for: task.copyWithScheduledRunAt(scheduledRunAt),
+                extra: nil
+            )
+            let outcome = await context.scheduleWake(scheduledRunAt, imperative, task.id, nil, nil)
+            switch outcome {
+            case .scheduled(let wake):
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+                return .success("Task created (ID: \(task.id), title: \"\(title)\") in scheduled status. Will fire at \(formatter.string(from: scheduledRunAt)) (timer id \(wake.id.uuidString)).\(contextNote)")
+            case .error(let message):
+                return .success("Task created (ID: \(task.id), title: \"\(title)\") but timer registration failed: \(message). Re-schedule via schedule_task_action(task_id: \(task.id.uuidString), action: \"run\").")
+            }
+        }
+
         return .success("Task created (ID: \(task.id), title: \"\(title)\").\(contextNote) Call `run_task` with this task ID to start it.")
+    }
+}
+
+private extension AgentTask {
+    /// Returns a copy with the supplied `scheduledRunAt` — used when assembling imperative
+    /// strings for tasks that were just created (the local `task` variable from
+    /// `addTask` doesn't include the scheduled time the way the persisted record does, but
+    /// this is purely for display).
+    func copyWithScheduledRunAt(_ date: Date) -> AgentTask {
+        var copy = self
+        copy.scheduledRunAt = date
+        return copy
     }
 }

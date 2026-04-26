@@ -60,6 +60,9 @@ public actor OrchestrationRuntime {
     private let autoRunInterruptedTasks: Bool
     /// Persistent token usage tracking across all agents.
     public let usageStore: UsageStore
+    /// Append-only log of timer lifecycle events. Populated from `AgentActor`'s timer
+    /// callbacks; surfaced in the View → Timers history pane.
+    public let timerEventLog: TimerEventLog
     private var monitoringTimer: MonitoringTimer?
     private var powerManager: PowerAssertionManager?
     /// Maps each agent ID to its channel subscription IDs for proper cleanup.
@@ -85,6 +88,22 @@ public actor OrchestrationRuntime {
     private var onEvaluationRecorded: (@Sendable (EvaluationRecord) -> Void)?
     /// Callback fired when an agent's conversation history changes, for live inspector updates.
     private var onContextChanged: (@Sendable (AgentRole, [LLMMessage]) -> Void)?
+    /// Optional hook the app layer wires to surface timer events as system messages in the
+    /// channel transcript when the user has the Debug → Show Timer Activity toggle on. Async
+    /// because the app layer may need to hop to MainActor to read the user-defaults flag.
+    private var onTimerEventForChannel: (@Sendable (TimerEvent) async -> Void)?
+
+    public func setOnTimerEventForChannel(_ handler: @escaping @Sendable (TimerEvent) async -> Void) {
+        onTimerEventForChannel = handler
+    }
+
+    public func currentScheduledWakes() async -> [ScheduledWake] {
+        await smith?.listScheduledWakes() ?? []
+    }
+
+    public func cancelScheduledWake(id: UUID) async -> Bool {
+        await smith?.cancelWake(id: id) ?? false
+    }
 
     public init(
         providers: [AgentRole: any LLMProvider],
@@ -107,6 +126,7 @@ public actor OrchestrationRuntime {
         self.autoAdvanceEnabled = autoAdvanceEnabled
         self.autoRunInterruptedTasks = autoRunInterruptedTasks
         self.usageStore = usageStore
+        self.timerEventLog = TimerEventLog()
     }
 
     /// Updates the auto-advance setting at runtime so it takes effect immediately.
@@ -325,10 +345,15 @@ public actor OrchestrationRuntime {
         }
         // Brown-activity digest assembler: pulls recent channel messages since the cutoff and
         // formats a brief summary that Smith can react to without polling. Returns nil when
-        // there's nothing fresh to report so we suppress the wake entirely.
+        // there's no Brown alive to summarize OR when the window contains no fresh activity —
+        // either way the digest is suppressed. Gating on Brown's presence avoids the misleading
+        // "Brown made 0 tool calls — likely deep in tool work or stuck" message that fires when
+        // no Brown exists at all.
         let digestChannel = channel
-        await smithAgent.setSmithDigestProvider { [weak digestChannel] since in
-            guard let digestChannel else { return nil }
+        await smithAgent.setSmithDigestProvider { [weak self, weak digestChannel] since in
+            guard let self, let digestChannel else { return nil }
+            let brownAlive = await self.agentIDForRole(.brown) != nil
+            guard brownAlive else { return nil }
             return await Self.assembleBrownActivityDigest(channel: digestChannel, since: since)
         }
         // Cancel any task-scoped wakes when the task transitions to a terminal status the first time.
@@ -336,6 +361,34 @@ public actor OrchestrationRuntime {
         await taskStore.setOnTaskTerminated { taskID in
             Task { await scheduler.cancelWakesForTask(taskID) }
         }
+
+        // Wire timer lifecycle callbacks from Smith's actor into the runtime's event log so
+        // the timers UI / history view can render scheduled / fired / cancelled rows.
+        let eventLog = timerEventLog
+        let timerSurfaceContext = onTimerEventForChannel
+        await smithAgent.setTimerCallbacks(
+            onScheduled: { wake in
+                Task {
+                    let event = TimerEvent.scheduled(from: wake)
+                    await eventLog.record(event)
+                    await timerSurfaceContext?(event)
+                }
+            },
+            onFired: { primary, all in
+                Task {
+                    let event = TimerEvent.fired(primary: primary, batchSize: all.count)
+                    await eventLog.record(event)
+                    await timerSurfaceContext?(event)
+                }
+            },
+            onCancelled: { wake, cause in
+                Task {
+                    let event = TimerEvent.cancelled(wake: wake, cause: cause)
+                    await eventLog.record(event)
+                    await timerSurfaceContext?(event)
+                }
+            }
+        )
 
         smith = smithAgent
         agents[id] = smithAgent
@@ -463,12 +516,33 @@ public actor OrchestrationRuntime {
             let interruptedTasks = activeTasks.filter { $0.status == .interrupted }
             let pendingTasks = activeTasks.filter { $0.status == .pending }
             let pausedTasks = activeTasks.filter { $0.status == .paused }
+            let scheduledTasks = activeTasks.filter { $0.status == .scheduled }
             let recentFailed = Array(
                 activeTasks
                     .filter { $0.status == .failed }
                     .sorted { $0.updatedAt > $1.updatedAt }
                     .prefix(5)
             )
+
+            // Re-arm scheduled-task wakes that were lost when the previous run quit. For each
+            // .scheduled task: if its `scheduledRunAt` is still in the future, register a wake
+            // bound to it. If the time has elapsed during downtime, promote the task to .pending
+            // and let it surface in the cold-launch instruction below — the user will see it as a
+            // pending task and can run it (or auto-advance picks it up).
+            let nowAtBoot = Date()
+            for task in scheduledTasks {
+                guard let fireAt = task.scheduledRunAt else { continue }
+                if fireAt > nowAtBoot {
+                    let imperative = TaskActionKind.run.imperativeText(for: task, extra: nil)
+                    _ = await smithAgent.scheduleWake(
+                        wakeAt: fireAt,
+                        instructions: imperative,
+                        taskID: task.id
+                    )
+                } else {
+                    await taskStore.promoteScheduledToPending(id: task.id)
+                }
+            }
 
             // If autoRunInterruptedTasks is enabled and no awaitingReview task needs attention first,
             // auto-start the first interrupted task by spawning Brown and delivering the briefing.
@@ -570,6 +644,20 @@ public actor OrchestrationRuntime {
                     }
                     .joined(separator: "\n")
                 parts.append("The following task(s) are paused:\n\(list)")
+            }
+
+            if !scheduledTasks.isEmpty {
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+                let list = scheduledTasks
+                    .compactMap { task -> String? in
+                        guard let fireAt = task.scheduledRunAt, fireAt > nowAtBoot else { return nil }
+                        return "- \(task.title) (id: \(task.id.uuidString)) — scheduled to run at \(formatter.string(from: fireAt))"
+                    }
+                    .joined(separator: "\n")
+                if !list.isEmpty {
+                    parts.append("The following task(s) are scheduled to run at a specific time. The runtime will fire a timer at the appointed time and instruct you to call `run_task`. Do NOT call `run_task` on these early unless the user asks:\n\(list)")
+                }
             }
 
             if !recentFailed.isEmpty {
@@ -1038,13 +1126,14 @@ public actor OrchestrationRuntime {
                 guard let self else { return }
                 Task { await self.notifyProcessingStateChange(role: .jones, isProcessing: isProcessing) }
             },
-            scheduleWake: { [followUpScheduler] wakeAt, reason, taskID, replacesID in
+            scheduleWake: { [followUpScheduler] wakeAt, instructions, taskID, replacesID, recurrence in
                 guard let followUpScheduler else { return .error("Scheduler not available.") }
                 return await followUpScheduler.scheduleWake(
                     wakeAt: wakeAt,
-                    reason: reason,
+                    instructions: instructions,
                     taskID: taskID,
-                    replacesID: replacesID
+                    replacesID: replacesID,
+                    recurrence: recurrence
                 )
             },
             listScheduledWakes: { [followUpScheduler] in

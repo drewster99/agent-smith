@@ -31,13 +31,39 @@ public actor TaskStore {
     }
 
     /// Adds a new task and returns it. Also archives any completed tasks older than 4 hours.
+    /// When `scheduledRunAt` is non-nil and in the future the new task is created with status
+    /// `.scheduled` so the auto-runner skips it; the runtime should pair the call with a
+    /// matching wake bound to the new task's id.
     @discardableResult
-    public func addTask(title: String, description: String) -> AgentTask {
+    public func addTask(
+        title: String,
+        description: String,
+        scheduledRunAt: Date? = nil
+    ) -> AgentTask {
         archiveStaleCompleted()
-        let task = AgentTask(title: title, description: description)
+        let initialStatus: AgentTask.Status = (scheduledRunAt.map { $0 > Date() } ?? false) ? .scheduled : .pending
+        let task = AgentTask(
+            title: title,
+            description: description,
+            status: initialStatus,
+            scheduledRunAt: scheduledRunAt
+        )
         tasks[task.id] = task
         onChange?()
         return task
+    }
+
+    /// Promotes a `.scheduled` task to `.pending` so the queue (or `run_task`) can pick it up.
+    /// No-op when the task is missing, already non-`.scheduled`, or has a future scheduledRunAt
+    /// the caller didn't ask to bypass.
+    @discardableResult
+    public func promoteScheduledToPending(id: UUID) -> Bool {
+        guard var task = tasks[id], task.status == .scheduled else { return false }
+        task.status = .pending
+        task.updatedAt = Date()
+        tasks[id] = task
+        onChange?()
+        return true
     }
 
     /// Archives all active completed tasks whose `updatedAt` is older than `interval` seconds.

@@ -17,6 +17,11 @@ final class AppViewModel {
 
     var messages: [ChannelMessage] = []
     var tasks: [AgentTask] = []
+    /// Active scheduled wakes (timers) for this session. Refreshed via runtime callbacks
+    /// and on demand from the View → Timers window.
+    var activeTimers: [ScheduledWake] = []
+    /// Append-only timer history rows displayed in the Timers history pane. Newest first.
+    var timerHistory: [TimerEvent] = []
     /// Whether the user has restored the persisted history into the transcript.
     var hasRestoredHistory = false
     /// Number of messages loaded from disk at launch (available for restore).
@@ -246,6 +251,16 @@ final class AppViewModel {
             shared.startupError = msg
         }
 
+        // Load timer history (timer_events.json) for the Timers history pane. Failure here
+        // is non-fatal — an empty timer history just means "first run" or a corrupted file we
+        // can rebuild as new events come in.
+        do {
+            let savedEvents = try await persistenceManager.loadTimerEvents()
+            timerHistory = savedEvents.sorted { $0.timestamp > $1.timestamp }
+        } catch {
+            logger.error("Failed to load timer events: \(error.localizedDescription)")
+        }
+
         hasLoadedPersistedState = true
     }
 
@@ -402,7 +417,99 @@ final class AppViewModel {
             }
         }
 
+        // Restore prior timer history into the runtime's event log so subsequent appends
+        // join an existing series rather than start fresh on each launch.
+        let priorEvents = timerHistory
+        let eventLog = await newRuntime.timerEventLog
+        if !priorEvents.isEmpty {
+            await eventLog.restore(priorEvents)
+        }
+        await eventLog.setOnChange { [weak self, weak eventLog] in
+            Task { @MainActor [weak self, weak eventLog] in
+                guard let self, let log = eventLog else { return }
+                let snapshot = await log.allEvents()
+                self.timerHistory = snapshot
+                self.persistTimerEvents(snapshot)
+            }
+        }
+
+        // Surface timer events into the channel as system messages when the user has the
+        // Debug → Show Timer Activity toggle enabled.
+        await newRuntime.setOnTimerEventForChannel { [weak self] event in
+            await MainActor.run {
+                guard let self, self.shared.showTimerActivityInTranscript else { return }
+                let line = AppViewModel.transcriptLine(for: event)
+                Task { @MainActor [weak self] in
+                    guard let self, let runtime = self.runtime else { return }
+                    let channel = await runtime.channel
+                    await channel.post(ChannelMessage(
+                        sender: .system,
+                        content: line,
+                        metadata: [
+                            "messageKind": .string("timer_activity"),
+                            "timerEventID": .string(event.id.uuidString)
+                        ]
+                    ))
+                }
+            }
+        }
+
         await newRuntime.start()
+
+        // After Smith starts the active-timers list may already contain restored wakes for
+        // .scheduled tasks — refresh once so the View → Timers panel shows them.
+        await refreshActiveTimers()
+    }
+
+    /// Re-reads the currently-active wakes from Smith. Cheap; the agent stores the list
+    /// in-memory and there are typically only a handful at any time.
+    func refreshActiveTimers() async {
+        guard let runtime else {
+            activeTimers = []
+            return
+        }
+        activeTimers = await runtime.currentScheduledWakes()
+    }
+
+    /// Cancels a scheduled timer by id. Returns true if anything was cancelled.
+    @discardableResult
+    func cancelTimer(id: UUID) async -> Bool {
+        guard let runtime else { return false }
+        let cancelled = await runtime.cancelScheduledWake(id: id)
+        if cancelled { await refreshActiveTimers() }
+        return cancelled
+    }
+
+    /// Renders a single transcript line for a timer event when the Debug toggle is on.
+    private static func transcriptLine(for event: TimerEvent) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        let scheduledStr: String = {
+            guard let d = event.scheduledFireAt else { return "" }
+            return formatter.string(from: d)
+        }()
+        switch event.kind {
+        case .scheduled:
+            let recur = event.recurrenceDescription.map { " (\($0))" } ?? ""
+            let task = event.taskID.map { " task=\($0.uuidString.prefix(8))" } ?? ""
+            return "[Timer] scheduled at \(scheduledStr)\(task)\(recur): \(event.instructions)"
+        case .fired:
+            let coalesced = event.coalescedCount.map { " (+\($0 - 1) more)" } ?? ""
+            return "[Timer] fired at \(scheduledStr)\(coalesced): \(event.instructions)"
+        case .cancelled:
+            let cause = event.cancellationCause?.rawValue ?? "unknown"
+            return "[Timer] cancelled (\(cause)): \(event.instructions)"
+        }
+    }
+
+    private func persistTimerEvents(_ events: [TimerEvent]) {
+        Task.detached { [persistenceManager, logger] in
+            do {
+                try await persistenceManager.saveTimerEvents(events)
+            } catch {
+                logger.error("Failed to save timer events: \(error)")
+            }
+        }
     }
 
     /// Sends user input (with any pending attachments) to Smith.

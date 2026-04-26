@@ -25,6 +25,16 @@ final class SharedAppState {
         didSet { UserDefaults.standard.set(autoStartEnabled, forKey: "autoStartEnabled") }
     }
 
+    /// Debug toggle: when true, every timer scheduled/fired/cancelled event is mirrored to
+    /// the channel transcript as a `[Timer] …` system message so the user can see timer
+    /// activity inline. Defaults to false. Persisted via UserDefaults so the choice survives
+    /// app restart.
+    var showTimerActivityInTranscript: Bool = {
+        UserDefaults.standard.bool(forKey: "debugShowTimerActivityInTranscript")
+    }() {
+        didSet { UserDefaults.standard.set(showTimerActivityInTranscript, forKey: "debugShowTimerActivityInTranscript") }
+    }
+
     /// SwiftLLMKit instance managing providers, models, and configurations (shared catalog).
     let llmKit = LLMKitManager(
         appIdentifier: Bundle.main.bundleIdentifier ?? "com.agentsmith",

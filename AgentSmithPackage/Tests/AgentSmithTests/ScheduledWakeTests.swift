@@ -76,10 +76,10 @@ struct ScheduledWakeTests {
         let actor = Self.makeActor()
         let when = Date().addingTimeInterval(60)
         let outcome = await actor.scheduleWake(
-            wakeAt: when, reason: "ping me", taskID: nil, replacesID: nil
+            wakeAt: when, instructions: "ping me", taskID: nil, replacesID: nil
         )
         guard let wake = Self.scheduledOrFail(outcome, comment: "first scheduling should succeed") else { return }
-        #expect(wake.reason == "ping me")
+        #expect(wake.instructions == "ping me")
         #expect(wake.wakeAt == when)
         #expect(wake.taskID == nil)
     }
@@ -88,13 +88,13 @@ struct ScheduledWakeTests {
     func emptyReasonRejected() async {
         let actor = Self.makeActor()
         let outcome = await actor.scheduleWake(
-            wakeAt: Date().addingTimeInterval(60), reason: "", taskID: nil, replacesID: nil
+            wakeAt: Date().addingTimeInterval(60), instructions: "", taskID: nil, replacesID: nil
         )
         switch outcome {
         case .scheduled:
             Issue.record("empty reason should have been rejected")
         case .error(let message):
-            #expect(message.contains("reason"))
+            #expect(message.contains("instructions"))
         }
     }
 
@@ -102,7 +102,7 @@ struct ScheduledWakeTests {
     func whitespaceReasonRejected() async {
         let actor = Self.makeActor()
         let outcome = await actor.scheduleWake(
-            wakeAt: Date().addingTimeInterval(60), reason: "   \n\t  ", taskID: nil, replacesID: nil
+            wakeAt: Date().addingTimeInterval(60), instructions: "   \n\t  ", taskID: nil, replacesID: nil
         )
         switch outcome {
         case .scheduled:
@@ -120,13 +120,13 @@ struct ScheduledWakeTests {
         let baseTime = Date().addingTimeInterval(60)
 
         let outcome1 = await actor.scheduleWake(
-            wakeAt: baseTime, reason: "first", taskID: nil, replacesID: nil
+            wakeAt: baseTime, instructions: "first", taskID: nil, replacesID: nil
         )
         let outcome2 = await actor.scheduleWake(
-            wakeAt: baseTime.addingTimeInterval(5), reason: "second", taskID: nil, replacesID: nil
+            wakeAt: baseTime.addingTimeInterval(5), instructions: "second", taskID: nil, replacesID: nil
         )
         let outcome3 = await actor.scheduleWake(
-            wakeAt: baseTime.addingTimeInterval(30), reason: "third", taskID: nil, replacesID: nil
+            wakeAt: baseTime.addingTimeInterval(30), instructions: "third", taskID: nil, replacesID: nil
         )
         _ = Self.scheduledOrFail(outcome1, comment: "wake 1")
         _ = Self.scheduledOrFail(outcome2, comment: "wake 2 (5s later)")
@@ -135,9 +135,9 @@ struct ScheduledWakeTests {
         let listed = await actor.listScheduledWakes()
         #expect(listed.count == 3)
         // listScheduledWakes returns in ascending wakeAt order.
-        #expect(listed[0].reason == "first")
-        #expect(listed[1].reason == "second")
-        #expect(listed[2].reason == "third")
+        #expect(listed[0].instructions == "first")
+        #expect(listed[1].instructions == "second")
+        #expect(listed[2].instructions == "third")
     }
 
     @Test("wakes scheduled at the exact same time both stick")
@@ -145,8 +145,8 @@ struct ScheduledWakeTests {
         let actor = Self.makeActor()
         let when = Date().addingTimeInterval(120)
 
-        let r1 = await actor.scheduleWake(wakeAt: when, reason: "a", taskID: nil, replacesID: nil)
-        let r2 = await actor.scheduleWake(wakeAt: when, reason: "b", taskID: nil, replacesID: nil)
+        let r1 = await actor.scheduleWake(wakeAt: when, instructions: "a", taskID: nil, replacesID: nil)
+        let r2 = await actor.scheduleWake(wakeAt: when, instructions: "b", taskID: nil, replacesID: nil)
         _ = Self.scheduledOrFail(r1, comment: "wake at time")
         _ = Self.scheduledOrFail(r2, comment: "second wake at same time")
 
@@ -160,18 +160,18 @@ struct ScheduledWakeTests {
     func replacesRemovesPriorWake() async {
         let actor = Self.makeActor()
         let firstOutcome = await actor.scheduleWake(
-            wakeAt: Date().addingTimeInterval(60), reason: "old reason", taskID: nil, replacesID: nil
+            wakeAt: Date().addingTimeInterval(60), instructions: "old reason", taskID: nil, replacesID: nil
         )
         guard let firstWake = Self.scheduledOrFail(firstOutcome, comment: "initial") else { return }
 
         let secondOutcome = await actor.scheduleWake(
-            wakeAt: Date().addingTimeInterval(120), reason: "new reason", taskID: nil, replacesID: firstWake.id
+            wakeAt: Date().addingTimeInterval(120), instructions: "new reason", taskID: nil, replacesID: firstWake.id
         )
         _ = Self.scheduledOrFail(secondOutcome, comment: "replacement")
 
         let listed = await actor.listScheduledWakes()
         #expect(listed.count == 1)
-        #expect(listed.first?.reason == "new reason")
+        #expect(listed.first?.instructions == "new reason")
         #expect(listed.contains { $0.id == firstWake.id } == false)
     }
 
@@ -180,7 +180,7 @@ struct ScheduledWakeTests {
         let actor = Self.makeActor()
         let outcome = await actor.scheduleWake(
             wakeAt: Date().addingTimeInterval(60),
-            reason: "fresh",
+            instructions: "fresh",
             taskID: nil,
             replacesID: UUID()
         )
@@ -195,7 +195,7 @@ struct ScheduledWakeTests {
     func cancelWakeReturnsTrueOnce() async {
         let actor = Self.makeActor()
         let outcome = await actor.scheduleWake(
-            wakeAt: Date().addingTimeInterval(60), reason: "x", taskID: nil, replacesID: nil
+            wakeAt: Date().addingTimeInterval(60), instructions: "x", taskID: nil, replacesID: nil
         )
         guard let wake = Self.scheduledOrFail(outcome, comment: "set up") else { return }
 
@@ -209,7 +209,7 @@ struct ScheduledWakeTests {
     func cancelUnknownIdReturnsFalse() async {
         let actor = Self.makeActor()
         let kept = await actor.scheduleWake(
-            wakeAt: Date().addingTimeInterval(60), reason: "kept", taskID: nil, replacesID: nil
+            wakeAt: Date().addingTimeInterval(60), instructions: "kept", taskID: nil, replacesID: nil
         )
         _ = Self.scheduledOrFail(kept, comment: "kept wake")
 
@@ -226,16 +226,16 @@ struct ScheduledWakeTests {
         let taskB = UUID()
 
         let a1 = await actor.scheduleWake(
-            wakeAt: Date().addingTimeInterval(30), reason: "a-1", taskID: taskA, replacesID: nil
+            wakeAt: Date().addingTimeInterval(30), instructions: "a-1", taskID: taskA, replacesID: nil
         )
         let a2 = await actor.scheduleWake(
-            wakeAt: Date().addingTimeInterval(60), reason: "a-2", taskID: taskA, replacesID: nil
+            wakeAt: Date().addingTimeInterval(60), instructions: "a-2", taskID: taskA, replacesID: nil
         )
         let b1 = await actor.scheduleWake(
-            wakeAt: Date().addingTimeInterval(45), reason: "b-1", taskID: taskB, replacesID: nil
+            wakeAt: Date().addingTimeInterval(45), instructions: "b-1", taskID: taskB, replacesID: nil
         )
         let untagged = await actor.scheduleWake(
-            wakeAt: Date().addingTimeInterval(90), reason: "u", taskID: nil, replacesID: nil
+            wakeAt: Date().addingTimeInterval(90), instructions: "u", taskID: nil, replacesID: nil
         )
         guard let aw1 = Self.scheduledOrFail(a1, comment: "a-1"),
               let aw2 = Self.scheduledOrFail(a2, comment: "a-2"),
@@ -250,8 +250,8 @@ struct ScheduledWakeTests {
         #expect(listedIDs.contains(aw1.id) == false)
         #expect(listedIDs.contains(aw2.id) == false)
         #expect(listed.count == 2)
-        #expect(listed.contains { $0.reason == "b-1" })
-        #expect(listed.contains { $0.reason == "u" })
+        #expect(listed.contains { $0.instructions == "b-1" })
+        #expect(listed.contains { $0.instructions == "u" })
     }
 
     @Test("cancelWakesForTask on a task with no wakes returns empty")
@@ -268,14 +268,14 @@ struct ScheduledWakeTests {
         let actor = Self.makeActor()
 
         // Schedule out-of-order: 60s, 10s, 120s, 30s.
-        let r1 = await actor.scheduleWake(wakeAt: Date().addingTimeInterval(60),  reason: "60",  taskID: nil, replacesID: nil)
-        let r2 = await actor.scheduleWake(wakeAt: Date().addingTimeInterval(10),  reason: "10",  taskID: nil, replacesID: nil)
-        let r3 = await actor.scheduleWake(wakeAt: Date().addingTimeInterval(120), reason: "120", taskID: nil, replacesID: nil)
-        let r4 = await actor.scheduleWake(wakeAt: Date().addingTimeInterval(30),  reason: "30",  taskID: nil, replacesID: nil)
+        let r1 = await actor.scheduleWake(wakeAt: Date().addingTimeInterval(60),  instructions: "60",  taskID: nil, replacesID: nil)
+        let r2 = await actor.scheduleWake(wakeAt: Date().addingTimeInterval(10),  instructions: "10",  taskID: nil, replacesID: nil)
+        let r3 = await actor.scheduleWake(wakeAt: Date().addingTimeInterval(120), instructions: "120", taskID: nil, replacesID: nil)
+        let r4 = await actor.scheduleWake(wakeAt: Date().addingTimeInterval(30),  instructions: "30",  taskID: nil, replacesID: nil)
         _ = (r1, r2, r3, r4)
 
         let listed = await actor.listScheduledWakes()
-        let reasons = listed.map { $0.reason }
+        let reasons = listed.map { $0.instructions }
         #expect(reasons == ["10", "30", "60", "120"])
     }
 }

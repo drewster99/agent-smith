@@ -269,7 +269,7 @@ private struct ActiveTaskRow: View {
             case .awaitingReview:
                 EmptyView()
 
-            case .pending, .paused, .interrupted:
+            case .pending, .paused, .interrupted, .scheduled:
                 Button(action: { Task { await viewModel.archiveTask(id: task.id) } }, label: {
                     Label("Archive", systemImage: "archivebox")
                 })

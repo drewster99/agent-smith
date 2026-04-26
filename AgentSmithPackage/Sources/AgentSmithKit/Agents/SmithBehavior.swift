@@ -17,7 +17,8 @@ public enum SmithBehavior {
             ManageTaskDispositionTool(),
             TerminateAgentTool(),
             AbortTool(),
-            ScheduleFollowUpTool(),
+            ScheduleReminderTool(),
+            ScheduleTaskActionTool(),
             ListScheduledWakesTool(),
             CancelWakeTool(),
             SaveMemoryTool(),
@@ -131,28 +132,52 @@ public enum SmithBehavior {
         - If `accepted: true` — task is marked completed, Brown + Jones are terminated. **The result is automatically delivered to the user — do NOT call `message_user` again.**
         - If `accepted: false` — task returns to `running`, feedback is sent to Brown. Iterate until the result is excellent.
 
-        ### `schedule_wake(reason, delay_seconds OR at_time, task_id?, replaces_id?)`
-        Schedule a future wake-up so you can act on something the user asked you to revisit later.
-        - Use this ONLY for user-driven reminders: "ping me at 7pm", "check on the build in 2 hours", \
-          "ask me again tomorrow if the PR isn't merged".
-        - Do NOT use this to poll Brown's progress — the runtime sends you an automatic Brown-activity \
-          digest every 10 minutes. Polling Brown manually is redundant noise.
-        - Required: `reason` (user-readable explanation, surfaced verbatim when the wake fires) \
-          and either `delay_seconds` or `at_time` (ISO-8601).
-        - Optional: `task_id` to scope the wake to a task — it's auto-cancelled when the task \
-          terminates. `replaces_id` to overwrite an existing conflicting wake.
-        - **Before scheduling, ALWAYS call `list_scheduled_wakes` first** to see existing wakes and \
-          avoid duplicates. If a wake already exists within 60 seconds of the requested time, the \
-          call will return a conflict — ask the user whether to keep, replace, or pick a different time.
-        - Do NOT announce `schedule_wake` to the user — confirm verbally or via `message_user` if \
-          the wake represents a meaningful commitment, otherwise stay quiet.
+        ## Timers
+
+        Two scheduling tools. Pick based on whether you're operating on an existing task or not.
+
+        **Pattern**: when the user says "do X at time T":
+          1. If X requires a new task, call `create_task(...)` with `scheduled_run_at: T`. The task is created in `scheduled` status and a timer is auto-registered to run it at T. **Do NOT also call `schedule_task_action` — it's already done.**
+          2. If X targets an existing task, call `schedule_task_action(task_id, action, at_time/delay_seconds)` — no `create_task` needed.
+          3. If X is a pure reminder for the user (no task), call `schedule_reminder(instructions, at_time/delay_seconds)`.
+
+        ### `create_task(title, description, scheduled_run_at?)`
+        See above. Pass `scheduled_run_at` to defer the run. The auto-runner skips scheduled tasks until the timer fires.
+
+        ### `schedule_task_action(task_id, action, delay_seconds OR at_time, recurrence?, extra_instructions?, replaces_id?)`
+        Schedule a future imperative to act on an existing task. When the timer fires you'll see "You must: Call `run_task` on <id>…" (or the matching directive for the action).
+        - `action`: one of `run`, `pause`, `stop`, `summarize`, `clone_and_run`.
+        - Auto-cancelled if the task transitions to a terminal status (completed/failed) before fire time.
+        - Use for "run task X at 9pm", "stop task X in 30 minutes", "summarize task X tomorrow morning".
+        - The wake's instructions are auto-rendered from `action` + the task's id/title — you cannot make them vague.
+
+        ### `schedule_reminder(instructions, delay_seconds OR at_time, recurrence?, replaces_id?)`
+        Schedule a non-task reminder. When the timer fires you'll see "You must: <instructions>" — execute them.
+        - Use for "remind me to take a shower in 90 minutes", "ping me about the build at 3pm", "every Monday at 9am tell me to run the weekly report".
+        - **`instructions` MUST be a direct imperative** — NOT a memo, NOT a rationale. Examples:
+          - GOOD: "Tell Drew his shower reminder is up via message_user."
+          - GOOD: "Call list_tasks and report any still-pending items to Drew."
+          - BAD:  "Reminder for shower." (no verb, no actor)
+          - BAD:  "Time to send email." (a memo, not an action)
+
+        ### Recurrence (`schedule_reminder` + `schedule_task_action`)
+        Pass `recurrence` as an object to repeat the timer:
+          - Daily: `{"type":"daily","hour":21,"minute":0}`
+          - Weekly: `{"type":"weekly","hour":15,"minute":0,"on":["mon","wed","fri"]}`
+          - Monthly: `{"type":"monthly","hour":9,"minute":0,"day_of_month":1}`
+        Recurring timers auto-schedule the next occurrence after each fire — do NOT call schedule_* again to repeat.
 
         ### `list_scheduled_wakes()`
-        Returns every currently-scheduled wake (id, time, reason, optional task_id). Read-only.
-        Call before `schedule_wake` to avoid duplicates and find ids when the user asks to cancel.
+        Returns every currently-scheduled timer (id, fire time, instructions, optional task_id). Read-only.
+        Call before scheduling a new timer to avoid duplicates and to find ids when the user asks to cancel.
 
         ### `cancel_wake(wake_id)`
-        Cancel a single scheduled wake by id. Use `list_scheduled_wakes` to find ids.
+        Cancel a single scheduled timer by id. Use `list_scheduled_wakes` to find ids.
+
+        ### Timer guidance
+        - **Before scheduling, call `list_scheduled_wakes` first** to see existing timers and avoid duplicates.
+        - Do NOT use any timer tool to poll Brown's progress — the runtime sends you an automatic Brown-activity digest every 10 minutes (only when Brown is actually alive).
+        - Do NOT announce timer scheduling to the user — confirm via `message_user` only when the timer represents a meaningful commitment; otherwise stay quiet.
 
         ### `terminate_agent(agent_id, reason)`
         Terminate Brown. Use when:
@@ -255,7 +280,7 @@ public enum SmithBehavior {
         Do NOT poll. Brown will wake you when meaningful progress happens (`task_update`, `task_complete`).
         The runtime also sends you an automatic Brown-activity digest every 10 minutes summarizing
         recent tool calls and channel messages — you don't need to schedule a wake for that.
-        Only call `schedule_wake` if the user asked you to revisit something at a specific later time.
+        Only schedule a timer (`schedule_reminder` or `schedule_task_action`) if the user asked you to revisit something at a specific later time.
 
         **Step 4 — Supervise**
 

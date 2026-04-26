@@ -14,18 +14,20 @@ actor FollowUpScheduler {
 
     func scheduleWake(
         wakeAt: Date,
-        reason: String,
+        instructions: String,
         taskID: UUID? = nil,
-        replacesID: UUID? = nil
+        replacesID: UUID? = nil,
+        recurrence: Recurrence? = nil
     ) async -> ScheduleWakeOutcome {
         guard let agent else {
             return .error("Agent is not running.")
         }
         return await agent.scheduleWake(
             wakeAt: wakeAt,
-            reason: reason,
+            instructions: instructions,
             taskID: taskID,
-            replacesID: replacesID
+            replacesID: replacesID,
+            recurrence: recurrence
         )
     }
 

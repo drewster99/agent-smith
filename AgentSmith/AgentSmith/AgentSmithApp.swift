@@ -69,6 +69,22 @@ struct AgentSmithApp: App {
                     openWindow(id: "spending-dashboard")
                 }
                 .keyboardShortcut("4", modifiers: .command)
+
+                Button("Timers") {
+                    if let id = shared.focusedSessionID {
+                        openWindow(id: "timers", value: id)
+                    } else if let first = sessionManager.sessions.first {
+                        openWindow(id: "timers", value: first.id)
+                    }
+                }
+                .keyboardShortcut("t", modifiers: [.command, .option])
+                .disabled(sessionManager.sessions.isEmpty)
+            }
+            CommandMenu("Debug") {
+                Toggle("Show Timer Activity in Transcript", isOn: Binding(
+                    get: { shared.showTimerActivityInTranscript },
+                    set: { shared.showTimerActivityInTranscript = $0 }
+                ))
             }
         }
 
@@ -107,6 +123,19 @@ struct AgentSmithApp: App {
             SpendingDashboardView(shared: shared)
         }
         .defaultSize(width: 900, height: 800)
+
+        WindowGroup("Timers", id: "timers", for: UUID.self) { $sessionID in
+            if let id = sessionID, let vm = sessionManager.viewModel(for: id) {
+                TimersWindow(viewModel: vm)
+            } else {
+                ContentUnavailableView(
+                    "Session Closed",
+                    systemImage: "clock.badge.exclamationmark",
+                    description: Text("Open a session and try again.")
+                )
+            }
+        }
+        .defaultSize(width: 720, height: 520)
 
         Settings {
             SettingsView(shared: shared, sessionManager: sessionManager)

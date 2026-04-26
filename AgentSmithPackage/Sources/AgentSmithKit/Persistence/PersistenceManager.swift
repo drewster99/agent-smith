@@ -140,6 +140,22 @@ public actor PersistenceManager {
         return try JSONDecoder().decode([AgentTask].self, from: data)
     }
 
+    // MARK: - Timer Events (per-session)
+
+    public func saveTimerEvents(_ events: [TimerEvent]) throws {
+        try ensureDirectories()
+        let data = try JSONEncoder().encode(events)
+        let url = sessionDirectory.appendingPathComponent("timer_events.json")
+        try data.write(to: url, options: .atomic)
+    }
+
+    public func loadTimerEvents() throws -> [TimerEvent] {
+        let url = sessionDirectory.appendingPathComponent("timer_events.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode([TimerEvent].self, from: data)
+    }
+
     // MARK: - Memories (shared)
 
     public func saveMemories(_ memories: [MemoryEntry]) throws {

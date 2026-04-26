@@ -31,6 +31,10 @@ public struct AgentTask: Identifiable, Codable, Sendable {
     public var relevantMemories: [RelevantMemory]?
     /// Relevant prior task summaries retrieved at task creation.
     public var relevantPriorTasks: [RelevantPriorTask]?
+    /// When set, the task is held in `.scheduled` status (or `.pending` after the time
+    /// arrives) and will not be auto-run by the queue until this date passes. The runtime
+    /// schedules a matching wake bound to `id` so Smith is notified at fire time.
+    public var scheduledRunAt: Date?
 
     /// A single progress update recorded on a task.
     public struct TaskUpdate: Codable, Sendable {
@@ -55,13 +59,19 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         case awaitingReview
         /// The task was running when the app was interrupted (crash or force-quit).
         case interrupted
+        /// The task is queued with a future `scheduledRunAt`. The auto-runner skips these,
+        /// and `run_task` refuses to start them until the runtime promotes the task to
+        /// `.pending` at fire time.
+        case scheduled
 
         /// Whether this status represents work that is actively running — prevents archiving or deletion.
         public var isInProgress: Bool {
             self == .running || self == .paused || self == .awaitingReview
         }
 
-        /// Whether this status allows `run_task` to start execution.
+        /// Whether this status allows `run_task` to start execution. `.scheduled` is
+        /// deliberately excluded — calling `run_task` on a scheduled task before its fire
+        /// time should be an explicit override, not a silent advance.
         public var isRunnable: Bool {
             self == .pending || self == .paused || self == .interrupted
         }
@@ -94,7 +104,8 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         lastBrownContext: String? = nil,
         summary: String? = nil,
         relevantMemories: [RelevantMemory]? = nil,
-        relevantPriorTasks: [RelevantPriorTask]? = nil
+        relevantPriorTasks: [RelevantPriorTask]? = nil,
+        scheduledRunAt: Date? = nil
     ) {
         self.id = id
         self.title = title
@@ -114,12 +125,13 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         self.summary = summary
         self.relevantMemories = relevantMemories
         self.relevantPriorTasks = relevantPriorTasks
+        self.scheduledRunAt = scheduledRunAt
     }
 
     // MARK: - Codable (backward-compatible with persisted data lacking `disposition`)
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt, startedAt, completedAt, updates, acknowledgmentCount, lastBrownContext, summary, relevantMemories, relevantPriorTasks
+        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt, startedAt, completedAt, updates, acknowledgmentCount, lastBrownContext, summary, relevantMemories, relevantPriorTasks, scheduledRunAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -142,6 +154,7 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         summary = try c.decodeIfPresent(String.self, forKey: .summary)
         relevantMemories = try c.decodeIfPresent([RelevantMemory].self, forKey: .relevantMemories)
         relevantPriorTasks = try c.decodeIfPresent([RelevantPriorTask].self, forKey: .relevantPriorTasks)
+        scheduledRunAt = try c.decodeIfPresent(Date.self, forKey: .scheduledRunAt)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -168,5 +181,6 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         try c.encodeIfPresent(summary, forKey: .summary)
         try c.encodeIfPresent(relevantMemories, forKey: .relevantMemories)
         try c.encodeIfPresent(relevantPriorTasks, forKey: .relevantPriorTasks)
+        try c.encodeIfPresent(scheduledRunAt, forKey: .scheduledRunAt)
     }
 }

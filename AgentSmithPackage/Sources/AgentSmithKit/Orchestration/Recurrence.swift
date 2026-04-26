@@ -1,0 +1,135 @@
+import Foundation
+
+/// Recurrence pattern attached to a `ScheduledWake`. When a recurring wake fires, the
+/// runtime computes the next occurrence via `nextOccurrence(after:)` and schedules a fresh
+/// wake with the same instructions. Three patterns cover the common use cases ("every day
+/// at 9pm", "every Mon/Wed/Fri at 3pm", "the 1st of every month at 9am") without forcing
+/// callers into RRULE territory.
+public enum Recurrence: Sendable, Codable, Equatable {
+    case daily(at: TimeOfDay)
+    case weekly(at: TimeOfDay, on: Set<Weekday>)
+    case monthlyOnDay(at: TimeOfDay, dayOfMonth: Int)
+
+    /// Returns the next fire time strictly after `after`, in the supplied calendar/timezone.
+    /// Returns nil only when the recurrence is malformed (e.g. weekly with empty weekday set,
+    /// monthly with day < 1 or > 31) — callers should treat nil the same as "stop recurring."
+    public func nextOccurrence(after: Date, calendar: Calendar = Calendar.current) -> Date? {
+        switch self {
+        case .daily(let time):
+            return Self.nextMatch(after: after, calendar: calendar) { components in
+                components.hour == time.hour && components.minute == time.minute
+            }
+        case .weekly(let time, let weekdays):
+            guard !weekdays.isEmpty else { return nil }
+            let calendarDays = Set(weekdays.map { $0.calendarValue })
+            return Self.nextMatch(after: after, calendar: calendar) { components in
+                guard let weekday = components.weekday else { return false }
+                return calendarDays.contains(weekday)
+                    && components.hour == time.hour
+                    && components.minute == time.minute
+            }
+        case .monthlyOnDay(let time, let day):
+            guard day >= 1, day <= 31 else { return nil }
+            return Self.nextMatch(after: after, calendar: calendar) { components in
+                components.day == day
+                    && components.hour == time.hour
+                    && components.minute == time.minute
+            }
+        }
+    }
+
+    /// Walks forward minute-by-minute from the boundary just after `after` (rounded to the
+    /// next minute) and returns the first instant whose calendar components satisfy `match`.
+    /// Bounded by 366 days so a malformed monthly (e.g. day 31 in a Feb-only calendar — won't
+    /// happen in Gregorian but defensive against edge cases) returns nil instead of looping.
+    private static func nextMatch(
+        after: Date,
+        calendar: Calendar,
+        match: (DateComponents) -> Bool
+    ) -> Date? {
+        let secondGranular = calendar.date(byAdding: .second, value: 1, to: after) ?? after
+        var components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: secondGranular)
+        components.second = 0
+        guard var probe = calendar.date(from: components) else { return nil }
+        if probe <= after {
+            probe = calendar.date(byAdding: .minute, value: 1, to: probe) ?? probe
+        }
+        let limit = after.addingTimeInterval(366 * 24 * 60 * 60)
+        while probe <= limit {
+            let probeComponents = calendar.dateComponents([.year, .month, .day, .hour, .minute, .weekday], from: probe)
+            if match(probeComponents) {
+                return probe
+            }
+            // Coarse advance: jump by an hour while we're more than 90 minutes off the target hour-of-day,
+            // otherwise step minute-by-minute. The 90-minute buffer keeps us safe across DST jumps.
+            probe = calendar.date(byAdding: .minute, value: 1, to: probe) ?? probe
+        }
+        return nil
+    }
+
+    /// Human-readable form for display in the timers UI ("Daily at 21:00", "Mon/Wed/Fri at 15:00").
+    public var displayDescription: String {
+        switch self {
+        case .daily(let t):
+            return "Daily at \(t.displayString)"
+        case .weekly(_, let weekdays) where weekdays.isEmpty:
+            return "Weekly (no days set)"
+        case .weekly(let t, let weekdays):
+            let ordered = Weekday.allCases.filter { weekdays.contains($0) }
+            let label = ordered.map(\.shortName).joined(separator: "/")
+            return "\(label) at \(t.displayString)"
+        case .monthlyOnDay(let t, let day):
+            return "Day \(day) of every month at \(t.displayString)"
+        }
+    }
+}
+
+/// Hour + minute (24h) without a date attached. Stored on `Recurrence` so the recurrence
+/// pattern is timezone-relative — "every day at 21:00" follows the user's local clock
+/// rather than drifting against UTC.
+public struct TimeOfDay: Sendable, Codable, Equatable, Hashable {
+    public let hour: Int
+    public let minute: Int
+
+    public init(hour: Int, minute: Int) {
+        self.hour = max(0, min(23, hour))
+        self.minute = max(0, min(59, minute))
+    }
+
+    /// `HH:mm` formatted, suitable for UI labels.
+    public var displayString: String {
+        String(format: "%02d:%02d", hour, minute)
+    }
+}
+
+/// Weekday with `Calendar` (`.weekday`)-style numbering: Sunday = 1 … Saturday = 7. Stored
+/// as `String` to keep persisted recurrence data readable in the JSON file.
+public enum Weekday: String, Sendable, Codable, CaseIterable, Hashable {
+    case sunday, monday, tuesday, wednesday, thursday, friday, saturday
+
+    /// Calendar's `.weekday` numbering (1 = Sunday … 7 = Saturday).
+    public var calendarValue: Int {
+        switch self {
+        case .sunday:    return 1
+        case .monday:    return 2
+        case .tuesday:   return 3
+        case .wednesday: return 4
+        case .thursday:  return 5
+        case .friday:    return 6
+        case .saturday:  return 7
+        }
+    }
+
+    /// Three-letter abbreviation (Mon, Tue, ...).
+    public var shortName: String {
+        switch self {
+        case .sunday:    return "Sun"
+        case .monday:    return "Mon"
+        case .tuesday:   return "Tue"
+        case .wednesday: return "Wed"
+        case .thursday:  return "Thu"
+        case .friday:    return "Fri"
+        case .saturday:  return "Sat"
+        }
+    }
+}

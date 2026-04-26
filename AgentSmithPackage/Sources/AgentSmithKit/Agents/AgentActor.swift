@@ -130,6 +130,15 @@ public actor AgentActor {
     /// since-cutoff. Returns nil to suppress this fire (no fresh activity).
     private var smithDigestProvider: (@Sendable (Date) async -> String?)?
 
+    /// Timer-lifecycle callbacks. The runtime wires these so the timers UI / event log can
+    /// observe scheduling without poking actor internals. See `setTimerCallbacks(onScheduled:onFired:onCancelled:)`.
+    private var onWakeScheduled: (@Sendable (ScheduledWake) -> Void)?
+    /// Fires once per `checkScheduledWake` batch with the *primary* wake (first in the batch)
+    /// and the full set of due wakes — keeping the batch grouped so the event log can show a
+    /// single fire per LLM turn instead of N rows.
+    private var onWakeFired: (@Sendable (ScheduledWake, [ScheduledWake]) -> Void)?
+    private var onWakeCancelled: (@Sendable (ScheduledWake, WakeCancellationCause) -> Void)?
+
     private var maxToolCallsPerIteration: Int
     /// Maximum concurrent Jones security evaluations to prevent overwhelming the LLM backend.
     private static let maxConcurrentEvaluations = 5
@@ -278,23 +287,35 @@ public actor AgentActor {
     /// callers that genuinely want a single replacement should pass `replacesID`.
     public func scheduleWake(
         wakeAt: Date,
-        reason: String,
+        instructions: String,
         taskID: UUID? = nil,
-        replacesID: UUID? = nil
+        replacesID: UUID? = nil,
+        recurrence: Recurrence? = nil,
+        originalID: UUID? = nil,
+        previousFireAt: Date? = nil
     ) -> ScheduleWakeOutcome {
-        let trimmedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedReason.isEmpty else {
-            return .error("reason must not be empty — describe why the agent should be woken at that time.")
+        let trimmedInstructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedInstructions.isEmpty else {
+            return .error("instructions must not be empty — describe what the agent should do when the wake fires.")
         }
 
-        if let replacesID {
+        if let replacesID, let replacedWake = scheduledWakes.first(where: { $0.id == replacesID }) {
             scheduledWakes.removeAll { $0.id == replacesID }
+            onWakeCancelled?(replacedWake, .replaced)
         }
 
-        let wake = ScheduledWake(wakeAt: wakeAt, reason: trimmedReason, taskID: taskID)
+        let wake = ScheduledWake(
+            wakeAt: wakeAt,
+            instructions: trimmedInstructions,
+            taskID: taskID,
+            recurrence: recurrence,
+            originalID: originalID,
+            previousFireAt: previousFireAt
+        )
         scheduledWakes.append(wake)
         scheduledWakes.sort { $0.wakeAt < $1.wakeAt }
         interruptIdleSleep()
+        onWakeScheduled?(wake)
         return .scheduled(wake)
     }
 
@@ -306,23 +327,40 @@ public actor AgentActor {
     /// Cancels a single wake by id. Returns true if it existed and was removed.
     @discardableResult
     public func cancelWake(id: UUID) -> Bool {
-        let before = scheduledWakes.count
+        guard let removed = scheduledWakes.first(where: { $0.id == id }) else { return false }
         scheduledWakes.removeAll { $0.id == id }
-        return scheduledWakes.count < before
+        onWakeCancelled?(removed, .userRequest)
+        return true
     }
 
     /// Cancels every wake associated with the given task. Returns the ids of cancelled wakes.
     @discardableResult
     public func cancelWakesForTask(_ taskID: UUID) -> [UUID] {
-        let cancelled = scheduledWakes.filter { $0.taskID == taskID }.map { $0.id }
+        let cancelled = scheduledWakes.filter { $0.taskID == taskID }
         scheduledWakes.removeAll { $0.taskID == taskID }
-        return cancelled
+        for wake in cancelled {
+            onWakeCancelled?(wake, .taskTerminated)
+        }
+        return cancelled.map { $0.id }
     }
 
     /// Smith-only: registers the closure used to assemble periodic Brown-activity digests.
     /// Idempotent — replaces any prior provider.
     public func setSmithDigestProvider(_ provider: @escaping @Sendable (Date) async -> String?) {
         smithDigestProvider = provider
+    }
+
+    /// Registers timer-lifecycle callbacks fired from the actor when wakes are scheduled,
+    /// fired, or cancelled. Used by `OrchestrationRuntime` to populate the timer-event log
+    /// without leaking actor internals into the UI.
+    public func setTimerCallbacks(
+        onScheduled: (@Sendable (ScheduledWake) -> Void)? = nil,
+        onFired: (@Sendable (ScheduledWake, [ScheduledWake]) -> Void)? = nil,
+        onCancelled: (@Sendable (ScheduledWake, WakeCancellationCause) -> Void)? = nil
+    ) {
+        onWakeScheduled = onScheduled
+        onWakeFired = onFired
+        onWakeCancelled = onCancelled
     }
 
     /// Starts the agent's run loop.
@@ -833,6 +871,20 @@ public actor AgentActor {
                 if configuration.suppressesRawTextToChannel, !implicitMessageSent {
                     appendDiscardedTextWarning()
                 }
+            } else if configuration.role != .brown {
+                // Empty response from a non-Brown agent (Brown's three-strike path returns
+                // earlier). Without an assistant message here, the still-open user turn stays
+                // appendable: the next wake/digest/inbound injection merges into it and the
+                // provider re-feeds the stale prompt back to the model — exactly how three of
+                // four task-scoped wakes silently dropped on 2026-04-25. Append a synthetic
+                // marker so each new injection starts a fresh turn.
+                conversationHistory.append(LLMMessage(role: .assistant, text: "(no response)"))
+                pushLiveContext()
+                await toolContext.post(ChannelMessage(
+                    sender: .system,
+                    content: "Agent \(configuration.role.displayName) returned an empty response (no text, no tool calls). Closing turn.",
+                    metadata: ["isWarning": .bool(true), "agentRole": .string(configuration.role.rawValue)]
+                ))
             }
 
             // Circuit breaker: if the model keeps returning text without tool calls,
@@ -1576,24 +1628,47 @@ public actor AgentActor {
         formatter.dateFormat = "HH:mm:ss"
         let lines = due.map { wake -> String in
             let timeStr = formatter.string(from: wake.wakeAt)
-            let taskFragment = wake.taskID.map { " (taskID: \($0.uuidString))" } ?? ""
-            return "  • [\(timeStr)] \(wake.reason)\(taskFragment)"
+            let taskFragment = wake.taskID.map { " (linked task: \($0.uuidString))" } ?? ""
+            return "  • [\(timeStr)] \(wake.instructions)\(taskFragment)"
         }
         let header = due.count == 1
-            ? "[System: A scheduled wake has elapsed.]"
-            : "[System: \(due.count) scheduled wakes have elapsed.]"
+            ? "[System: A timer has fired. You must immediately perform the following actions.]"
+            : "[System: \(due.count) timers have fired. You must immediately perform the following actions.]"
         conversationHistory.append(LLMMessage(
             role: .user,
             text: """
                 \(header)
 
+                You must:
                 \(lines.joined(separator: "\n"))
 
-                Address each wake in order. The wake's reason was set by the user (or by you, on the user's behalf) — act on it. If you no longer need to act, do nothing further. Do NOT schedule a fresh wake unless the user has asked you to follow up again.
+                Execute each instruction in order. If a step has already been done or is no longer appropriate (the user changed plans, the task was already started, etc.), skip that step and move on to the next. Do NOT schedule a new timer unless the user explicitly asked you to follow up again.
                 """
         ))
         hasUnprocessedInput = true
         pushLiveContext()
+
+        if let primary = due.first {
+            onWakeFired?(primary, due)
+        }
+
+        // Re-schedule any recurring wakes for their next occurrence. The new wake inherits the
+        // chain's `originalID` so the timers UI can group fires across the series.
+        for wake in due {
+            guard let recurrence = wake.recurrence,
+                  let next = recurrence.nextOccurrence(after: wake.wakeAt) else { continue }
+            let nextWake = ScheduledWake(
+                wakeAt: next,
+                instructions: wake.instructions,
+                taskID: wake.taskID,
+                recurrence: recurrence,
+                originalID: wake.originalID,
+                previousFireAt: wake.wakeAt
+            )
+            scheduledWakes.append(nextWake)
+            onWakeScheduled?(nextWake)
+        }
+        scheduledWakes.sort { $0.wakeAt < $1.wakeAt }
     }
 
     /// Smith-only: if the digest interval has elapsed, ask the runtime-supplied provider for a
