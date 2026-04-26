@@ -2,5 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Agent Smith uses Apple Events to script and automate other applications on your behalf when you ask it to.</string>
 </dict>
 </plist>
