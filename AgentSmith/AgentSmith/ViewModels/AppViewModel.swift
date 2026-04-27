@@ -37,13 +37,30 @@ final class AppViewModel {
     /// Whether Smith automatically runs the next pending task after completing one.
     var autoRunNextTask: Bool = true {
         didSet {
+            if autoRunNextTask != oldValue {
+                logAutoRunChange(name: "autoRunNextTask", old: oldValue, new: autoRunNextTask)
+            }
             persistSessionStateAsync()
             Task { await runtime?.setAutoAdvance(autoRunNextTask) }
         }
     }
     /// Whether interrupted tasks are automatically resumed on launch.
     var autoRunInterruptedTasks: Bool = false {
-        didSet { persistSessionStateAsync() }
+        didSet {
+            if autoRunInterruptedTasks != oldValue {
+                logAutoRunChange(name: "autoRunInterruptedTasks", old: oldValue, new: autoRunInterruptedTasks)
+            }
+            persistSessionStateAsync()
+        }
+    }
+
+    /// Captures every change to the auto-run toggles with a brief stack snapshot.
+    /// The toggle flipping itself "from off to on" between launches has been observed
+    /// without a reproducible code path; this records who changed it so the next
+    /// occurrence is diagnosable from logs instead of guesswork.
+    private func logAutoRunChange(name: String, old: Bool, new: Bool) {
+        let stack = Thread.callStackSymbols.dropFirst().prefix(8).joined(separator: "\n  ")
+        logger.notice("\(name, privacy: .public) \(old, privacy: .public) -> \(new, privacy: .public) (session=\(self.session.name, privacy: .public))\n  \(stack, privacy: .public)")
     }
     var isRunning = false
     var isAborted = false
@@ -102,6 +119,16 @@ final class AppViewModel {
     /// Full message history — a superset of `messages`. Never cleared; always written to disk.
     private var allPersistedMessages: [ChannelMessage] = []
 
+    /// Set to true while `loadPersistedState` is applying values from disk so that
+    /// each field's didSet doesn't fire a `persistSessionStateAsync` that races
+    /// with later loads. Without this, `agentAssignments = state.agentAssignments`
+    /// kicked off a Task.detached snapshotting `autoRunNextTask=true` (its default,
+    /// not yet loaded). The autoRun set a moment later kicked off a second
+    /// Task.detached with `autoRunNextTask=false`. The two writes raced; whichever
+    /// won was what came back on the next launch — so the toggle silently flipped
+    /// back to its default every few launches.
+    private var isApplyingPersistedState = false
+
     init(session: Session, shared: SharedAppState) {
         self.session = session
         self.shared = shared
@@ -113,6 +140,14 @@ final class AppViewModel {
     /// Loads session-scoped persisted state. Call when the view model is first created.
     /// The shared app state (llmKit, memories, usage) is loaded separately by `SharedAppState.loadPersistedState()`.
     func loadPersistedState() async {
+        // Suppress per-field didSet writes for the duration of the load. Multiple
+        // detached writes racing each other was clobbering the autoRun toggles
+        // back to their in-memory defaults on next launch. We do one explicit
+        // write at the end via `persistSessionStateAsync` once every field has
+        // settled at its loaded value.
+        isApplyingPersistedState = true
+        defer { isApplyingPersistedState = false }
+
         // Apply default tunings from shared (bundled defaults) so UI sliders start at something sensible.
         agentPollIntervals = shared.defaultAgentPollIntervals
         agentMaxToolCalls = shared.defaultAgentMaxToolCalls
@@ -155,20 +190,32 @@ final class AppViewModel {
             }
         }
 
-        // Auto-heal missing required-role assignments by picking a valid config from
-        // the catalog. Without this, deleting bundled "default smith / brown / jones"
-        // configs leaves every session permanently stuck on "No configuration assigned"
-        // because `defaultAgentAssignments` keeps pointing at the now-deleted bundled
-        // ids and the prune above wipes them on every launch. By falling forward onto
-        // any remaining valid catalog entry, new sessions and pruned-stale sessions
-        // both come up with a working assignment that the user can customize via the
-        // gear sheet (which clones-on-edit when shared across roles, so this never
-        // accidentally entangles roles together).
+        // Auto-heal missing required-role assignments. Prefer a config whose
+        // name starts with the role name (e.g. "Smith — …" for the smith role)
+        // so that a catalog re-seed/prune doesn't silently bind every role to
+        // whichever config happens to be first in the list. Only fall back to
+        // `validConfigs.first` when no role-named config exists for that role —
+        // that keeps the original "never get stuck on ‘no configuration’" goal
+        // without entangling roles. Logged so a future regression is visible
+        // in the runtime output.
         let validConfigs = shared.llmKit.configurations.filter(\.isValid)
-        if let fallback = validConfigs.first {
-            for role in AgentRole.requiredRoles where agentAssignments[role] == nil {
+        for role in AgentRole.requiredRoles where agentAssignments[role] == nil {
+            let roleName = role.displayName
+            let nameMatch = validConfigs.first { config in
+                let lowered = config.name.lowercased()
+                let prefix = roleName.lowercased()
+                return lowered == prefix
+                    || lowered.hasPrefix("\(prefix) —")
+                    || lowered.hasPrefix("\(prefix) -")
+                    || lowered.hasPrefix("\(prefix):")
+                    || lowered.hasPrefix("\(prefix) ")
+            }
+            if let chosen = nameMatch {
+                agentAssignments[role] = chosen.id
+                print("[AgentSmith] Auto-assigned \(role.rawValue) → \(chosen.name) (\(chosen.id)) [name match] in session \(session.name)")
+            } else if let fallback = validConfigs.first {
                 agentAssignments[role] = fallback.id
-                print("[AgentSmith] Auto-assigned \(role.rawValue) → \(fallback.name) (\(fallback.id)) in session \(session.name)")
+                print("[AgentSmith] Auto-assigned \(role.rawValue) → \(fallback.name) (\(fallback.id)) [first-valid fallback; no \(roleName)-named config found] in session \(session.name)")
             }
         }
 
@@ -267,6 +314,15 @@ final class AppViewModel {
         // quit and run_task restarts. No pre-load needed here.
 
         hasLoadedPersistedState = true
+
+        // Now that every field has been settled at its loaded value, do exactly one
+        // write to disk. The didSet writes were suppressed via isApplyingPersistedState
+        // for the duration of this function — see the flag's docstring for the race
+        // it's avoiding. We re-set the flag false here (in addition to the deferred
+        // reset above) explicitly to make the ordering with the explicit save obvious
+        // to a future reader. The deferred reset above still fires for safety.
+        isApplyingPersistedState = false
+        persistSessionStateAsync()
     }
 
     /// Starts this session's runtime with its per-session agent assignments.
@@ -524,6 +580,50 @@ final class AppViewModel {
         // After Smith starts the active-timers list may already contain restored wakes for
         // .scheduled tasks — refresh once so the View → Timers panel shows them.
         await refreshActiveTimers()
+
+        scheduleAutopilotMessageIfRequested()
+    }
+
+    /// Debug-only autopilot for headless integration testing of the LLM pipeline.
+    /// When the env var `AGENT_SMITH_AUTOPILOT_MSG` is set (or the same key in
+    /// UserDefaults), sends that text to Smith N seconds after start so a build/run/
+    /// inspect loop can run without UI clicking. Delay defaults to 10s; override via
+    /// `AGENT_SMITH_AUTOPILOT_DELAY` (seconds, fractional OK).
+    /// Both env-var and defaults paths are checked so the hook works either way the
+    /// app is launched (Xcode-mcp run, manual launch, etc.).
+    private func scheduleAutopilotMessageIfRequested() {
+        let env = ProcessInfo.processInfo.environment
+        let defaults = UserDefaults.standard
+        let envMsg = env["AGENT_SMITH_AUTOPILOT_MSG"]
+        let defaultsMsg = defaults.string(forKey: "AGENT_SMITH_AUTOPILOT_MSG")
+        // Also try a sentinel file as a sandbox-friendly fallback. The agent's
+        // sandbox container prefs path is per-container; writing to the global
+        // ~/.../com.nuclearcyborg.AgentSmith plist doesn't reach UserDefaults
+        // inside the sandbox. The file lives in a tmp dir we can both touch.
+        let sentinelPath = "/tmp/agent-smith-autopilot.txt"
+        var fileMsg: String?
+        if FileManager.default.fileExists(atPath: sentinelPath),
+           let data = try? Data(contentsOf: URL(fileURLWithPath: sentinelPath)),
+           let raw = String(data: data, encoding: .utf8) {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { fileMsg = trimmed }
+        }
+        let message = envMsg ?? defaultsMsg ?? fileMsg
+        print("[autopilot] env=\(envMsg ?? "nil") defaults=\(defaultsMsg ?? "nil") file=\(fileMsg ?? "nil") chosen=\(message ?? "nil")")
+        guard let message, !message.isEmpty else { return }
+        let delaySeconds: Double = {
+            if let raw = env["AGENT_SMITH_AUTOPILOT_DELAY"], let parsed = Double(raw) { return parsed }
+            let dv = defaults.double(forKey: "AGENT_SMITH_AUTOPILOT_DELAY")
+            return dv > 0 ? dv : 10.0
+        }()
+        print("[autopilot] scheduling fake user message in \(delaySeconds)s: \(message)")
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
+            guard let self else { return }
+            print("[autopilot] sending fake user message: \(message)")
+            self.inputText = message
+            await self.sendMessage()
+        }
     }
 
     /// Re-reads the currently-active wakes from Smith. Cheap; the agent stores the list
@@ -1050,6 +1150,13 @@ final class AppViewModel {
     }
 
     private func persistSessionStateAsync() {
+        // Suppress all writes while loadPersistedState is applying values from
+        // disk. Each field assignment fires didSet → here, and unsynchronized
+        // detached writes were racing each other and clobbering the autoRun
+        // toggles back to in-memory defaults. loadPersistedState does one
+        // explicit write at the end after every field has settled.
+        guard !isApplyingPersistedState else { return }
+
         let state = SessionState(
             agentAssignments: agentAssignments,
             agentPollIntervals: agentPollIntervals,
