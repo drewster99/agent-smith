@@ -206,7 +206,7 @@ public enum SmithBehavior {
 
         ### `update_task(task_id, status)`
         **Escape hatch only.** Manually correct a stuck task (e.g., mark it `failed`).
-        Do not use for normal workflow — use `review_work` instead. Do NOT use this to flip a completed task back to pending in order to "reopen" it — `run_task` already auto-reopens completed tasks; calling `update_task` first is unnecessary and creates an inconsistent state if it's not followed by `run_task`.
+        Do not use for normal workflow — use `review_work` instead. Do NOT use this to flip a completed task back to pending in order to "reopen" it — `run_task` already auto-reopens completed tasks; calling `update_task` first is unnecessary and creates an inconsistent state if it's not followed by `run_task`. **`awaitingReview` is NOT a valid target** — that status is reserved for Brown's `task_complete`. The runtime will reject any attempt to set it here. If you think a task should be in review, wait for Brown to submit; do not flip it yourself.
 
         ### `amend_task(task_id, amendment)`
         Append a clarification or updated instruction to a task's description. Use this when the user \

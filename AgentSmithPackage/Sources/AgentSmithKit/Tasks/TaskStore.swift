@@ -87,6 +87,20 @@ public actor TaskStore {
     /// so the runtime can dispose any wakes scoped to the task.
     public func updateStatus(id: UUID, status: AgentTask.Status) {
         guard var task = tasks[id] else { return }
+
+        // Invariant: a task in `.awaitingReview` MUST have a non-empty result. The only
+        // legitimate caller setting this status is `TaskCompleteTool`, which always calls
+        // `setResult` first. Refuse the transition if the invariant would be violated —
+        // this prevents the "Task Completed" banner from being posted with no body to
+        // deliver, regardless of how a future bug might land us here.
+        if status == .awaitingReview {
+            let trimmed = task.result?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if trimmed.isEmpty {
+                assertionFailure("TaskStore.updateStatus(.awaitingReview) called for task \(id) with no stored result. Refusing transition.")
+                return
+            }
+        }
+
         let now = Date()
         let wasTerminal = task.status == .completed || task.status == .failed
         let isTerminal = status == .completed || status == .failed

@@ -73,7 +73,18 @@ public struct ReviewWorkTool: AgentTool {
                 """)
         }
 
-        if accepted {
+        // Defense-in-depth: a task in awaitingReview with no result is a malformed state
+        // (Brown's task_complete is the only legal way in, and it sets result first).
+        // If we ever land here, auto-reject so the user never sees a "Task Completed" banner
+        // with no result content.
+        let resultIsMissing = (task.result?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        let effectiveAccepted = accepted && !resultIsMissing
+
+        if accepted && resultIsMissing {
+            return try await autoRejectMissingResult(taskID: taskID, task: task, context: context)
+        }
+
+        if effectiveAccepted {
             // ---- Accept path ----
             await context.taskStore.updateStatus(id: taskID, status: .completed)
 
@@ -84,7 +95,9 @@ public struct ReviewWorkTool: AgentTool {
                 _ = await context.terminateAgent(agentID, context.agentID)
             }
 
-            // Post a structured completion banner for the channel log.
+            // Post a structured completion banner for the channel log. Brown's result is
+            // embedded in the banner itself (taskResult metadata) — it is NOT posted as a
+            // separate Smith→user message.
             var bannerMetadata: [String: AnyCodable] = [
                 "messageKind": .string("task_completed"),
                 "taskID": .string(taskID.uuidString)
@@ -92,26 +105,19 @@ public struct ReviewWorkTool: AgentTool {
             if let startedAt = completedTask.startedAt, let completedAt = completedTask.completedAt {
                 bannerMetadata["durationSeconds"] = .double(completedAt.timeIntervalSince(startedAt))
             }
+            if let result = completedTask.result?.trimmingCharacters(in: .whitespacesAndNewlines), !result.isEmpty {
+                bannerMetadata["taskResult"] = .string(result)
+            }
             await context.post(ChannelMessage(
                 sender: .system,
                 content: completedTask.title,
                 metadata: bannerMetadata
             ))
 
-            // Deliver Brown's result directly to the user as a Smith message.
-            if let result = completedTask.result, !result.isEmpty {
-                await context.post(ChannelMessage(
-                    sender: .agent(context.agentRole),
-                    recipientID: OrchestrationRuntime.userID,
-                    recipient: .user,
-                    content: result
-                ))
-            }
-
             // Trigger background summarization and embedding of the completed task.
             await context.summarizeCompletedTask(taskID)
 
-            return .success("Task '\(completedTask.title)' accepted and marked COMPLETE. Agents terminated. Result ALREADY delivered to user (do not deliver it again yourself, Agent Smith). **STOP** — your turn ends here. Do not call message_user, run_task, list_tasks, or any other tool. The system handles what happens next.")
+            return .success("Task '\(completedTask.title)' accepted and marked COMPLETE. Agents terminated. Result ALREADY delivered to user inside the Task Completed banner (do not deliver it again yourself, Agent Smith). **STOP** — your turn ends here. Do not call message_user, run_task, list_tasks, or any other tool. The system handles what happens next.")
         } else {
             // ---- Reject path ----
             let feedback: String
@@ -183,6 +189,65 @@ public struct ReviewWorkTool: AgentTool {
     }
 
     // MARK: - Private
+
+    /// Auto-rejection used when Smith calls `accepted: true` against a task that has no
+    /// stored result. This should be unreachable under normal flow (only Brown's
+    /// `task_complete` puts tasks into `awaitingReview`, and it always sets a non-empty
+    /// result), but guards against ever silently posting a "Task Completed" banner with
+    /// no body to the user.
+    private func autoRejectMissingResult(taskID: UUID, task: AgentTask, context: ToolContext) async throws -> ToolExecutionResult {
+        let feedback = "Auto-rejected by runtime: `review_work` was called with accepted=true but no result has been submitted on this task. The runtime will not deliver an empty result to the user. Continue your work and call `task_complete` with the FULL result before Smith reviews again."
+
+        await context.taskStore.updateStatus(id: taskID, status: .running)
+        await context.taskStore.clearResult(id: taskID)
+
+        var brownID: UUID?
+        var brownWasSpawned = false
+        for agentID in task.assigneeIDs {
+            if let role = await context.agentRoleForID(agentID), role == .brown {
+                brownID = agentID
+                break
+            }
+        }
+        if brownID == nil, let newBrownID = await context.spawnBrown() {
+            await context.taskStore.assignAgent(taskID: taskID, agentID: newBrownID)
+            brownID = newBrownID
+            brownWasSpawned = true
+        }
+
+        guard let brownID else {
+            return .failure("Auto-rejected (no result was submitted), but failed to spawn a Brown agent to retry. Check provider configuration.")
+        }
+
+        let content: String
+        if brownWasSpawned {
+            var messageParts: [String] = []
+            let currentTask = await context.taskStore.task(id: taskID) ?? task
+            messageParts.append("## Task: \(currentTask.title)\n\n\(currentTask.description)")
+            if !currentTask.updates.isEmpty {
+                let history = currentTask.updates.map { "- \($0.message)" }.joined(separator: "\n")
+                messageParts.append("## Prior Progress\n\(history)")
+            }
+            messageParts.append("## Changes Required\n\(feedback)")
+            content = messageParts.joined(separator: "\n\n")
+        } else {
+            content = "Auto-rejection on task '\(task.title)': \(feedback)"
+        }
+
+        await context.post(ChannelMessage(
+            sender: .agent(context.agentRole),
+            recipientID: brownID,
+            recipient: .agent(.brown),
+            content: content,
+            metadata: [
+                "messageKind": .string("changes_requested"),
+                "taskTitle": .string(task.title),
+                "autoRejected": .bool(true)
+            ]
+        ))
+
+        return .failure("Cannot accept '\(task.title)': no result has been submitted (task.result is empty). The task has been auto-returned to running and Brown has been notified. Wait for Brown to call `task_complete` with the full result, then review again.")
+    }
 
     /// Resolves a boolean from AnyCodable, tolerating .bool, .int (0/1), and string "true"/"false".
     /// This makes the tool robust regardless of how the LLM serializes the boolean parameter.

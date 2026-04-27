@@ -1512,7 +1512,7 @@ public actor AgentActor {
     /// Tool result strings used for post-call control flow. Keep in sync with tool return values.
     private func updatePostCallFlags(call: LLMToolCall, result: String, sentMessage: inout Bool, calledTaskComplete: inout Bool, calledCreateTask: inout Bool) {
         if call.name == "message_user" && result == "Message sent to user." { sentMessage = true }
-        if call.name == "review_work" && (result.contains("accepted and completed") || result.contains("Feedback sent to Brown")) { sentMessage = true }
+        if call.name == "review_work" && (result.contains("accepted and marked COMPLETE") || result.hasPrefix("Changes requested")) { sentMessage = true }
         if call.name == "message_brown" && result == "Message sent to Brown." { sentMessage = true }
         if call.name == "reply_to_user" && result == "Reply sent to user." { sentMessage = true }
         if call.name == "task_complete" && result.hasPrefix("Task submitted for review:") { calledTaskComplete = true }

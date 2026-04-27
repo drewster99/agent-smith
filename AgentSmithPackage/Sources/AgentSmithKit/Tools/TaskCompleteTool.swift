@@ -31,11 +31,19 @@ public struct TaskCompleteTool: AgentTool {
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
         guard case .string(let result) = arguments["result"] else {
+            // Auto-reject submissions missing the `result` argument entirely.
+            // Smith is never involved — the runtime refuses to admit the submission.
+            await postAutoRejection(reason: "the `result` argument was missing entirely", context: context)
             throw ToolCallError.missingRequiredArgument("result")
         }
 
-        guard !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return .failure("Error: result must contain a meaningful summary of the completed work. Re-read the task requirements and provide the full result.")
+        let trimmedResult = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedResult.isEmpty else {
+            // Auto-reject empty/whitespace-only submissions. The task is NEVER transitioned to
+            // awaitingReview, so Smith never gets the chance to review (or accept) a result-less
+            // task. Brown's LLM sees the failure in its tool result and must retry with real content.
+            await postAutoRejection(reason: "the `result` argument was empty or whitespace-only", context: context)
+            return .failure("Auto-rejected: result must contain a meaningful summary of the completed work. The task has NOT been submitted for review. Re-read the task requirements and call `task_complete` again with the FULL result.")
         }
 
         let commentary: String?
@@ -81,5 +89,19 @@ public struct TaskCompleteTool: AgentTool {
         ))
 
         return .success("Task submitted for review: \(task.title)")
+    }
+
+    /// Posts a system channel message recording an auto-rejection of an empty/missing-result
+    /// submission. Makes the rejection visible in the UI and channel log, even though no state
+    /// transition occurred. Smith is not involved — this is a runtime-level guard at submission time.
+    private func postAutoRejection(reason: String, context: ToolContext) async {
+        await context.post(ChannelMessage(
+            sender: .system,
+            content: "Auto-rejected `task_complete` submission: \(reason). Brown has been told to retry; task remains in its prior state.",
+            metadata: [
+                "messageKind": .string("submission_auto_rejected"),
+                "reason": .string(reason)
+            ]
+        ))
     }
 }

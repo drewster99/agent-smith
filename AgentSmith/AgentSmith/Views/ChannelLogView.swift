@@ -155,6 +155,7 @@ struct ChannelLogView: View, Equatable {
                             } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_completed" {
                                 TaskCompletedBanner(
                                     title: message.content,
+                                    result: message.stringMetadata("taskResult"),
                                     durationSeconds: message.doubleMetadata("durationSeconds"),
                                     timestamp: message.timestamp
                                 )
@@ -1137,6 +1138,7 @@ private func contextEntryView(_ entry: String) -> some View {
 /// Gold/amber banner marking a task's completion in the channel log.
 private struct TaskCompletedBanner: View {
     let title: String
+    let result: String?
     let durationSeconds: Double?
     let timestamp: Date
 
@@ -1176,7 +1178,15 @@ private struct TaskCompletedBanner: View {
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 10)
-                .padding(.bottom, 6)
+                .padding(.bottom, result == nil ? 6 : 4)
+
+            if let result, !result.isEmpty {
+                MarkdownText(content: result, baseFont: AppFonts.channelBody)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 6)
+            }
 
             accentColor.frame(height: 1).opacity(0.4)
         }

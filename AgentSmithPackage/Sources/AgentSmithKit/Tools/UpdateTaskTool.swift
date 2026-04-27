@@ -18,10 +18,9 @@ public struct UpdateTaskTool: AgentTool {
                     .string("pending"),
                     .string("running"),
                     .string("completed"),
-                    .string("failed"),
-                    .string("awaitingReview")
+                    .string("failed")
                 ]),
-                "description": .string("The new status for the task.")
+                "description": .string("The new status for the task. Note: `awaitingReview` is reserved — only Brown's `task_complete` may transition a task into review.")
             ])
         ]),
         "required": .array([.string("task_id"), .string("status")])
@@ -44,7 +43,11 @@ public struct UpdateTaskTool: AgentTool {
             throw ToolCallError.missingRequiredArgument("status")
         }
         guard let status = AgentTask.Status(rawValue: statusString) else {
-            return .failure("Invalid status: \(statusString). Valid values: pending, running, awaitingReview, completed, failed")
+            return .failure("Invalid status: \(statusString). Valid values: pending, running, completed, failed")
+        }
+
+        if status == .awaitingReview {
+            return .failure("`awaitingReview` is reserved — only Brown's `task_complete` may transition a task into review. Wait for Brown to submit, then call `review_work`.")
         }
 
         guard await context.taskStore.task(id: taskID) != nil else {
