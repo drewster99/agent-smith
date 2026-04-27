@@ -31,14 +31,44 @@ public struct RunTaskTool: AgentTool {
     }
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
-        guard case .string(let taskIDString) = arguments["task_id"] else {
-            throw ToolCallError.missingRequiredArgument("task_id")
+        // Resolve task_id with two layers of forgiveness for model brain-fade:
+        //  1. If task_id is missing entirely, auto-resolve when there's exactly one
+        //     pending/paused/interrupted task — the unambiguous case where "yes go
+        //     ahead" obviously means the only outstanding task. Observed on
+        //     gemma3:27b: it names the task UUID in its assistant text but fails
+        //     to put it in the structured tool_call args, even after being told
+        //     the exact ID list. We can't fix the model; we can stop the loop.
+        //  2. If task_id is present but not a valid UUID, fall through to the
+        //     existing error path so the user sees the typo instead of acting on
+        //     guesswork — guessing only helps when the model omitted the field
+        //     entirely.
+        let resolvedTaskID: UUID
+        var autoResolved = false
+        if case .string(let taskIDString) = arguments["task_id"] {
+            guard let parsed = UUID(uuidString: taskIDString) else {
+                return .failure("""
+                    Invalid task_id: '\(taskIDString)' is not a valid UUID. \
+                    \(await Self.candidateTaskList(context: context))
+                    """)
+            }
+            resolvedTaskID = parsed
+        } else if let onlyPending = await Self.onlyPendingRunnableTaskID(context: context) {
+            resolvedTaskID = onlyPending
+            autoResolved = true
+        } else {
+            return .failure(await Self.missingTaskIDFailure(context: context))
         }
-        guard let taskID = UUID(uuidString: taskIDString) else {
-            return .failure("Invalid task_id: '\(taskIDString)' is not a valid UUID. Use list_tasks to find valid task IDs.")
-        }
+        let taskID = resolvedTaskID
         guard var task = await context.taskStore.task(id: taskID) else {
-            return .failure("No task found with ID \(taskID). Use `list_tasks` to see available tasks.")
+            return .failure("""
+                No task found with ID \(taskID). \
+                \(await Self.candidateTaskList(context: context))
+                """)
+        }
+        if autoResolved {
+            // Surface the auto-pick so the user sees it in the success banner and
+            // a future log search can identify when this fallback fired.
+            print("[RunTaskTool] auto-resolved missing task_id → \(taskID.uuidString) (\"\(task.title)\")")
         }
         // Allow pending/paused/interrupted directly. For failed, reset the task back to
         // pending first so the retry runs on the same task ID (preserving history and prior
@@ -93,9 +123,17 @@ public struct RunTaskTool: AgentTool {
                 """)
         }
 
-        guard case .string(let instructions) = arguments["instructions"] else {
-            throw ToolCallError.missingRequiredArgument("instructions")
-        }
+        // The model's `instructions` field is sometimes a malformed JSON value
+        // (gemma3:27b has been seen emitting `"instructions":"User confirmed":"..."`).
+        // Treat any missing or non-string value as "no instructions" rather than
+        // failing — the field is meant to capture user-supplied refinements, and
+        // a bare confirmation has no refinements to capture. Going to .failure on
+        // a missing instructions field re-traps the same model into another
+        // text-only apology loop.
+        let instructions: String = {
+            if case .string(let s) = arguments["instructions"] { return s }
+            return ""
+        }()
 
         // Amend the task with the instructions before restarting, so they survive
         // the context reset and are visible to the new Smith, Brown, and Jones.
@@ -106,6 +144,58 @@ public struct RunTaskTool: AgentTool {
 
         await context.restartForNewTask(task.id)
 
-        return .success("Running task '\(task.title)' (ID: \(task.id)). System is restarting with a clean context to begin work.")
+        let autoNote = autoResolved
+            ? " (auto-resolved task_id because it was omitted from the call and only one task was eligible)"
+            : ""
+        return .success("Running task '\(task.title)' (ID: \(task.id)).\(autoNote) System is restarting with a clean context to begin work.")
+    }
+
+    /// When exactly one active task is in a pending/paused/interrupted status (the
+    /// "obviously runnable now" set), returns its ID. Returns nil if there are
+    /// zero or more than one — auto-pick is reserved for unambiguous cases.
+    /// Failed/completed tasks are excluded because resurrecting them on guess is
+    /// destructive.
+    private static func onlyPendingRunnableTaskID(context: ToolContext) async -> UUID? {
+        let allTasks = await context.taskStore.allTasks()
+        let pending = allTasks.filter {
+            $0.disposition == .active && (
+                $0.status == .pending || $0.status == .paused || $0.status == .interrupted
+            )
+        }
+        guard pending.count == 1 else { return nil }
+        return pending.first?.id
+    }
+
+    /// Builds the "missing task_id" error body. Includes the runnable task list so the
+    /// model has everything it needs to self-correct on the next turn — observed on
+    /// gemma3:27b producing tool calls with no `task_id` and a malformed `instructions`
+    /// blob that buried the user's confirmation. A bare "Missing required argument"
+    /// gave the model nothing to work with; this hands it the IDs and the exact retry
+    /// shape so the next turn lands.
+    private static func missingTaskIDFailure(context: ToolContext) async -> String {
+        """
+        Missing required argument 'task_id' for run_task. \
+        \(await candidateTaskList(context: context)) \
+        Re-call run_task with task_id=<one of those IDs> AND instructions=<a string summarizing \
+        the user's confirmation, e.g. 'User confirmed: proceed as described'>. Both fields are required.
+        """
+    }
+
+    /// Returns a one-line description of the tasks currently eligible for `run_task`.
+    /// Empty list is reported explicitly so the model doesn't keep guessing IDs.
+    private static func candidateTaskList(context: ToolContext) async -> String {
+        let allTasks = await context.taskStore.allTasks()
+        let candidates = allTasks.filter {
+            $0.disposition == .active && (
+                $0.status == .pending || $0.status == .paused || $0.status == .interrupted ||
+                $0.status == .failed || $0.status == .completed
+            )
+        }
+        guard !candidates.isEmpty else {
+            return "There are no runnable tasks right now (use list_tasks to confirm)."
+        }
+        let summary = candidates.prefix(10).map { "\($0.id.uuidString) (\"\($0.title)\", status=\($0.status.rawValue))" }
+            .joined(separator: "; ")
+        return "Runnable task IDs: \(summary)."
     }
 }

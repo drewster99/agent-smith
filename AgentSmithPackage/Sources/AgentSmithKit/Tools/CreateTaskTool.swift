@@ -49,11 +49,18 @@ public struct CreateTaskTool: AgentTool {
     }
 
     public func execute(arguments: [String: AnyCodable], context: ToolContext) async throws -> ToolExecutionResult {
+        // gemma3:27b has been seen calling create_task with empty arg objects ({})
+        // even when the user clearly meant "run the existing pending task." If
+        // title/description are missing AND there's already a pending task that
+        // would match the user's intent, redirect the model to run_task instead
+        // of letting it spin in apology loops. We do NOT auto-act here — we
+        // return a failure with the exact run_task call to make next, so the
+        // model takes the corrective action explicitly.
         guard case .string(let title) = arguments["title"] else {
-            throw ToolCallError.missingRequiredArgument("title")
+            return .failure(await Self.missingTitleFailure(context: context))
         }
         guard case .string(let description) = arguments["description"] else {
-            throw ToolCallError.missingRequiredArgument("description")
+            return .failure(await Self.missingDescriptionFailure(context: context, title: title))
         }
 
         var scheduledRunAt: Date?
@@ -207,6 +214,55 @@ public struct CreateTaskTool: AgentTool {
         }
 
         return .success("Task created (ID: \(task.id), title: \"\(title)\").\(contextNote) Task '\(blockingTask!.title)' is currently \(blockingTask!.status.rawValue); call `run_task` once it finishes.")
+    }
+
+    /// Build the "missing title" tool error. If there's exactly one pending task
+    /// already, redirect the model to run_task on that task — observed on
+    /// gemma3:27b emitting empty-argument create_task calls when "yes go ahead"
+    /// clearly meant "run the existing pending task."
+    private static func missingTitleFailure(context: ToolContext) async -> String {
+        let allTasks = await context.taskStore.allTasks()
+        let pending = allTasks.filter {
+            $0.disposition == .active && (
+                $0.status == .pending || $0.status == .paused || $0.status == .interrupted
+            )
+        }
+        if pending.count == 1, let only = pending.first {
+            return """
+                Missing required argument 'title' for create_task. \
+                There is already a pending task that matches the user's intent: \
+                '\(only.title)' (id: \(only.id.uuidString)). \
+                Do NOT call create_task again — call run_task with task_id='\(only.id.uuidString)' \
+                and instructions=<a string summarizing the user's confirmation>.
+                """
+        }
+        return """
+            Missing required argument 'title' for create_task. Re-call create_task with both \
+            title=<short imperative> and description=<one-paragraph detail>. If the user is \
+            referring to an existing pending task, use run_task instead — call list_tasks first \
+            to find it.
+            """
+    }
+
+    /// Build the "missing description" tool error. Same redirection logic as for
+    /// missing title — if the model meant to run an existing task, send it there.
+    private static func missingDescriptionFailure(context: ToolContext, title: String) async -> String {
+        let allTasks = await context.taskStore.allTasks()
+        let pending = allTasks.filter {
+            $0.disposition == .active && (
+                $0.status == .pending || $0.status == .paused || $0.status == .interrupted
+            )
+        }
+        if pending.count == 1, let only = pending.first {
+            return """
+                Missing required argument 'description' for create_task (title='\(title)'). \
+                There is already a pending task that may be what the user meant: \
+                '\(only.title)' (id: \(only.id.uuidString)). If so, do NOT create a new task — \
+                call run_task with task_id='\(only.id.uuidString)' and instructions=<summary of the \
+                user's confirmation>. Otherwise re-call create_task with a description.
+                """
+        }
+        return "Missing required argument 'description' for create_task (title='\(title)'). Re-call with description=<one-paragraph detail of what needs to be done>."
     }
 }
 
