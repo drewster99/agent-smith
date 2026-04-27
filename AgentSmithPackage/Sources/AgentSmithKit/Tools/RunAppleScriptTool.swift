@@ -18,7 +18,13 @@ public struct RunAppleScriptTool: AgentTool {
         - On success: `{ "success": true, "result": <coerced>, "resultText": "...", "descriptorType": "<4cc>" }`. \
           `result` is the script's return value, recursively coerced to JSON. Primitives become bare JSON; \
           types with no JSON equivalent are tagged as `{"$type": "...", ...}` — date as ISO string, alias as \
-          path/url, object specifier as text reference, type names and enum values as four-char codes. \
+          path/url, type names and enum values as four-char codes. Object specifiers (references like \
+          `chat 1` or `participant id "..."`) are returned as `{"$type":"objectSpecifier", "text":"...", \
+          "properties": {...}}` — the `properties` record is auto-fetched from the target app and contains \
+          every readable property keyed by its four-char code (e.g. `pnam` = name, `ID  ` = id). Nested \
+          object specifiers inside that record are returned as references only (no further expansion), so \
+          if you need a chat's participants' properties, write the script to extract them explicitly \
+          (`name of every participant of chat 1`) rather than expecting recursive expansion. \
           `resultText` is the script's text coercion (always a string), useful for display or as a fallback \
           when the structured form isn't what you expected. `descriptorType` is the underlying four-char \
           AppleEvent type code.

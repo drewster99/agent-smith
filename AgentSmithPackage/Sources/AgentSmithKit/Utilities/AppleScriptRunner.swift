@@ -171,7 +171,7 @@ public actor AppleScriptRunner {
             return failureResult(from: execError, source: source, defaultKind: .runtime)
         }
 
-        let coerced = AppleScriptCoercer.coerce(descriptor)
+        let coerced = AppleScriptCoercer.coerce(descriptor, expandObjects: true)
         let text = descriptor.coerce(toDescriptorType: typeUnicodeText)?.stringValue ?? ""
         return AppleScriptResult(
             success: true,
@@ -244,7 +244,14 @@ enum AppleScriptCoercer {
     /// Primitives become bare JSON values; types with no JSON equivalent (date,
     /// alias, object specifier, type-name, enumerator) become tagged objects of
     /// the form `{"$type": "...", ...}`.
-    static func coerce(_ d: NSAppleEventDescriptor) -> JSONValue {
+    ///
+    /// `expandObjects` controls whether object specifiers should be auto-resolved
+    /// into their property records by sending an AERecord coercion to the target
+    /// app (one round trip per specifier — same mechanism AppleScript's
+    /// `properties of obj` uses). The top level passes `true`; expansion of any
+    /// nested object specifier is then forced off so a list of N parents doesn't
+    /// fan out into N × M Apple Events.
+    static func coerce(_ d: NSAppleEventDescriptor, expandObjects: Bool = true) -> JSONValue {
         switch d.descriptorType {
         case typeUnicodeText, typeUTF8Text, typeUTF16ExternalRepresentation:
             return .string(d.stringValue ?? "")
@@ -254,6 +261,9 @@ enum AppleScriptCoercer {
 
         case typeSInt16, typeSInt32, typeUInt16, typeUInt32:
             return .int(Int(d.int32Value))
+
+        case typeSInt64, typeUInt64:
+            return coerce64BitInt(d)
 
         case typeIEEE32BitFloatingPoint, typeIEEE64BitFloatingPoint, type128BitFloatingPoint:
             return .double(d.doubleValue)
@@ -274,11 +284,7 @@ enum AppleScriptCoercer {
             return taggedFallback(d, type: "alias")
 
         case typeObjectSpecifier:
-            let text = d.coerce(toDescriptorType: typeUnicodeText)?.stringValue ?? ""
-            return .object([
-                "$type": .string("objectSpecifier"),
-                "text": .string(text)
-            ])
+            return coerceObjectSpecifier(d, expandObjects: expandObjects)
 
         case typeType:
             // `missing value` and class names both arrive as typeType. Both map cleanly
@@ -305,18 +311,54 @@ enum AppleScriptCoercer {
             if d.numberOfItems > 0 {
                 for i in 1...d.numberOfItems {
                     if let item = d.atIndex(i) {
-                        items.append(coerce(item))
+                        items.append(coerce(item, expandObjects: expandObjects))
                     }
                 }
             }
             return .array(items)
 
         case typeAERecord:
-            return coerceRecord(d)
+            return coerceRecord(d, expandObjects: expandObjects)
 
         default:
             return taggedFallback(d, type: fourCharCode(d.descriptorType))
         }
+    }
+
+    /// `int32Value` clamps 64-bit values, so we read the raw 8-byte payload
+    /// directly. Falls back to a coerce-to-Int32 attempt and finally to null
+    /// if even the raw bytes aren't there.
+    private static func coerce64BitInt(_ d: NSAppleEventDescriptor) -> JSONValue {
+        let data = d.data
+        if data.count == 8 {
+            let value: Int64 = data.withUnsafeBytes { $0.load(as: Int64.self) }
+            return .int(Int(value))
+        }
+        if let coerced = d.coerce(toDescriptorType: typeSInt32) {
+            return .int(Int(coerced.int32Value))
+        }
+        return .null
+    }
+
+    /// Resolve an object specifier into `{$type, text, properties?}`. The
+    /// reference text always comes from a `typeUnicodeText` coercion. When
+    /// `expandObjects` is true, we additionally ask the target app for an
+    /// `typeAERecord` coercion — that's the AppleEvent equivalent of
+    /// `properties of obj` and returns every readable property keyed by its
+    /// four-char code. Nested object specifiers inside that record are NOT
+    /// expanded again, so a list-of-N parents costs N round trips, not N×M.
+    private static func coerceObjectSpecifier(_ d: NSAppleEventDescriptor, expandObjects: Bool) -> JSONValue {
+        let text = d.coerce(toDescriptorType: typeUnicodeText)?.stringValue ?? ""
+        var obj: [String: JSONValue] = [
+            "$type": .string("objectSpecifier"),
+            "text": .string(text)
+        ]
+        if expandObjects, let recordDesc = d.coerce(toDescriptorType: typeAERecord) {
+            if case .object(let props) = coerceRecord(recordDesc, expandObjects: false), !props.isEmpty {
+                obj["properties"] = .object(props)
+            }
+        }
+        return .object(obj)
     }
 
     /// AppleScript records have two kinds of keys:
@@ -325,14 +367,14 @@ enum AppleScriptCoercer {
     /// - User-defined string keys, packed into a single child descriptor under
     ///   the `usrf` keyword as a flat alternating `[k1, v1, k2, v2, ...]` list.
     /// We merge both into one JSON object so LLMs see the natural shape.
-    private static func coerceRecord(_ d: NSAppleEventDescriptor) -> JSONValue {
+    private static func coerceRecord(_ d: NSAppleEventDescriptor, expandObjects: Bool = true) -> JSONValue {
         var dict: [String: JSONValue] = [:]
         if d.numberOfItems > 0 {
             for i in 1...d.numberOfItems {
                 let key = d.keywordForDescriptor(at: i)
                 guard let value = d.forKeyword(key) else { continue }
                 let keyString = fourCharCode(key)
-                if keyString == "usrf", case .array(let pairs) = coerce(value) {
+                if keyString == "usrf", case .array(let pairs) = coerce(value, expandObjects: expandObjects) {
                     var idx = 0
                     while idx + 1 < pairs.count {
                         if case .string(let k) = pairs[idx] {
@@ -341,7 +383,7 @@ enum AppleScriptCoercer {
                         idx += 2
                     }
                 } else {
-                    dict[keyString] = coerce(value)
+                    dict[keyString] = coerce(value, expandObjects: expandObjects)
                 }
             }
         }
