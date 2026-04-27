@@ -155,8 +155,8 @@ public struct ToolContext: Sendable {
     /// `.scheduled(wake)` or `.error(...)`. Args: wakeAt, instructions, taskID, replacesID,
     /// recurrence, survivesTaskTermination. Pass `survivesTaskTermination: true` for wakes
     /// whose intent is to act on a task whose previous run has already terminated (e.g.
-    /// `run_task`, `clone_and_run`, `summarize`) — otherwise the first run's completion
-    /// will wipe every queued future wake against the same task.
+    /// `run_task`, `summarize`) — otherwise the first run's completion will wipe every
+    /// queued future wake against the same task.
     public let scheduleWake: @Sendable (Date, String, UUID?, UUID?, Recurrence?, Bool) async -> ScheduleWakeOutcome
     /// Returns all currently-scheduled wakes for the calling agent (sorted by `wakeAt`).
     public let listScheduledWakes: @Sendable () async -> [ScheduledWake]

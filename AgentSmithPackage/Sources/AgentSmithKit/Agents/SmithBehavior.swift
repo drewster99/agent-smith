@@ -149,7 +149,7 @@ public enum SmithBehavior {
 
         ### `schedule_task_action(task_id, action, delay_seconds OR at_time, recurrence?, extra_instructions?, replaces_id?)`
         Schedule a future imperative to act on an existing task. When the timer fires you'll see "You must: Call `run_task` on <id>…" (or the matching directive for the action).
-        - `action`: one of `run`, `pause`, `stop`, `summarize`, `clone_and_run`.
+        - `action`: one of `run`, `pause`, `stop`, `summarize`.
         - Auto-cancelled if the task transitions to a terminal status (completed/failed) before fire time.
         - Use for "run task X at 9pm", "stop task X in 30 minutes", "summarize task X tomorrow morning".
         - The wake's instructions are auto-rendered from `action` + the task's id/title — you cannot make them vague.
@@ -161,7 +161,6 @@ public enum SmithBehavior {
           - Weekly: `{"type":"weekly","hour":15,"minute":0,"on":["mon","wed","fri"]}`
           - Monthly: `{"type":"monthly","hour":9,"minute":0,"day_of_month":1}`
         Recurring timers auto-schedule the next occurrence after each fire — do NOT call schedule_task_action again to repeat.
-        For recurring "reminder-style" tasks, use `clone_and_run` so each fire produces a fresh task instance instead of repeatedly reopening the same one.
 
         ### `list_scheduled_wakes()`
         Returns every currently-scheduled timer (id, fire time, instructions, optional task_id). Read-only.

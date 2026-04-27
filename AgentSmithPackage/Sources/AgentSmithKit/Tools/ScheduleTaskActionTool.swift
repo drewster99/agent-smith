@@ -23,7 +23,6 @@ public struct ScheduleTaskActionTool: AgentTool {
           • pause      — flip the task to paused (calls update_task) \
           • stop       — flip the task to interrupted (calls update_task) \
           • summarize  — describe progress to the user (call list_tasks + message_user) \
-          • clone_and_run — duplicate the task description as a fresh task and run that \
         \
         Optional: `extra_instructions` — additional context appended to the auto-rendered \
         imperative (e.g. "and tell Drew it's done"). `recurrence` for repeating actions. \
@@ -56,8 +55,7 @@ public struct ScheduleTaskActionTool: AgentTool {
                     .string("run"),
                     .string("pause"),
                     .string("stop"),
-                    .string("summarize"),
-                    .string("clone_and_run")
+                    .string("summarize")
                 ]),
                 "description": .string("Action to perform when the timer fires. Required.")
             ]),
@@ -98,7 +96,7 @@ public struct ScheduleTaskActionTool: AgentTool {
         }
         guard case .string(let actionRaw) = arguments["action"],
               let action = TaskActionKind(rawValue: actionRaw.lowercased()) else {
-            return .failure("action is required and must be one of: run, pause, stop, summarize, clone_and_run.")
+            return .failure("action is required and must be one of: run, pause, stop, summarize.")
         }
         guard let task = await context.taskStore.task(id: taskID) else {
             return .failure("Task \(taskID.uuidString) not found.")
@@ -143,8 +141,8 @@ public struct ScheduleTaskActionTool: AgentTool {
             action.survivesTaskTermination
         )
         // Surface the schedule as a dedicated channel banner so the user sees a task-style
-        // row ("Pause", "Stop", "Summarize", "Clone+Run" — each with its own icon) instead
-        // of the generic `System ⏰ scheduled …` line. The paired timer_activity row gets
+        // row ("Pause", "Stop", "Summarize" — each with its own icon) instead of the
+        // generic `System ⏰ scheduled …` line. The paired timer_activity row gets
         // suppressed in the channel log dispatch when this banner is present for the
         // same taskID.
         if case .scheduled(let wake) = outcome {
@@ -170,7 +168,6 @@ public struct ScheduleTaskActionTool: AgentTool {
 /// directive rather than a vague memo.
 public enum TaskActionKind: String, Sendable, Codable {
     case run, pause, stop, summarize
-    case cloneAndRun = "clone_and_run"
 
     /// Headline shown in the channel-log banner that announces a `schedule_task_action` —
     /// pairs with `bannerSymbolName` and `bannerLabel` for the four user-visible variants.
@@ -180,25 +177,24 @@ public enum TaskActionKind: String, Sendable, Codable {
         task.title
     }
 
-    /// Action label for the banner ("Pause", "Stop", "Summarize", "Clone & Run", "Run").
+    /// Action label for the banner ("Pause", "Stop", "Summarize", "Run").
     public var bannerLabel: String {
         switch self {
         case .run: return "Run"
         case .pause: return "Pause"
         case .stop: return "Stop"
         case .summarize: return "Summarize"
-        case .cloneAndRun: return "Clone & Run"
         }
     }
 
     /// Whether this action's wake should survive the linked task's first termination. True
     /// for actions whose explicit purpose is to act on a task whose previous run is already
-    /// done — `run` (rerun the task), `cloneAndRun` (spawn a fresh copy), `summarize` (often
-    /// scheduled *after* the task has finished). False for `pause` / `stop` since neither is
-    /// meaningful once the task has terminated.
+    /// done — `run` (rerun the task) and `summarize` (often scheduled *after* the task has
+    /// finished). False for `pause` / `stop` since neither is meaningful once the task has
+    /// terminated.
     public var survivesTaskTermination: Bool {
         switch self {
-        case .run, .cloneAndRun, .summarize: return true
+        case .run, .summarize: return true
         case .pause, .stop: return false
         }
     }
@@ -210,7 +206,6 @@ public enum TaskActionKind: String, Sendable, Codable {
         case .pause: return "pause.circle.fill"
         case .stop: return "stop.circle.fill"
         case .summarize: return "doc.text.magnifyingglass"
-        case .cloneAndRun: return "plus.square.on.square"
         }
     }
 
@@ -225,8 +220,6 @@ public enum TaskActionKind: String, Sendable, Codable {
             return "Call `update_task` on \(task.id.uuidString) with status `interrupted` to stop the task \"\(task.title)\"." + suffix
         case .summarize:
             return "Call `list_tasks` to refresh state, then `message_user` with a brief summary of progress on the task \"\(task.title)\" (id \(task.id.uuidString))." + suffix
-        case .cloneAndRun:
-            return "Call `create_task` with the same description as task \"\(task.title)\" (id \(task.id.uuidString)), then call `run_task` on the new task." + suffix
         }
     }
 }

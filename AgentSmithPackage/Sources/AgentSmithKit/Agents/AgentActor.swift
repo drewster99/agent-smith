@@ -144,7 +144,7 @@ public actor AgentActor {
     /// were asking the user for confirmation instead of executing. The wake is
     /// considered an "auto-run" wake when its imperative was rendered by
     /// `TaskActionKind.run.imperativeText` AND it carries a `taskID`. Other actions
-    /// (pause/stop/summarize/clone_and_run) still flow through Smith for now.
+    /// (pause/stop/summarize) still flow through Smith for now.
     private var onAutoRunTask: (@Sendable (UUID) async -> Void)?
 
     private var maxToolCallsPerIteration: Int
@@ -370,10 +370,10 @@ public actor AgentActor {
     }
 
     /// Cancels wakes associated with the given task whose `survivesTaskTermination` is false.
-    /// Returns the ids of cancelled wakes. Wakes flagged to survive — currently `run`,
-    /// `clone_and_run`, and `summarize` action wakes — are deliberately retained so the user
-    /// can queue multiple future runs against the same task without the first run's
-    /// completion wiping the queue.
+    /// Returns the ids of cancelled wakes. Wakes flagged to survive — currently `run` and
+    /// `summarize` action wakes — are deliberately retained so the user can queue multiple
+    /// future runs against the same task without the first run's completion wiping the
+    /// queue.
     @discardableResult
     public func cancelWakesForTask(_ taskID: UUID) -> [UUID] {
         let cancelled = scheduledWakes.filter { $0.taskID == taskID && !$0.survivesTaskTermination }
@@ -1683,8 +1683,8 @@ public actor AgentActor {
     ///     scheduling a task to run at time T is fully mechanical, so no LLM judgment is
     ///     needed and weak local models (gemma3:27b et al.) can't fail to execute by
     ///     asking for confirmation.
-    ///   - **smith-driven wakes** (everything else — pause, stop, summarize, clone_and_run,
-    ///     plus any auto-run wake that fires alongside another auto-run in the same batch
+    ///   - **smith-driven wakes** (everything else — pause, stop, summarize, plus any
+    ///     auto-run wake that fires alongside another auto-run in the same batch
     ///     since `restartForNewTask` is single-target): injected as a combined `[System: ...]`
     ///     user-role marker so Smith can address them in order.
     ///

@@ -96,7 +96,7 @@ struct ScheduledTaskAndTimerEventTests {
 
     /// Wakes scheduled by `TaskActionKind.run.imperativeText` are recognized as "auto-run"
     /// and bypass Smith — the runtime drives `restartForNewTask` directly. Other actions
-    /// (pause, stop, summarize, clone_and_run) still flow through Smith because they
+    /// (pause, stop, summarize) still flow through Smith because they
     /// require LLM judgment or multi-step execution.
     @Test("wakeIsAutoRunRunTask matches run-imperatives only when a taskID is present")
     func autoRunDiscriminator() {

@@ -161,6 +161,8 @@ Add a setting (persisted in UserDefaults) that controls whether the system autom
 
 **Implemented:** `AppViewModel.autoRunNextTask` (defaults to `true`, persisted in UserDefaults). Passed to `OrchestrationRuntime` at init, which forwards it to `SmithBehavior.systemPrompt(autoAdvanceEnabled:)` — the auto-advance instructions in Steps 6, the Key Constraints table, and the `create_task` docs are all conditional on the setting. `ReviewWorkTool` also includes advance guidance in its tool result when enabled. UI toggle added in Settings → Account tab under a "Behavior" section. Takes effect on next start (system prompt is generated at agent creation time).
 
+**Known issue (deferred, minor):** `autoRunNextTask` sometimes flips back ON after the user explicitly turns it OFF. Repro is intermittent — possibly tied to settings reload, session switch, or post-task-completion side effects. Suspects already ruled out: the persistence-race fix in `7dcf20b` did not eliminate it. Next step when revisited: capture the exact event sequence (toggle off → observe re-enable) with a value-change watch on `AppViewModel.autoRunNextTask` to identify the offending writer. Skipped for now — workaround is to toggle it off again when noticed.
+
 ### Skills — reusable prompt templates with arguments and embedded tool calls
 
 Skills are saved, reusable prompt templates that generate fully-formed user messages to send to Smith. A skill encapsulates a repeatable workflow — instead of typing out a detailed prompt every time, the user defines the skill once (with variables for the parts that change) and invokes it with arguments.

@@ -434,4 +434,71 @@ struct SecurityEvaluatorTests {
         // No second LLM call — pending-warn slot consumed.
         #expect(provider.callCount == 1)
     }
+
+    // MARK: - file_edit unified-diff in prompt
+
+    @Test("file_edit prompt fed to Jones contains the unified diff section")
+    func fileEditPromptIncludesUnifiedDiff() async {
+        let provider = PromptCapturingProvider(responses: [textResponse("SAFE diff confirmed")])
+        let channel = MessageChannel()
+        let evaluator = SecurityEvaluator(
+            provider: provider,
+            systemPrompt: "sys",
+            channel: channel,
+            abort: { _, _ in }
+        )
+
+        let params = """
+            {"file_path":"/tmp/example.swift","old_string":"let value = 1","new_string":"let value = 2"}
+            """
+
+        _ = await evaluator.evaluate(
+            toolName: "file_edit",
+            toolParams: params,
+            toolDescription: "edit",
+            toolParameterDefs: "",
+            taskTitle: "t",
+            taskID: UUID().uuidString,
+            taskDescription: "d",
+            siblingCalls: nil,
+            agentRoleName: "Brown",
+            toolCallID: "edit-1"
+        )
+
+        #expect(provider.capturedPrompts.count == 1)
+        let prompt = provider.capturedPrompts[0]
+        #expect(prompt.contains("## Resulting diff"))
+        #expect(prompt.contains("- let value = 1"))
+        #expect(prompt.contains("+ let value = 2"))
+
+        let history = await evaluator.evaluationHistory()
+        #expect(history.last?.prompt.contains("## Resulting diff") == true)
+    }
+
+    @Test("non-file_edit tool calls do not get a Resulting diff section")
+    func nonFileEditPromptHasNoDiffSection() async {
+        let provider = PromptCapturingProvider(responses: [textResponse("SAFE ok")])
+        let channel = MessageChannel()
+        let evaluator = SecurityEvaluator(
+            provider: provider,
+            systemPrompt: "sys",
+            channel: channel,
+            abort: { _, _ in }
+        )
+
+        _ = await evaluator.evaluate(
+            toolName: "bash",
+            toolParams: "{\"command\":\"ls\"}",
+            toolDescription: "",
+            toolParameterDefs: "",
+            taskTitle: "t",
+            taskID: UUID().uuidString,
+            taskDescription: "d",
+            siblingCalls: nil,
+            agentRoleName: "Brown",
+            toolCallID: nil
+        )
+
+        #expect(provider.capturedPrompts[0].contains("## Resulting diff") == false)
+    }
 }

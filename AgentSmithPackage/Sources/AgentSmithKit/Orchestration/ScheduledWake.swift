@@ -30,7 +30,7 @@ public struct ScheduledWake: Sendable, Identifiable, Codable, Equatable {
     /// Set when this wake was created by the runtime as the next link in a recurring chain.
     public var previousFireAt: Date?
     /// When true, this wake is preserved across `cancelWakesForTask` calls — used for
-    /// `run` / `clone_and_run` / `summarize` actions whose intent is precisely to act on
+    /// `run` / `summarize` actions whose intent is precisely to act on
     /// a task whose previous run has already terminated. Without this flag, scheduling
     /// multiple `run_task` wakes against the same task wipes all-but-the-first wake the
     /// moment the first run completes.
