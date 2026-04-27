@@ -236,21 +236,7 @@ private struct ActiveTaskRow: View {
                                 .background(Capsule().fill(TaskStatusBadge.color(for: task.status).opacity(0.2)))
                                 .foregroundStyle(TaskStatusBadge.color(for: task.status))
 
-                            if task.status == .scheduled, let runAt = task.scheduledRunAt {
-                                HStack(spacing: 2) {
-                                    Image(systemName: "clock")
-                                        .imageScale(.small)
-                                    Text(formatScheduledTime(runAt))
-                                }
-                                .font(.caption2)
-                                .foregroundStyle(TaskStatusBadge.color(for: .scheduled))
-                                .fixedSize()
-                            } else {
-                                Text(taskTimestamp(task.updatedAt))
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                                    .fixedSize()
-                            }
+                            ScheduledRunsIndicator(task: task, viewModel: viewModel)
                         }
                     }
                 }
@@ -407,5 +393,144 @@ private struct DeletedTaskRow: View {
                 Label("Delete Permanently", systemImage: "trash.fill")
             })
         }
+    }
+}
+
+// MARK: - Scheduled-runs indicator
+
+/// Compact pill on a task row showing the next pending wake's fire time. Falls back to the
+/// task's `updatedAt` timestamp when the task has no pending wakes (so completed tasks still
+/// show *something*). When pending wakes exist, the pill is a button that pops over a list
+/// of every upcoming run for the task — useful when a recurring schedule has many pending
+/// occurrences queued.
+private struct ScheduledRunsIndicator: View {
+    let task: AgentTask
+    let viewModel: AppViewModel
+
+    @State private var showingPopover = false
+
+    var body: some View {
+        let now = Date()
+        let pendingWakes = viewModel.activeTimers
+            .filter { $0.taskID == task.id && $0.wakeAt > now }
+            .sorted { $0.wakeAt < $1.wakeAt }
+
+        if let nextWake = pendingWakes.first {
+            Button(action: { showingPopover.toggle() }, label: {
+                HStack(spacing: 3) {
+                    Image(systemName: nextWake.recurrence == nil ? "clock" : "arrow.triangle.2.circlepath")
+                        .imageScale(.small)
+                    Text("Next: \(formatScheduledTime(nextWake.wakeAt))")
+                    if pendingWakes.count > 1 {
+                        Text("+\(pendingWakes.count - 1)")
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(TaskStatusBadge.color(for: .scheduled).opacity(0.25)))
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(TaskStatusBadge.color(for: .scheduled))
+                .fixedSize()
+            })
+            .buttonStyle(.plain)
+            .help(pendingWakes.count == 1 ? "Show scheduled run" : "Show \(pendingWakes.count) scheduled runs")
+            .popover(isPresented: $showingPopover, arrowEdge: .bottom) {
+                ScheduledRunsPopover(task: task, wakes: pendingWakes, viewModel: viewModel)
+            }
+        } else {
+            Text(taskTimestamp(task.updatedAt))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize()
+        }
+    }
+}
+
+/// Popover content listing every pending wake for a task. Each row shows the absolute
+/// fire time, a relative "in N min/h" countdown, the recurrence pattern (if any), and a
+/// cancel button — clicking cancel removes the wake via `AppViewModel.cancelTimer(id:)`,
+/// which also refreshes `activeTimers` so the popover (and parent row) update in place.
+private struct ScheduledRunsPopover: View {
+    let task: AgentTask
+    let wakes: [ScheduledWake]
+    let viewModel: AppViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Scheduled runs")
+                    .font(.headline)
+                Spacer()
+                Text("\(wakes.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(wakes, id: \.id) { wake in
+                        ScheduledRunsPopoverRow(wake: wake, onCancel: {
+                            Task { await viewModel.cancelTimer(id: wake.id) }
+                        })
+                        Divider()
+                    }
+                }
+            }
+            .frame(minWidth: 320, maxWidth: 400, minHeight: 80, maxHeight: 360)
+        }
+    }
+}
+
+private struct ScheduledRunsPopoverRow: View {
+    let wake: ScheduledWake
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: wake.recurrence == nil ? "clock" : "arrow.triangle.2.circlepath")
+                .foregroundStyle(.secondary)
+                .imageScale(.small)
+                .frame(width: 16)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(formatScheduledTime(wake.wakeAt))
+                    .font(.callout)
+                HStack(spacing: 8) {
+                    Text(relativeCountdown(to: wake.wakeAt))
+                    if let recurrence = wake.recurrence {
+                        Text("·")
+                        Text(recurrence.displayDescription)
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+
+            Spacer()
+
+            Button(role: .destructive, action: onCancel, label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            })
+            .buttonStyle(.plain)
+            .help("Cancel this scheduled run")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private func relativeCountdown(to date: Date) -> String {
+        let interval = date.timeIntervalSinceNow
+        if interval < 60 { return "in <1 min" }
+        if interval < 3600 { return "in \(Int(interval / 60)) min" }
+        if interval < 86400 { return String(format: "in %.1f h", interval / 3600) }
+        return String(format: "in %.1f d", interval / 86400)
     }
 }

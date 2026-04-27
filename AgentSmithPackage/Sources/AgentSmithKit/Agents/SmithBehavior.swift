@@ -156,6 +156,7 @@ public enum SmithBehavior {
 
         ### Recurrence (`schedule_task_action`)
         Pass `recurrence` as an object to repeat the timer:
+          - Interval: `{"type":"interval","minutes":30}` (also `seconds`/`hours`; min total 60s)
           - Daily: `{"type":"daily","hour":21,"minute":0}`
           - Weekly: `{"type":"weekly","hour":15,"minute":0,"on":["mon","wed","fri"]}`
           - Monthly: `{"type":"monthly","hour":9,"minute":0,"day_of_month":1}`

@@ -85,8 +85,24 @@ enum TimerArgumentParsing {
             return .invalid("recurrence must be an object.")
         }
         guard case .string(let type) = dict["type"] else {
-            return .invalid("recurrence.type missing or not a string. Expected one of: daily, weekly, monthly.")
+            return .invalid("recurrence.type missing or not a string. Expected one of: interval, daily, weekly, monthly.")
         }
+
+        let normalizedType = type.lowercased()
+        if normalizedType == "interval" || normalizedType == "every" {
+            let seconds = intValue(dict["seconds"]) ?? 0
+            let minutes = intValue(dict["minutes"]) ?? 0
+            let hours = intValue(dict["hours"]) ?? 0
+            let total = seconds + minutes * 60 + hours * 3600
+            guard total > 0 else {
+                return .invalid("interval recurrence requires a positive `seconds`, `minutes`, or `hours` value.")
+            }
+            guard total >= Recurrence.minimumIntervalSeconds else {
+                return .invalid("interval recurrence period must be at least \(Recurrence.minimumIntervalSeconds) seconds (got \(total)). Lower intervals risk runaway loops.")
+            }
+            return .value(.interval(seconds: total))
+        }
+
         let hour = intValue(dict["hour"]) ?? 0
         let minute = intValue(dict["minute"]) ?? 0
         guard (0...23).contains(hour), (0...59).contains(minute) else {
@@ -94,7 +110,7 @@ enum TimerArgumentParsing {
         }
         let timeOfDay = TimeOfDay(hour: hour, minute: minute)
 
-        switch type.lowercased() {
+        switch normalizedType {
         case "daily":
             return .value(.daily(at: timeOfDay))
         case "weekly":
@@ -125,7 +141,7 @@ enum TimerArgumentParsing {
             }
             return .value(.monthlyOnDay(at: timeOfDay, dayOfMonth: day))
         default:
-            return .invalid("Unknown recurrence type '\(type)'. Expected one of: daily, weekly, monthly.")
+            return .invalid("Unknown recurrence type '\(type)'. Expected one of: interval, daily, weekly, monthly.")
         }
     }
 

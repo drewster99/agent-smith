@@ -188,7 +188,14 @@ public struct CreateTaskTool: AgentTool {
                 for: task.copyWithScheduledRunAt(scheduledRunAt),
                 extra: nil
             )
-            let outcome = await context.scheduleWake(scheduledRunAt, imperative, task.id, nil, nil)
+            let outcome = await context.scheduleWake(
+                scheduledRunAt,
+                imperative,
+                task.id,
+                nil,
+                nil,
+                TaskActionKind.run.survivesTaskTermination
+            )
             switch outcome {
             case .scheduled(let wake):
                 let formatter = DateFormatter()

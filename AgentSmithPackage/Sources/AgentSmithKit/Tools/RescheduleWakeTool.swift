@@ -100,7 +100,8 @@ public struct RescheduleWakeTool: AgentTool {
             existing.instructions,
             existing.taskID,
             existing.id,
-            newRecurrence
+            newRecurrence,
+            existing.survivesTaskTermination
         )
         return TimerArgumentParsing.formatScheduleOutcome(outcome, kind: "Rescheduled wake")
     }

@@ -1419,14 +1419,15 @@ public actor OrchestrationRuntime {
                 guard let self else { return }
                 Task { await self.notifyProcessingStateChange(role: .jones, isProcessing: isProcessing) }
             },
-            scheduleWake: { [followUpScheduler] wakeAt, instructions, taskID, replacesID, recurrence in
+            scheduleWake: { [followUpScheduler] wakeAt, instructions, taskID, replacesID, recurrence, survivesTaskTermination in
                 guard let followUpScheduler else { return .error("Scheduler not available.") }
                 return await followUpScheduler.scheduleWake(
                     wakeAt: wakeAt,
                     instructions: instructions,
                     taskID: taskID,
                     replacesID: replacesID,
-                    recurrence: recurrence
+                    recurrence: recurrence,
+                    survivesTaskTermination: survivesTaskTermination
                 )
             },
             listScheduledWakes: { [followUpScheduler] in

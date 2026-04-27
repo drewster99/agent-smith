@@ -2,17 +2,26 @@ import Foundation
 
 /// Recurrence pattern attached to a `ScheduledWake`. When a recurring wake fires, the
 /// runtime computes the next occurrence via `nextOccurrence(after:)` and schedules a fresh
-/// wake with the same instructions. Three patterns cover the common use cases ("every day
-/// at 9pm", "every Mon/Wed/Fri at 3pm", "the 1st of every month at 9am") without forcing
-/// callers into RRULE territory.
+/// wake with the same instructions. Four patterns cover the common use cases ("every 30
+/// minutes", "every day at 9pm", "every Mon/Wed/Fri at 3pm", "the 1st of every month at
+/// 9am") without forcing callers into RRULE territory.
 public enum Recurrence: Sendable, Codable, Equatable {
     case daily(at: TimeOfDay)
     case weekly(at: TimeOfDay, on: Set<Weekday>)
     case monthlyOnDay(at: TimeOfDay, dayOfMonth: Int)
+    /// Fixed-period recurrence — fires every `seconds` seconds regardless of wall clock.
+    /// Use for "every 30 minutes" or "every 2 hours" where alignment to a particular
+    /// hour-of-day doesn't matter.
+    case interval(seconds: Int)
+
+    /// Minimum interval recurrence period. Below this, recurring wakes risk runaway loops
+    /// (especially when paired with auto-running agents) — see the no-runaway-loops policy.
+    public static let minimumIntervalSeconds: Int = 60
 
     /// Returns the next fire time strictly after `after`, in the supplied calendar/timezone.
     /// Returns nil only when the recurrence is malformed (e.g. weekly with empty weekday set,
-    /// monthly with day < 1 or > 31) — callers should treat nil the same as "stop recurring."
+    /// monthly with day < 1 or > 31, interval below the minimum) — callers should treat nil
+    /// the same as "stop recurring."
     public func nextOccurrence(after: Date, calendar: Calendar = Calendar.current) -> Date? {
         switch self {
         case .daily(let time):
@@ -35,6 +44,9 @@ public enum Recurrence: Sendable, Codable, Equatable {
                     && components.hour == time.hour
                     && components.minute == time.minute
             }
+        case .interval(let seconds):
+            guard seconds >= Self.minimumIntervalSeconds else { return nil }
+            return after.addingTimeInterval(TimeInterval(seconds))
         }
     }
 
@@ -80,7 +92,23 @@ public enum Recurrence: Sendable, Codable, Equatable {
             return "\(label) at \(t.displayString)"
         case .monthlyOnDay(let t, let day):
             return "Day \(day) of every month at \(t.displayString)"
+        case .interval(let seconds):
+            return "Every \(Self.intervalLabel(seconds: seconds))"
         }
+    }
+
+    /// Render an interval as "30 minutes", "2 hours", "1 hour 30 minutes", "45 seconds" —
+    /// whichever is the most natural unit for the supplied second count.
+    private static func intervalLabel(seconds: Int) -> String {
+        guard seconds > 0 else { return "0 seconds" }
+        let hours = seconds / 3600
+        let minutes = (seconds % 3600) / 60
+        let secs = seconds % 60
+        var parts: [String] = []
+        if hours > 0 { parts.append("\(hours) hour\(hours == 1 ? "" : "s")") }
+        if minutes > 0 { parts.append("\(minutes) minute\(minutes == 1 ? "" : "s")") }
+        if secs > 0 && hours == 0 { parts.append("\(secs) second\(secs == 1 ? "" : "s")") }
+        return parts.joined(separator: " ")
     }
 }
 

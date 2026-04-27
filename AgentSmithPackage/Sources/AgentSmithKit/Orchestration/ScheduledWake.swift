@@ -17,7 +17,8 @@ public struct ScheduledWake: Sendable, Identifiable, Codable, Equatable {
     public var instructions: String
     /// Optional task association. When set, the wake is auto-cancelled when the task
     /// transitions to a terminal status (completed/failed) — see
-    /// `OrchestrationRuntime.installTaskTerminationCleanup`.
+    /// `OrchestrationRuntime.installTaskTerminationCleanup` — UNLESS
+    /// `survivesTaskTermination` is set.
     public var taskID: UUID?
     /// Optional recurrence pattern. When non-nil, the runtime schedules the next occurrence
     /// after this one fires.
@@ -28,6 +29,12 @@ public struct ScheduledWake: Sendable, Identifiable, Codable, Equatable {
     public var originalID: UUID
     /// Set when this wake was created by the runtime as the next link in a recurring chain.
     public var previousFireAt: Date?
+    /// When true, this wake is preserved across `cancelWakesForTask` calls — used for
+    /// `run` / `clone_and_run` / `summarize` actions whose intent is precisely to act on
+    /// a task whose previous run has already terminated. Without this flag, scheduling
+    /// multiple `run_task` wakes against the same task wipes all-but-the-first wake the
+    /// moment the first run completes.
+    public var survivesTaskTermination: Bool
 
     public init(
         id: UUID = UUID(),
@@ -36,7 +43,8 @@ public struct ScheduledWake: Sendable, Identifiable, Codable, Equatable {
         taskID: UUID? = nil,
         recurrence: Recurrence? = nil,
         originalID: UUID? = nil,
-        previousFireAt: Date? = nil
+        previousFireAt: Date? = nil,
+        survivesTaskTermination: Bool = false
     ) {
         self.id = id
         self.wakeAt = wakeAt
@@ -45,10 +53,12 @@ public struct ScheduledWake: Sendable, Identifiable, Codable, Equatable {
         self.recurrence = recurrence
         self.originalID = originalID ?? id
         self.previousFireAt = previousFireAt
+        self.survivesTaskTermination = survivesTaskTermination
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, wakeAt, instructions, taskID, recurrence, originalID, previousFireAt
+        case survivesTaskTermination
         case legacyReason = "reason"
     }
 
@@ -66,6 +76,7 @@ public struct ScheduledWake: Sendable, Identifiable, Codable, Equatable {
         self.recurrence = try c.decodeIfPresent(Recurrence.self, forKey: .recurrence)
         self.originalID = try c.decodeIfPresent(UUID.self, forKey: .originalID) ?? id
         self.previousFireAt = try c.decodeIfPresent(Date.self, forKey: .previousFireAt)
+        self.survivesTaskTermination = try c.decodeIfPresent(Bool.self, forKey: .survivesTaskTermination) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -79,6 +90,9 @@ public struct ScheduledWake: Sendable, Identifiable, Codable, Equatable {
             try c.encode(originalID, forKey: .originalID)
         }
         try c.encodeIfPresent(previousFireAt, forKey: .previousFireAt)
+        if survivesTaskTermination {
+            try c.encode(true, forKey: .survivesTaskTermination)
+        }
     }
 }
 

@@ -30,6 +30,7 @@ public struct ScheduleTaskActionTool: AgentTool {
         `replaces_id` to overwrite an existing scheduled action. \
         \
         For recurring actions, pass `recurrence` as one of: \
+          • {"type":"interval","minutes":30}  (also accepts `seconds` and/or `hours`; min total 60s) \
           • {"type":"daily","hour":21,"minute":0} \
           • {"type":"weekly","hour":15,"minute":0,"on":["mon","wed","fri"]} \
           • {"type":"monthly","hour":9,"minute":0,"day_of_month":1} \
@@ -133,7 +134,14 @@ public struct ScheduleTaskActionTool: AgentTool {
         }
 
         let imperative = action.imperativeText(for: task, extra: extra)
-        let outcome = await context.scheduleWake(wakeAt, imperative, taskID, replacesID, recurrenceResult.value)
+        let outcome = await context.scheduleWake(
+            wakeAt,
+            imperative,
+            taskID,
+            replacesID,
+            recurrenceResult.value,
+            action.survivesTaskTermination
+        )
         // Surface the schedule as a dedicated channel banner so the user sees a task-style
         // row ("Pause", "Stop", "Summarize", "Clone+Run" — each with its own icon) instead
         // of the generic `System ⏰ scheduled …` line. The paired timer_activity row gets
@@ -180,6 +188,18 @@ public enum TaskActionKind: String, Sendable, Codable {
         case .stop: return "Stop"
         case .summarize: return "Summarize"
         case .cloneAndRun: return "Clone & Run"
+        }
+    }
+
+    /// Whether this action's wake should survive the linked task's first termination. True
+    /// for actions whose explicit purpose is to act on a task whose previous run is already
+    /// done — `run` (rerun the task), `cloneAndRun` (spawn a fresh copy), `summarize` (often
+    /// scheduled *after* the task has finished). False for `pause` / `stop` since neither is
+    /// meaningful once the task has terminated.
+    public var survivesTaskTermination: Bool {
+        switch self {
+        case .run, .cloneAndRun, .summarize: return true
+        case .pause, .stop: return false
         }
     }
 

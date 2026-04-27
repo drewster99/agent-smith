@@ -99,4 +99,29 @@ struct RecurrenceTests {
         let recurrence = Recurrence.daily(at: TimeOfDay(hour: 9, minute: 5))
         #expect(recurrence.displayDescription == "Daily at 09:05")
     }
+
+    // MARK: - Interval
+
+    @Test("interval recurrence adds the period to the supplied date")
+    func intervalNext() {
+        let recurrence = Recurrence.interval(seconds: 30 * 60)
+        let now = Self.date(2026, 4, 25, 12, 0)
+        let next = recurrence.nextOccurrence(after: now, calendar: Self.utc)
+        #expect(next == Self.date(2026, 4, 25, 12, 30))
+    }
+
+    @Test("interval recurrence below the minimum returns nil")
+    func intervalBelowMinimumReturnsNil() {
+        let recurrence = Recurrence.interval(seconds: 30)
+        let now = Self.date(2026, 4, 25, 12, 0)
+        #expect(recurrence.nextOccurrence(after: now, calendar: Self.utc) == nil)
+    }
+
+    @Test("display description for interval recurrence picks the natural unit")
+    func intervalDisplay() {
+        #expect(Recurrence.interval(seconds: 1800).displayDescription == "Every 30 minutes")
+        #expect(Recurrence.interval(seconds: 7200).displayDescription == "Every 2 hours")
+        #expect(Recurrence.interval(seconds: 5400).displayDescription == "Every 1 hour 30 minutes")
+        #expect(Recurrence.interval(seconds: 60).displayDescription == "Every 1 minute")
+    }
 }

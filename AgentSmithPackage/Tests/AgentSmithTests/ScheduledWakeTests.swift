@@ -261,6 +261,44 @@ struct ScheduledWakeTests {
         #expect(cancelled.isEmpty)
     }
 
+    @Test("cancelWakesForTask preserves wakes flagged survivesTaskTermination")
+    func cancelWakesForTaskPreservesSurvivors() async {
+        let actor = Self.makeActor()
+        let taskID = UUID()
+
+        let cancellable = await actor.scheduleWake(
+            wakeAt: Date().addingTimeInterval(30),
+            instructions: "pause",
+            taskID: taskID,
+            replacesID: nil,
+            survivesTaskTermination: false
+        )
+        let surviving1 = await actor.scheduleWake(
+            wakeAt: Date().addingTimeInterval(60),
+            instructions: "run-again-1",
+            taskID: taskID,
+            replacesID: nil,
+            survivesTaskTermination: true
+        )
+        let surviving2 = await actor.scheduleWake(
+            wakeAt: Date().addingTimeInterval(90),
+            instructions: "run-again-2",
+            taskID: taskID,
+            replacesID: nil,
+            survivesTaskTermination: true
+        )
+        guard let cw = Self.scheduledOrFail(cancellable, comment: "cancellable"),
+              let sw1 = Self.scheduledOrFail(surviving1, comment: "surviving-1"),
+              let sw2 = Self.scheduledOrFail(surviving2, comment: "surviving-2") else { return }
+
+        let cancelledIDs = await actor.cancelWakesForTask(taskID)
+        #expect(cancelledIDs == [cw.id])
+
+        let listed = await actor.listScheduledWakes()
+        let listedIDs = Set(listed.map { $0.id })
+        #expect(listedIDs == Set([sw1.id, sw2.id]))
+    }
+
     // MARK: - Listing order
 
     @Test("listScheduledWakes returns wakes sorted ascending by wakeAt regardless of insertion order")
