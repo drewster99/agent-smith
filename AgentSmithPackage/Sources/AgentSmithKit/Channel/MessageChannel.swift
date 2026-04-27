@@ -1,9 +1,18 @@
 import Foundation
+import Synchronization
 
 /// Append-only pub/sub message bus. All agents and the UI subscribe to messages.
+///
+/// Subscribers live in a `Mutex`-backed registry that is independent of the
+/// channel actor's serial queue. This lets `AsyncStream`'s `onTermination`
+/// closure unsubscribe synchronously the instant a consumer cancels — without
+/// the prior fire-and-forget `Task { await self.unsubscribe(id) }` that left
+/// dead entries in the dict for an unbounded window. `post(_:)` snapshots the
+/// subscriber list under the lock and then invokes them outside of it, so no
+/// user code runs while the lock is held.
 public actor MessageChannel {
     private var messages: [ChannelMessage] = []
-    private var subscribers: [UUID: @Sendable (ChannelMessage) -> Void] = [:]
+    private let subscribers = SubscriberRegistry()
 
     /// Maximum number of messages retained in memory. Older messages are trimmed on post.
     private let maxMessages: Int
@@ -43,9 +52,7 @@ public actor MessageChannel {
         }
         messages.append(stamped)
         trimIfNeeded()
-        for subscriber in subscribers.values {
-            subscriber(stamped)
-        }
+        subscribers.notify(stamped)
     }
 
     /// Drops the oldest messages when the cap is exceeded.
@@ -59,26 +66,32 @@ public actor MessageChannel {
     /// Subscribes to new messages. Returns a subscription ID for unsubscribing.
     @discardableResult
     public func subscribe(_ handler: @escaping @Sendable (ChannelMessage) -> Void) -> UUID {
-        let id = UUID()
-        subscribers[id] = handler
-        return id
+        subscribers.add(handler)
     }
 
     /// Removes a subscription.
     public func unsubscribe(_ id: UUID) {
-        subscribers.removeValue(forKey: id)
+        subscribers.remove(id)
+    }
+
+    /// Number of active subscribers. Surfaced for tests and diagnostics.
+    public var subscriberCount: Int {
+        subscribers.count
     }
 
     /// Returns an `AsyncStream` of new messages from this point forward.
-    public func stream() -> AsyncStream<ChannelMessage> {
-        AsyncStream { continuation in
-            let id = UUID()
-            subscribers[id] = { message in
+    ///
+    /// When the consumer cancels, `onTermination` removes the subscriber
+    /// **synchronously** via the shared registry — no Task hop, no transient
+    /// leak.
+    public nonisolated func stream() -> AsyncStream<ChannelMessage> {
+        let registry = subscribers
+        return AsyncStream { continuation in
+            let id = registry.add { message in
                 continuation.yield(message)
             }
-            continuation.onTermination = { [weak self] _ in
-                guard let self else { return }
-                Task { await self.unsubscribe(id) }
+            continuation.onTermination = { _ in
+                registry.remove(id)
             }
         }
     }
@@ -118,5 +131,30 @@ public actor MessageChannel {
     /// Current message count.
     public var messageCount: Int {
         messages.count
+    }
+}
+
+/// Mutex-backed subscriber registry. Independent of `MessageChannel`'s actor
+/// queue so `AsyncStream.onTermination` can unsubscribe synchronously.
+private final class SubscriberRegistry: Sendable {
+    private let state = Mutex<[UUID: @Sendable (ChannelMessage) -> Void]>([:])
+
+    func add(_ handler: @escaping @Sendable (ChannelMessage) -> Void) -> UUID {
+        let id = UUID()
+        state.withLock { $0[id] = handler }
+        return id
+    }
+
+    func remove(_ id: UUID) {
+        state.withLock { _ = $0.removeValue(forKey: id) }
+    }
+
+    func notify(_ message: ChannelMessage) {
+        let snapshot = state.withLock { Array($0.values) }
+        for sub in snapshot { sub(message) }
+    }
+
+    var count: Int {
+        state.withLock { $0.count }
     }
 }

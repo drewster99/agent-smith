@@ -170,10 +170,28 @@ final class SharedAppState {
 
     private let logger = Logger(subsystem: "com.agentsmith", category: "SharedAppState")
 
+    /// Coalescing serial writers for shared files. Replaces the prior per-call
+    /// `Task.detached { try await basePersistence.saveX(snapshot) }` pattern,
+    /// which let snapshots reach the persistence actor out of order. With these
+    /// writers a burst of mutations collapses to at most a couple of writes,
+    /// and the latest snapshot always wins.
+    private let userModelOverridesWriter: SerialPersistenceWriter<[String: ModelMetadataOverride]>
+    private let memoriesWriter: SerialPersistenceWriter<[MemoryEntry]>
+    private let taskSummariesWriter: SerialPersistenceWriter<[TaskSummaryEntry]>
+
     init() {
         let pm = PersistenceManager()
         self.basePersistence = pm
         self.usageStore = UsageStore(persistence: pm)
+        self.userModelOverridesWriter = SerialPersistenceWriter(label: "userModelOverrides") { snapshot in
+            try await pm.saveUserModelOverrides(snapshot)
+        }
+        self.memoriesWriter = SerialPersistenceWriter(label: "memories") { snapshot in
+            try await pm.saveMemories(snapshot)
+        }
+        self.taskSummariesWriter = SerialPersistenceWriter(label: "taskSummaries") { snapshot in
+            try await pm.saveTaskSummaries(snapshot)
+        }
     }
 
     // MARK: - Bootstrap
@@ -393,15 +411,8 @@ final class SharedAppState {
         }
         llmKit.setUserOverrides(userModelOverrides)
         let snapshot = userModelOverrides
-        let basePersistence = self.basePersistence
-        let logger = self.logger
-        Task.detached {
-            do {
-                try await basePersistence.saveUserModelOverrides(snapshot)
-            } catch {
-                logger.error("Failed to persist user model overrides: \(error.localizedDescription)")
-            }
-        }
+        let writer = userModelOverridesWriter
+        Task { await writer.enqueue(snapshot) }
     }
 
     /// Returns true when every field on the override is at its no-op value. Used by
@@ -441,15 +452,13 @@ final class SharedAppState {
     }
 
     private func persistMemories(memoryStore: MemoryStore) {
-        Task.detached { [basePersistence, logger] in
-            do {
-                let memories = await memoryStore.allMemories()
-                let taskSummaries = await memoryStore.allTaskSummaries()
-                try await basePersistence.saveMemories(memories)
-                try await basePersistence.saveTaskSummaries(taskSummaries)
-            } catch {
-                logger.error("Failed to persist memories: \(error)")
-            }
+        let memoriesWriter = memoriesWriter
+        let summariesWriter = taskSummariesWriter
+        Task {
+            let memories = await memoryStore.allMemories()
+            let taskSummaries = await memoryStore.allTaskSummaries()
+            await memoriesWriter.enqueue(memories)
+            await summariesWriter.enqueue(taskSummaries)
         }
     }
 

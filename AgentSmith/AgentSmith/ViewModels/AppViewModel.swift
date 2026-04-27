@@ -129,10 +129,38 @@ final class AppViewModel {
     /// back to its default every few launches.
     private var isApplyingPersistedState = false
 
+    /// Coalescing serial writers for each per-session file. Replaces the prior
+    /// per-call `Task.detached` pattern, which let snapshots reach the
+    /// persistence actor out-of-order — an older snapshot could overwrite a
+    /// newer one on disk. Each writer drains pending work in FIFO order and
+    /// `flush()` actually waits for in-flight writes to complete (the
+    /// `flushPersistence()` path used to race them).
+    private let channelLogWriter: SerialPersistenceWriter<[ChannelMessage]>
+    private let tasksWriter: SerialPersistenceWriter<[AgentTask]>
+    private let timerEventsWriter: SerialPersistenceWriter<[TimerEvent]>
+    private let scheduledWakesWriter: SerialPersistenceWriter<[ScheduledWake]>
+    private let sessionStateWriter: SerialPersistenceWriter<SessionState>
+
     init(session: Session, shared: SharedAppState) {
         self.session = session
         self.shared = shared
-        self.persistenceManager = PersistenceManager(sessionID: session.id)
+        let pm = PersistenceManager(sessionID: session.id)
+        self.persistenceManager = pm
+        self.channelLogWriter = SerialPersistenceWriter(label: "channelLog") { snapshot in
+            try await pm.saveChannelLog(snapshot)
+        }
+        self.tasksWriter = SerialPersistenceWriter(label: "tasks") { snapshot in
+            try await pm.saveTasks(snapshot)
+        }
+        self.timerEventsWriter = SerialPersistenceWriter(label: "timerEvents") { snapshot in
+            try await pm.saveTimerEvents(snapshot)
+        }
+        self.scheduledWakesWriter = SerialPersistenceWriter(label: "scheduledWakes") { snapshot in
+            try await pm.saveScheduledWakes(snapshot)
+        }
+        self.sessionStateWriter = SerialPersistenceWriter(label: "sessionState") { snapshot in
+            try await pm.saveSessionState(snapshot)
+        }
     }
 
     // MARK: - Lifecycle
@@ -438,7 +466,7 @@ final class AppViewModel {
 
         let channel = await newRuntime.channel
         channelStreamTask = Task { @MainActor [weak self] in
-            for await message in await channel.stream() {
+            for await message in channel.stream() {
                 guard let self else { break }
                 self.messages.append(message)
                 self.allPersistedMessages.append(message)
@@ -500,37 +528,14 @@ final class AppViewModel {
         // (rather than only on `.scheduled`) because cancellations and fires also mutate
         // the in-memory list (cancellation removes a wake; recurrence-fire replaces one
         // wake with the next-occurrence wake).
+        //
+        // The closure delegates to `handleTimerEvent` on MainActor so both side effects
+        // run sequentially in one async context. The prior implementation wrapped each
+        // side effect in its own inner `Task { @MainActor in ... }`, so the channel
+        // post and the wake snapshot raced — the on-disk wake snapshot could land
+        // before the transcript message hit the channel, scrambling visible order.
         await newRuntime.setOnTimerEventForChannel { [weak self] event in
-            await MainActor.run {
-                guard let self else { return }
-                if self.shared.showTimerActivityInTranscript {
-                    let line = AppViewModel.transcriptLine(for: event)
-                    let eventID = event.id.uuidString
-                    let eventKindRaw = event.kind.rawValue
-                    let eventTaskID = event.taskID?.uuidString
-                    Task { @MainActor [weak self] in
-                        guard let self, let runtime = self.runtime else { return }
-                        let channel = await runtime.channel
-                        var meta: [String: AnyCodable] = [
-                            "messageKind": .string("timer_activity"),
-                            "timerEventID": .string(eventID),
-                            "timerEventKind": .string(eventKindRaw)
-                        ]
-                        if let eventTaskID {
-                            meta["timerTaskID"] = .string(eventTaskID)
-                        }
-                        await channel.post(ChannelMessage(
-                            sender: .system,
-                            content: line,
-                            metadata: meta
-                        ))
-                    }
-                }
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    await self.snapshotAndPersistWakes()
-                }
-            }
+            await self?.handleTimerEvent(event)
         }
 
         // Live resolver for the scheduled-wakes-interrupt policy — consulted on every
@@ -707,13 +712,33 @@ final class AppViewModel {
     }
 
     private func persistTimerEvents(_ events: [TimerEvent]) {
-        Task.detached { [persistenceManager, logger] in
-            do {
-                try await persistenceManager.saveTimerEvents(events)
-            } catch {
-                logger.error("Failed to save timer events: \(error)")
+        let writer = timerEventsWriter
+        Task { await writer.enqueue(events) }
+    }
+
+    /// Handles one timer-lifecycle event: post a transcript line if the user has
+    /// the Debug toggle on, then snapshot the wakes list to disk. Both side
+    /// effects run sequentially on MainActor so the visible order matches the
+    /// on-disk order (transcript line first, snapshot second).
+    private func handleTimerEvent(_ event: TimerEvent) async {
+        if shared.showTimerActivityInTranscript, let runtime {
+            let line = Self.transcriptLine(for: event)
+            var meta: [String: AnyCodable] = [
+                "messageKind": .string("timer_activity"),
+                "timerEventID": .string(event.id.uuidString),
+                "timerEventKind": .string(event.kind.rawValue)
+            ]
+            if let taskID = event.taskID {
+                meta["timerTaskID"] = .string(taskID.uuidString)
             }
+            let channel = await runtime.channel
+            await channel.post(ChannelMessage(
+                sender: .system,
+                content: line,
+                metadata: meta
+            ))
         }
+        await snapshotAndPersistWakes()
     }
 
     /// Snapshots the runtime's current wake list and writes it to disk. Also refreshes the
@@ -723,14 +748,7 @@ final class AppViewModel {
         guard let runtime else { return }
         let wakes = await runtime.currentScheduledWakes()
         activeTimers = wakes
-        let snapshot = wakes
-        Task.detached { [persistenceManager, logger] in
-            do {
-                try await persistenceManager.saveScheduledWakes(snapshot)
-            } catch {
-                logger.error("Failed to save scheduled wakes: \(error)")
-            }
-        }
+        await scheduledWakesWriter.enqueue(wakes)
     }
 
     /// Sends user input (with any pending attachments) to Smith.
@@ -933,18 +951,29 @@ final class AppViewModel {
         await shared.usageStore.flush()
     }
 
-    /// Awaits any pending channel-log and tasks writes so the on-disk state reflects the
-    /// current in-memory state before `stopAll` returns. Called at the end of `stopAll` so
-    /// that session deletion can proceed without racing detached saves.
+    /// Drains every per-file writer so the on-disk state reflects in-memory
+    /// state before `stopAll` returns. Each writer enforces FIFO write order
+    /// internally; `flush()` waits until every previously-enqueued snapshot
+    /// has hit disk. Also enqueues one final snapshot per file so the
+    /// post-stop state (e.g., running tasks flipped to interrupted above) is
+    /// captured in the final write.
     private func flushPersistence() async {
-        let snapshot = allPersistedMessages
-        let tasksToSave = tasks
-        do {
-            try await persistenceManager.saveChannelLog(snapshot)
-            try await persistenceManager.saveTasks(tasksToSave)
-        } catch {
-            logger.error("Failed to flush persistence on stop: \(error.localizedDescription)")
-        }
+        await channelLogWriter.enqueue(allPersistedMessages)
+        await tasksWriter.enqueue(tasks)
+        await sessionStateWriter.enqueue(SessionState(
+            agentAssignments: agentAssignments,
+            agentPollIntervals: agentPollIntervals,
+            agentMaxToolCalls: agentMaxToolCalls,
+            agentMessageDebounceIntervals: agentMessageDebounceIntervals,
+            toolsEnabled: toolsEnabled,
+            autoRunNextTask: autoRunNextTask,
+            autoRunInterruptedTasks: autoRunInterruptedTasks
+        ))
+        await channelLogWriter.flush()
+        await tasksWriter.flush()
+        await sessionStateWriter.flush()
+        await timerEventsWriter.flush()
+        await scheduledWakesWriter.flush()
     }
 
     func resetAbort() {
@@ -1129,32 +1158,22 @@ final class AppViewModel {
 
     private func persistMessages() {
         let snapshot = allPersistedMessages
-        Task.detached { [persistenceManager, logger] in
-            do {
-                try await persistenceManager.saveChannelLog(snapshot)
-            } catch {
-                logger.error("Failed to persist messages: \(error)")
-            }
-        }
+        let writer = channelLogWriter
+        Task { await writer.enqueue(snapshot) }
     }
 
     private func persistTasks() {
         let tasksToSave = tasks
-        Task.detached { [persistenceManager, logger] in
-            do {
-                try await persistenceManager.saveTasks(tasksToSave)
-            } catch {
-                logger.error("Failed to persist tasks: \(error)")
-            }
-        }
+        let writer = tasksWriter
+        Task { await writer.enqueue(tasksToSave) }
     }
 
     private func persistSessionStateAsync() {
         // Suppress all writes while loadPersistedState is applying values from
-        // disk. Each field assignment fires didSet → here, and unsynchronized
-        // detached writes were racing each other and clobbering the autoRun
-        // toggles back to in-memory defaults. loadPersistedState does one
-        // explicit write at the end after every field has settled.
+        // disk. The serializer would also coalesce these into one final write,
+        // but skipping the enqueues entirely avoids dirtying the writer's
+        // pending slot with intermediate snapshots that we know aren't real
+        // user intent.
         guard !isApplyingPersistedState else { return }
 
         let state = SessionState(
@@ -1166,13 +1185,8 @@ final class AppViewModel {
             autoRunNextTask: autoRunNextTask,
             autoRunInterruptedTasks: autoRunInterruptedTasks
         )
-        Task.detached { [persistenceManager, logger] in
-            do {
-                try await persistenceManager.saveSessionState(state)
-            } catch {
-                logger.error("Failed to persist session state: \(error)")
-            }
-        }
+        let writer = sessionStateWriter
+        Task { await writer.enqueue(state) }
     }
 
     private static func mimeType(for url: URL) -> String {

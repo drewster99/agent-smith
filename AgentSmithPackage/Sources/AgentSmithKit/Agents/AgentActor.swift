@@ -326,7 +326,8 @@ public actor AgentActor {
         replacesID: UUID? = nil,
         recurrence: Recurrence? = nil,
         originalID: UUID? = nil,
-        previousFireAt: Date? = nil
+        previousFireAt: Date? = nil,
+        survivesTaskTermination: Bool = false
     ) -> ScheduleWakeOutcome {
         let trimmedInstructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedInstructions.isEmpty else {
@@ -344,7 +345,8 @@ public actor AgentActor {
             taskID: taskID,
             recurrence: recurrence,
             originalID: originalID,
-            previousFireAt: previousFireAt
+            previousFireAt: previousFireAt,
+            survivesTaskTermination: survivesTaskTermination
         )
         scheduledWakes.append(wake)
         scheduledWakes.sort { $0.wakeAt < $1.wakeAt }
@@ -367,11 +369,15 @@ public actor AgentActor {
         return true
     }
 
-    /// Cancels every wake associated with the given task. Returns the ids of cancelled wakes.
+    /// Cancels wakes associated with the given task whose `survivesTaskTermination` is false.
+    /// Returns the ids of cancelled wakes. Wakes flagged to survive — currently `run`,
+    /// `clone_and_run`, and `summarize` action wakes — are deliberately retained so the user
+    /// can queue multiple future runs against the same task without the first run's
+    /// completion wiping the queue.
     @discardableResult
     public func cancelWakesForTask(_ taskID: UUID) -> [UUID] {
-        let cancelled = scheduledWakes.filter { $0.taskID == taskID }
-        scheduledWakes.removeAll { $0.taskID == taskID }
+        let cancelled = scheduledWakes.filter { $0.taskID == taskID && !$0.survivesTaskTermination }
+        scheduledWakes.removeAll { $0.taskID == taskID && !$0.survivesTaskTermination }
         for wake in cancelled {
             onWakeCancelled?(wake, .taskTerminated)
         }
@@ -485,6 +491,17 @@ public actor AgentActor {
             group.cancelAll()
         }
         runTask = nil
+
+        // Drop UI/runtime observer callbacks now that the agent has shut down.
+        // Releases the strong references those closures hold against the app
+        // layer's view model so a stopped agent can be deinitialized cleanly.
+        onTurnRecorded = nil
+        onContextChanged = nil
+        smithDigestProvider = nil
+        onWakeScheduled = nil
+        onWakeFired = nil
+        onWakeCancelled = nil
+        onAutoRunTask = nil
     }
 
     /// Injects a channel message into the agent's pending queue.
@@ -1762,7 +1779,8 @@ public actor AgentActor {
                 taskID: wake.taskID,
                 recurrence: recurrence,
                 originalID: wake.originalID,
-                previousFireAt: wake.wakeAt
+                previousFireAt: wake.wakeAt,
+                survivesTaskTermination: wake.survivesTaskTermination
             )
             scheduledWakes.append(nextWake)
             onWakeScheduled?(nextWake)

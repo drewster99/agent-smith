@@ -1,22 +1,22 @@
 import Foundation
 import SemanticSearch
+import Synchronization
 
 /// Thread-safe set for tracking files read during an agent session.
 /// Used by FileEditTool to verify a file was read before editing.
-final class FileReadTracker: @unchecked Sendable {
-    private let lock = NSLock()
-    private var paths: Set<String> = []
+///
+/// Backed by Swift's `Mutex` (Synchronization). Replaces the prior `NSLock`
+/// implementation per the L4 rule "Avoid NSLock; Mutex / serial DispatchQueue
+/// are generally better."
+final class FileReadTracker: Sendable {
+    private let paths = Mutex<Set<String>>([])
 
     func record(_ path: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        paths.insert(path)
+        paths.withLock { $0.insert(path) }
     }
 
     func contains(_ path: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return paths.contains(path)
+        paths.withLock { $0.contains(path) }
     }
 }
 
@@ -128,6 +128,14 @@ public actor OrchestrationRuntime {
     /// layer to `PersistenceManager.savePendingScheduledRunQueue`. Fire-and-forget;
     /// failures log to the app's logger but do not block the runtime.
     private var persistPendingScheduledRunQueue: (@Sendable ([UUID]) async -> Void)?
+
+    /// FIFO queue used to serialize `restartForNewTask` requests. Without this,
+    /// two near-concurrent restart calls would each fire their own
+    /// `Task.detached` and interleave their `stopAll() + start()` chains —
+    /// `start()`'s `guard smith == nil else { return }` then silently dropped
+    /// the second restart's taskID. The queue lets the second restart wait for
+    /// the first to fully complete before its own work begins.
+    private let restartQueue = SerialChainedTaskQueue()
 
     public func setOnTimerEventForChannel(_ handler: @escaping @Sendable (TimerEvent) async -> Void) {
         onTimerEventForChannel = handler
@@ -392,11 +400,13 @@ public actor OrchestrationRuntime {
     }
 
     /// Triggers a full system restart for a newly-created task.
-    /// Launches a detached task so the calling agent's tool execution can unwind
-    /// without deadlocking (the caller is running inside this actor).
+    /// Routed through `restartQueue` so concurrent restart requests run strictly
+    /// in FIFO order — without serialization, two near-back-to-back restarts
+    /// raced into `stopAll() + start()` and `start()`'s `guard smith == nil`
+    /// silently dropped the second taskID.
     /// Captures the last user message before stopping so it can be forwarded to the new Smith.
     public func restartForNewTask(taskID: UUID) {
-        Task.detached { [weak self] in
+        restartQueue.schedule { [weak self] in
             guard let self else { return }
             // Capture the most recent user message before stopping — it may contain
             // permissions or instructions that would be lost across the restart.
@@ -412,6 +422,12 @@ public actor OrchestrationRuntime {
             }
             await self.start(resumingTaskID: taskID, lastUserMessage: lastUserMessage)
         }
+    }
+
+    /// Awaits every previously-scheduled restart. Surfaced for tests / smoke
+    /// scripts that need a quiescence point before asserting on runtime state.
+    public func waitForPendingRestarts() async {
+        await restartQueue.waitForAll()
     }
 
     /// Returns the content of the most recent user message that Smith has not yet
@@ -574,12 +590,9 @@ public actor OrchestrationRuntime {
         // either way the digest is suppressed. Gating on Brown's presence avoids the misleading
         // "Brown made 0 tool calls — likely deep in tool work or stuck" message that fires when
         // no Brown exists at all.
-        let digestChannel = channel
-        await smithAgent.setSmithDigestProvider { [weak self, weak digestChannel] since in
-            guard let self, let digestChannel else { return nil }
-            let brownAlive = await self.agentIDForRole(.brown) != nil
-            guard brownAlive else { return nil }
-            return await Self.assembleBrownActivityDigest(channel: digestChannel, since: since)
+        await smithAgent.setSmithDigestProvider { [weak self] since in
+            guard let self else { return nil }
+            return await self.assembleDigestIfBrownAlive(since: since)
         }
         // Cancel any task-scoped wakes when the task transitions to a terminal status the first time.
         // Also drain `pendingScheduledRunQueue` so any deferred scheduled task — or a paused
@@ -588,6 +601,11 @@ public actor OrchestrationRuntime {
         // are a commitment, not a deferred suggestion.
         let scheduler = followUpScheduler
         await taskStore.setOnTaskTerminated { [weak self] taskID in
+            // Fire-and-forget Task to stay synchronous from TaskStore's view.
+            // Both calls are non-throwing today; if either ever gains a `throws`
+            // signature, wrap them in `do { try await ... } catch { os_log(.error) }`
+            // so the failure surfaces rather than vanishing into the unstructured
+            // Task. (L3 from the 2026-04-27 concurrency review.)
             Task {
                 await scheduler.cancelWakesForTask(taskID)
                 await self?.drainPendingScheduledRunQueue()
@@ -997,6 +1015,13 @@ public actor OrchestrationRuntime {
         currentSessionID = nil
         await channel.setCurrentSessionID(nil)
 
+        // Drop the observer callbacks now that the runtime is quiescent. They
+        // hold strong references to closures captured against the app layer's
+        // view model and runtime; releasing them here makes lifetime crisp and
+        // prevents any deferred Task captured before stopAll from invoking a
+        // stale callback after the runtime has finished tearing down.
+        clearObserverCallbacks()
+
         await channel.post(ChannelMessage(
             sender: .system,
             content: "All agents stopped.",
@@ -1007,11 +1032,40 @@ public actor OrchestrationRuntime {
         ))
     }
 
+    /// Drops every observer callback the app layer has wired up. Called by
+    /// `stopAll()` so a quiescent runtime no longer holds references to UI-side
+    /// closures, and exposed via `observerCallbacksCleared` for tests.
+    private func clearObserverCallbacks() {
+        onAbort = nil
+        onProcessingStateChange = nil
+        onAgentStarted = nil
+        onTurnRecorded = nil
+        onEvaluationRecorded = nil
+        onContextChanged = nil
+        onTimerEventForChannel = nil
+    }
+
+    /// True iff every observer callback is nil. Surfaced for tests; do not
+    /// rely on this from app code.
+    public var observerCallbacksCleared: Bool {
+        onAbort == nil
+            && onProcessingStateChange == nil
+            && onAgentStarted == nil
+            && onTurnRecorded == nil
+            && onEvaluationRecorded == nil
+            && onContextChanged == nil
+            && onTimerEventForChannel == nil
+    }
+
     /// Emergency abort triggered by an agent. Stops everything; requires user interaction to restart.
     public func abort(reason: String, callerRole: AgentRole? = nil) async {
         guard !aborted else { return }
         aborted = true
 
+        // Capture the abort handler BEFORE `stopAll()` runs — `stopAll()` clears
+        // every observer callback as part of teardown, so reading `onAbort`
+        // after it would always be nil and the UI would never see the abort.
+        let abortHandler = onAbort
         let callerName = callerRole?.displayName ?? "safety monitor"
         await channel.post(ChannelMessage(
             sender: .system,
@@ -1019,7 +1073,7 @@ public actor OrchestrationRuntime {
         ))
 
         await stopAll()
-        onAbort?("ABORT triggered by \(callerName): \(reason)")
+        abortHandler?("ABORT triggered by \(callerName): \(reason)")
     }
 
     /// Spawns a Brown+Jones pair. Terminates any existing Brown first (single Brown policy).
@@ -1500,6 +1554,16 @@ public actor OrchestrationRuntime {
         // Cap to prevent storing extremely long context
         let truncated = summary.count > 2000 ? String(summary.suffix(2000)) : summary
         await taskStore.setLastBrownContext(id: task.id, context: truncated)
+    }
+
+    /// Atomically (from the runtime actor's perspective) checks Brown's presence
+    /// and assembles the digest. Folding both checks into one actor call removes
+    /// the prior TOCTOU window where Brown could terminate between
+    /// `agentIDForRole(.brown)` and `assembleBrownActivityDigest`, leaving Smith
+    /// with a digest about an agent that was already gone.
+    private func assembleDigestIfBrownAlive(since: Date) async -> String? {
+        guard agentIDForRole(.brown) != nil else { return nil }
+        return await Self.assembleBrownActivityDigest(channel: channel, since: since)
     }
 
     /// Builds Smith's periodic Brown-activity digest from channel history since `since`.

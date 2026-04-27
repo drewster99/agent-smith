@@ -2,6 +2,11 @@
 
 ## Planned
 
+### Investigate `SessionManager.viewModel(for:)` load-state coupling
+`SessionManager.viewModel(for:)` lazily creates an `AppViewModel` and fires `Task { await vm.loadPersistedState() }` without awaiting. Callers receive a VM that may not have loaded its disk state yet. Today this is fine because every consumer guards on `vm.hasLoadedPersistedState` — and the only consumer that matters (the UI) renders empty state until that flag flips. But the contract is fragile: a future caller assuming "I got a VM, I can read its tasks" will silently see empty arrays for one tick.
+
+Investigate whether to (a) await the load inline (changes the call site to `async`, ripples through SwiftUI scene wiring), (b) return a richer "VM + load token" pair so callers can await readiness, or (c) leave it and add a precondition + comment. Identified during the 2026-04-27 concurrency review (item L2) — not a bug today, but worth pinning down before the codebase grows another consumer.
+
 ### Manage Sessions sheet (with deletion)
 The previous "Close Session…" menu command was removed in 2026-04 because closing a window must NEVER mutate or delete the underlying session — Cmd-W is now strictly a UI operation, and there's no destructive command anywhere in the app. The Session menu lists all sessions and clicking one either focuses an existing window or opens a new one.
 
