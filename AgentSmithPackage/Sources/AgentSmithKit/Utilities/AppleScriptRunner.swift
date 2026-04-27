@@ -123,30 +123,74 @@ public struct SourceLocation: Sendable, Codable {
 /// `AppleScriptResult`. Compile and execute are split so we can tag errors
 /// as `compile` vs `runtime`.
 ///
-/// `NSAppleScript` is documented to be intended for main-thread use, and
-/// background-thread invocation has been observed to fail with osa script
-/// error -1751 in some sandboxes (notably the swiftpm test harness). All
-/// execution is hopped to the main actor for that reason; the actor itself
-/// just serializes calls into the main hop.
+/// Execution is hopped to a dedicated background DispatchQueue (NOT the main
+/// queue). NSAppleScript on the main thread synchronously blocks until the
+/// target app's Apple event reply arrives; if the target is unresponsive
+/// (e.g., a hidden permission dialog or a Mail.app modal) the entire UI
+/// freezes for the duration of the Apple-event timeout (default 120s,
+/// effectively forever for the user). Running on a background queue keeps
+/// the UI responsive; `NSAppleScript` itself does not require main-thread
+/// execution in production sandboxes that have apple-events entitlements,
+/// despite the documentation hint — only the swiftpm test harness has been
+/// seen to fail with -1751 there, and tests can opt into the synchronous
+/// path explicitly.
+///
+/// As belt-and-suspenders, every script we execute is wrapped in a
+/// `with timeout of N seconds ... end timeout` block so a non-responding
+/// target raises -1712 instead of hanging until the default 120s elapses.
 public actor AppleScriptRunner {
     public static let shared = AppleScriptRunner()
 
+    /// Default wall-clock cap for any single AppleScript run. 30s is generous
+    /// for normal automation but short enough to keep Brown's loop alive when
+    /// a target app stalls. Callers can override per-call via `run(_:timeout:)`.
+    public static let defaultTimeoutSeconds: Int = 30
+
+    /// Dedicated serial queue for NSAppleScript invocations. Avoids re-using
+    /// arbitrary cooperative threads (NSAppleScript is sensitive to thread
+    /// identity) while keeping the UI free.
+    private static let scriptQueue = DispatchQueue(label: "agent-smith.applescript.runner")
+
     public init() {}
 
-    /// Compile and execute `source`. NSAppleScript blocks until the script
-    /// returns; callers needing a hard wall-clock cap should wrap the script
-    /// itself in `with timeout of N seconds ... end timeout` (NSAppleScript
-    /// has no public cancel API).
+    /// Compile and execute `source` with the default timeout.
     public func run(_ source: String) async -> AppleScriptResult {
-        await Self.runOnMain(source: source)
+        await run(source, timeoutSeconds: Self.defaultTimeoutSeconds)
+    }
+
+    /// Compile and execute `source` with a custom AppleScript-level timeout
+    /// (passed through `with timeout of N seconds ... end timeout`).
+    public func run(_ source: String, timeoutSeconds: Int) async -> AppleScriptResult {
+        let wrapped = Self.wrapWithTimeout(source: source, seconds: timeoutSeconds)
+        return await withCheckedContinuation { continuation in
+            Self.scriptQueue.async {
+                let result = Self.runSync(source: wrapped)
+                continuation.resume(returning: result)
+            }
+        }
+    }
+
+    /// Test-only: run synchronously on the calling thread. Used by the swiftpm
+    /// test harness where Apple-events on a background queue fail with -1751.
+    static func runSyncForTests(source: String) -> AppleScriptResult {
+        runSync(source: source)
+    }
+
+    /// If the source already opens a `with timeout` block at the top level we
+    /// leave it alone — author-supplied timeouts win. Otherwise we wrap the
+    /// whole body so a stalled target app surfaces as -1712 instead of
+    /// hanging indefinitely.
+    private static func wrapWithTimeout(source: String, seconds: Int) -> String {
+        let lower = source.lowercased()
+        if lower.contains("with timeout of ") { return source }
+        return """
+            with timeout of \(seconds) seconds
+            \(source)
+            end timeout
+            """
     }
 
     // MARK: - Implementation
-
-    @MainActor
-    private static func runOnMain(source: String) -> AppleScriptResult {
-        runSync(source: source)
-    }
 
     private static func runSync(source: String) -> AppleScriptResult {
         guard let script = NSAppleScript(source: source) else {
