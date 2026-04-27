@@ -37,6 +37,18 @@ public struct RunAppleScriptTool: AgentTool {
         First-time-target prompts: macOS will prompt the user once per scripting target (Mail, Finder, ...) \
         for permission. If the user declines, you'll see a `targetApp` error.
 
+        Common pitfall — concatenating object references with `&`: AppleScript's `&` operator forces each \
+        operand to Unicode text, but most object references (e.g. `service of chat 1` returns an `account`, \
+        `sender of message 1` returns a `buddy` or `participant`, `application file of process 1` returns a \
+        `file`) have no app-defined coercion to text and will fail with `-1700` ("Can't make X into type \
+        Unicode text"). The reference syntax you see in error messages (`account id "DAB78B1A-..."`) is a \
+        debug rendering, not a usable string. Always extract a textual property first: \
+        `name of (service of chat 1)`, `id of (service of chat 1) as text`, `handle of (sender of message 1)`. \
+        Properties typed as `text`, `unicode text`, or `string` in the scripting dictionary concatenate cleanly; \
+        properties typed as another class (account, buddy, file, etc.) do not. If you actually want the \
+        reference itself in the result, just `return service of chat 1` directly — the tool will expand it \
+        into `{$type: "objectSpecifier", text, properties}` for you.
+
         Argument:
         - `script` (required): the AppleScript source. Multi-line is fine. Wrap with `with timeout of N seconds ... \
           end timeout` if you need a wall-clock cap — there is no separate timeout argument.
