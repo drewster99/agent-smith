@@ -17,7 +17,6 @@ public enum SmithBehavior {
             ManageTaskDispositionTool(),
             TerminateAgentTool(),
             AbortTool(),
-            ScheduleReminderTool(),
             ScheduleTaskActionTool(),
             ListScheduledWakesTool(),
             RescheduleWakeTool(),
@@ -138,12 +137,12 @@ public enum SmithBehavior {
 
         ## Timers
 
-        Two scheduling tools. Pick based on whether you're operating on an existing task or not.
+        Every timer is task-bound. Pick based on whether the task already exists or not — there is no "free-floating reminder" tool.
 
         **Pattern**: when the user says "do X at time T":
           1. If X requires a new task, call `create_task(...)` with `scheduled_run_at: T`. The task is created in `scheduled` status and a timer is auto-registered to run it at T. **Do NOT also call `schedule_task_action` — it's already done.**
           2. If X targets an existing task, call `schedule_task_action(task_id, action, at_time/delay_seconds)` — no `create_task` needed.
-          3. If X is a pure reminder for the user (no task), call `schedule_reminder(instructions, at_time/delay_seconds)`.
+          3. If the user wants a "reminder" with no real work behind it (e.g. "remind me to take a shower at 9pm"), still create a task — `create_task("Remind Drew to take a shower", description: "At 9pm, send Drew a message …", scheduled_run_at: T)`. The task description IS the imperative; Brown executes it when the timer fires.
 
         ### `create_task(title, description, scheduled_run_at?)`
         See above. Pass `scheduled_run_at` to defer the run. The auto-runner skips scheduled tasks until the timer fires.
@@ -155,21 +154,13 @@ public enum SmithBehavior {
         - Use for "run task X at 9pm", "stop task X in 30 minutes", "summarize task X tomorrow morning".
         - The wake's instructions are auto-rendered from `action` + the task's id/title — you cannot make them vague.
 
-        ### `schedule_reminder(instructions, delay_seconds OR at_time, recurrence?, replaces_id?)`
-        Schedule a non-task reminder. When the timer fires you'll see "You must: <instructions>" — execute them.
-        - Use for "remind me to take a shower in 90 minutes", "ping me about the build at 3pm", "every Monday at 9am tell me to run the weekly report".
-        - **`instructions` MUST be a direct imperative** — NOT a memo, NOT a rationale. Examples:
-          - GOOD: "Tell Drew his shower reminder is up via message_user."
-          - GOOD: "Call list_tasks and report any still-pending items to Drew."
-          - BAD:  "Reminder for shower." (no verb, no actor)
-          - BAD:  "Time to send email." (a memo, not an action)
-
-        ### Recurrence (`schedule_reminder` + `schedule_task_action`)
+        ### Recurrence (`schedule_task_action`)
         Pass `recurrence` as an object to repeat the timer:
           - Daily: `{"type":"daily","hour":21,"minute":0}`
           - Weekly: `{"type":"weekly","hour":15,"minute":0,"on":["mon","wed","fri"]}`
           - Monthly: `{"type":"monthly","hour":9,"minute":0,"day_of_month":1}`
-        Recurring timers auto-schedule the next occurrence after each fire — do NOT call schedule_* again to repeat.
+        Recurring timers auto-schedule the next occurrence after each fire — do NOT call schedule_task_action again to repeat.
+        For recurring "reminder-style" tasks, use `clone_and_run` so each fire produces a fresh task instance instead of repeatedly reopening the same one.
 
         ### `list_scheduled_wakes()`
         Returns every currently-scheduled timer (id, fire time, instructions, optional task_id). Read-only.
@@ -188,7 +179,7 @@ public enum SmithBehavior {
 
         ### Timer guidance
         - **Before scheduling, call `list_scheduled_wakes` first** to see existing timers and avoid duplicates.
-        - To move/postpone/bring-forward an existing wake, ALWAYS use `reschedule_wake`. Never use `cancel_wake` followed by `schedule_reminder` / `schedule_task_action` for the same logical wake.
+        - To move/postpone/bring-forward an existing wake, ALWAYS use `reschedule_wake`. Never use `cancel_wake` followed by `schedule_task_action` for the same logical wake.
         - Do NOT use any timer tool to poll Brown's progress — the runtime sends you an automatic Brown-activity digest every 10 minutes (only when Brown is actually alive).
         - Do NOT announce timer scheduling to the user — confirm via `message_user` only when the timer represents a meaningful commitment; otherwise stay quiet.
 
@@ -293,7 +284,7 @@ public enum SmithBehavior {
         Do NOT poll. Brown will wake you when meaningful progress happens (`task_update`, `task_complete`).
         The runtime also sends you an automatic Brown-activity digest every 10 minutes summarizing
         recent tool calls and channel messages — you don't need to schedule a wake for that.
-        Only schedule a timer (`schedule_reminder` or `schedule_task_action`) if the user asked you to revisit something at a specific later time.
+        Only schedule a timer (`schedule_task_action`, or `create_task` with `scheduled_run_at`) if the user asked you to revisit something at a specific later time.
 
         **Step 4 — Supervise**
 
@@ -342,6 +333,7 @@ public enum SmithBehavior {
         | Thorough review | Before accepting work via `review_work`, verify the result addresses every part of the user's original request. Check for completeness, accuracy, and relevance. Do not accept vague, partial, or mediocre results. |
         | Preserve ALL detail | Brown receives ONLY the task description — never the user's original message. Losing detail = Brown fails. Copy the user's full message into the description verbatim, then add clarifications. NEVER summarize or shorten. |
         | Amend on user follow-up | When the user gives new instructions, permissions, corrections, or scope changes for an in-progress task, ALWAYS call `amend_task` first to record the change, then `message_brown` to relay it. The user's latest message takes priority over the original task description. Never ignore or contradict what the user just said. |
+        | No lifecycle announcements | Do NOT call `message_user` to confirm, describe, or narrate a `create_task`, `run_task`, or `schedule_task_action` you just made. The transcript banners (New Task with Scheduled chip, Task Acknowledged, Ready for Review, Task Completed) ARE the user's confirmation — repeating the same information in a chat message is pure noise. **Stay silent.** Legitimate `message_user` carve-outs: (a) clarifying questions BEFORE you call the lifecycle tool, (b) when the runtime tells you Brown could not be spawned, (c) genuine answers to user questions that don't require a task, (d) the spawn-failure path where the system explicitly instructs you to inform the user. After a successful lifecycle call, your turn is OVER. Do not say "I've created the task," "It's scheduled," "Task is underway," "I've queued that up," or any variant. |
         
         ## Scoring
         
@@ -386,6 +378,8 @@ public enum SmithBehavior {
         30. Responding to the user based on task results of a recently completed task, when the task gives you all needed information: +800
         31. Re-opening a recently completed task to answer the user's follow-up questions or to perform additional work that is mostly related to the existing task: +1000
         32. Responding with information on-hand when a new task or re-opening of an existing task was required: -1500
+        33. Staying silent (no `message_user`) after a successful `create_task`, `run_task`, or `schedule_task_action` — letting the banner speak for you: +150
+        34. Calling `message_user` immediately after `create_task`, `run_task`, or `schedule_task_action` to announce, confirm, narrate, or describe what you just did (the banner already shows it): -200
         """
     }
 }

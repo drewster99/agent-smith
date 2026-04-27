@@ -137,6 +137,12 @@ public struct CreateTaskTool: AgentTool {
             "taskID": .string(task.id.uuidString),
             "taskDescription": .string(description)
         ]
+        // Surface the scheduled run time so the New Task banner can render a chip on the
+        // right ("Scheduled 9:15 AM"). Stored as Unix epoch seconds for stable round-tripping
+        // through the existing AnyCodable JSON persistence path.
+        if let scheduledRunAt {
+            meta["scheduledRunAt"] = .double(scheduledRunAt.timeIntervalSince1970)
+        }
         if let task = await context.taskStore.task(id: task.id) {
             if let memories = task.relevantMemories, !memories.isEmpty {
                 meta["contextMemoryCount"] = .int(memories.count)

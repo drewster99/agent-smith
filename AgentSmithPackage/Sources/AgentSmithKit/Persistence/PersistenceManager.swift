@@ -179,6 +179,26 @@ public actor PersistenceManager {
         return try JSONDecoder().decode([ScheduledWake].self, from: data)
     }
 
+    // MARK: - Pending scheduled-run queue (per-session)
+
+    /// Persists the pending scheduled-run queue — the FIFO list of task IDs whose wakes
+    /// fired while another task was in flight, plus paused tasks queued for resume after
+    /// an interrupt. Saved on every mutation (enqueue / dequeue) so the queue survives
+    /// app quit and crashes. Stored alongside the per-session wake snapshot.
+    public func savePendingScheduledRunQueue(_ taskIDs: [UUID]) throws {
+        try ensureDirectories()
+        let data = try JSONEncoder().encode(taskIDs)
+        let url = sessionDirectory.appendingPathComponent("pending_scheduled_run_queue.json")
+        try data.write(to: url, options: .atomic)
+    }
+
+    public func loadPendingScheduledRunQueue() throws -> [UUID] {
+        let url = sessionDirectory.appendingPathComponent("pending_scheduled_run_queue.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode([UUID].self, from: data)
+    }
+
     // MARK: - Memories (shared)
 
     public func saveMemories(_ memories: [MemoryEntry]) throws {

@@ -93,8 +93,71 @@ public actor OrchestrationRuntime {
     /// because the app layer may need to hop to MainActor to read the user-defaults flag.
     private var onTimerEventForChannel: (@Sendable (TimerEvent) async -> Void)?
 
+    /// Loads the persisted scheduled-wake snapshot from disk. Set by the app layer at
+    /// runtime construction; called inside `start(resumingTaskID:)` so the new Smith
+    /// inherits every wake (whether keyed to a `.scheduled` task or to an arbitrary
+    /// `schedule_task_action` against an in-flight `.pending` task) on every restart —
+    /// not just on cold launch. Without this, `restartForNewTask` silently drops every
+    /// wake in the previous Smith's in-memory list.
+    private var loadPersistedWakes: (@Sendable () async -> [ScheduledWake])?
+
+    /// Resolver that returns the live "scheduled wakes interrupt running task" policy.
+    /// Set by the app layer; the closure reads `SharedAppState.scheduledWakesInterruptRunning`
+    /// on each invocation so toggling the setting takes effect immediately for in-flight
+    /// runtimes. When unset, defaults to false (let the running task finish first).
+    private var scheduledWakesInterruptResolver: (@Sendable () async -> Bool)?
+
+    /// Tasks queued to run as soon as the current in-flight task finishes (or is
+    /// paused/interrupted), in FIFO order. Populated by `dispatchAutoRunWake` when a
+    /// wake fires while something is already running. Drained by
+    /// `drainPendingScheduledRunQueue`, called from the task-termination hook. This
+    /// queue runs INDEPENDENTLY of `autoAdvanceEnabled` — scheduled wakes are a
+    /// promise to the user, not a deferred suggestion.
+    ///
+    /// Persisted per-session via `persistPendingScheduledRunQueue`; reseeded on every
+    /// `start()` from `loadPendingScheduledRunQueue`. Survives app quit and crashes so
+    /// a deferred scheduled task isn't lost when the user closes the window mid-run.
+    private var pendingScheduledRunQueue: [UUID] = []
+
+    /// Loads the persisted pending-scheduled-run queue from disk. Set by the app layer
+    /// at runtime construction; consulted inside `start()` so a fresh runtime inherits
+    /// any deferred scheduled tasks from the previous session lifetime.
+    private var loadPendingScheduledRunQueue: (@Sendable () async -> [UUID])?
+
+    /// Persists the pending-scheduled-run queue on every mutation. Wired by the app
+    /// layer to `PersistenceManager.savePendingScheduledRunQueue`. Fire-and-forget;
+    /// failures log to the app's logger but do not block the runtime.
+    private var persistPendingScheduledRunQueue: (@Sendable ([UUID]) async -> Void)?
+
     public func setOnTimerEventForChannel(_ handler: @escaping @Sendable (TimerEvent) async -> Void) {
         onTimerEventForChannel = handler
+    }
+
+    /// Wires the disk-replay loader. Called once by the app layer after constructing the
+    /// runtime; the closure is invoked on every `start()` to seed the new Smith with
+    /// surviving wakes.
+    public func setLoadPersistedWakes(_ handler: @escaping @Sendable () async -> [ScheduledWake]) {
+        loadPersistedWakes = handler
+    }
+
+    /// Wires the live policy resolver. The closure is consulted on every auto-run wake
+    /// fire, so toggling `SharedAppState.scheduledWakesInterruptRunning` takes effect
+    /// immediately without restarting the runtime.
+    public func setScheduledWakesInterruptResolver(_ resolver: @escaping @Sendable () async -> Bool) {
+        scheduledWakesInterruptResolver = resolver
+    }
+
+    /// Wires the per-session persistence for the pending-scheduled-run queue. The runtime
+    /// calls `load` once inside `start()` to seed the queue, and calls `persist` after
+    /// every enqueue / dequeue. Both closures should target the session-scoped
+    /// `PersistenceManager(sessionID:)` so the queue lives next to the channel log,
+    /// scheduled wakes, and other per-session state.
+    public func setPendingScheduledRunQueuePersistence(
+        load: @escaping @Sendable () async -> [UUID],
+        persist: @escaping @Sendable ([UUID]) async -> Void
+    ) {
+        loadPendingScheduledRunQueue = load
+        persistPendingScheduledRunQueue = persist
     }
 
     public func currentScheduledWakes() async -> [ScheduledWake] {
@@ -111,6 +174,144 @@ public actor OrchestrationRuntime {
     /// after this call the actor's wake list IS the persisted snapshot.
     public func restoreScheduledWakes(_ wakes: [ScheduledWake]) async {
         await smith?.restoreScheduledWakes(wakes)
+    }
+
+    /// Routes an auto-run wake fire deterministically based on `scheduledWakesInterrupt`.
+    ///
+    /// **No task in flight** → `restartForNewTask` immediately, regardless of policy.
+    ///
+    /// **Task in flight, interrupt = true** → pause the running task, queue it for
+    /// resume AFTER the scheduled task, then drive `restartForNewTask` for the
+    /// scheduled task. When the scheduled task completes (`onTaskTerminated` →
+    /// `drainPendingScheduledRunQueue`), the paused task auto-resumes.
+    ///
+    /// **Task in flight, interrupt = false** → enqueue the scheduled task. It runs as
+    /// soon as the current task finishes (via `drainPendingScheduledRunQueue`).
+    ///
+    /// Both queue-driven paths run INDEPENDENTLY of `autoAdvanceEnabled` — a scheduled
+    /// wake is a commitment to the user, not a deferred suggestion.
+    private func dispatchAutoRunWake(taskID: UUID) async {
+        let activeTasks = await taskStore.allTasks().filter { $0.disposition == .active }
+        let inFlight = activeTasks.first {
+            $0.status == .running || $0.status == .awaitingReview
+        }
+
+        guard let blocker = inFlight else {
+            await restartForNewTask(taskID: taskID)
+            return
+        }
+
+        guard let scheduledTask = await taskStore.task(id: taskID) else { return }
+        let interrupt = await scheduledWakesInterruptResolver?() ?? false
+
+        if interrupt {
+            // Pause the running task so its Brown context is saved, queue it for resume,
+            // then start the scheduled task. When the scheduled task completes the
+            // termination hook drains the queue and resumes the paused task.
+            await taskStore.updateStatus(id: blocker.id, status: .paused)
+            pendingScheduledRunQueue.append(blocker.id)
+            await persistPendingScheduledRunQueue?(pendingScheduledRunQueue)
+            await channel.post(ChannelMessage(
+                sender: .system,
+                content: "Pausing '\(blocker.title)' to run scheduled task '\(scheduledTask.title)'. Will resume '\(blocker.title)' when the scheduled task finishes.",
+                metadata: [
+                    "messageKind": .string("scheduled_run_interrupting"),
+                    "scheduledTaskID": .string(taskID.uuidString),
+                    "scheduledTaskTitle": .string(scheduledTask.title),
+                    "blockingTaskID": .string(blocker.id.uuidString),
+                    "blockingTaskTitle": .string(blocker.title)
+                ]
+            ))
+            await restartForNewTask(taskID: taskID)
+        } else {
+            pendingScheduledRunQueue.append(taskID)
+            await persistPendingScheduledRunQueue?(pendingScheduledRunQueue)
+            await channel.post(ChannelMessage(
+                sender: .system,
+                content: "Scheduled task '\(scheduledTask.title)' fired while '\(blocker.title)' is \(blocker.status.rawValue). Queued — will run after the current task finishes.",
+                metadata: [
+                    "messageKind": .string("scheduled_run_deferred"),
+                    "scheduledTaskID": .string(taskID.uuidString),
+                    "scheduledTaskTitle": .string(scheduledTask.title),
+                    "blockingTaskID": .string(blocker.id.uuidString),
+                    "blockingTaskTitle": .string(blocker.title),
+                    "blockingTaskStatus": .string(blocker.status.rawValue)
+                ]
+            ))
+        }
+    }
+
+    /// Drains the head of `pendingScheduledRunQueue` if no task is currently in flight.
+    /// Self-checking — safe to call any time the runtime suspects state may have shifted
+    /// (typically from `onTaskTerminated`). Skips queue entries whose tasks are no longer
+    /// runnable (e.g. cancelled by the user mid-queue) so a single bad entry can't stall
+    /// the rest of the queue.
+    private func drainPendingScheduledRunQueue() async {
+        guard !pendingScheduledRunQueue.isEmpty else { return }
+        let activeTasks = await taskStore.allTasks().filter { $0.disposition == .active }
+        let stillBusy = activeTasks.contains { $0.status == .running || $0.status == .awaitingReview }
+        guard !stillBusy else { return }
+
+        while let next = pendingScheduledRunQueue.first {
+            pendingScheduledRunQueue.removeFirst()
+            await persistPendingScheduledRunQueue?(pendingScheduledRunQueue)
+            guard let task = await taskStore.task(id: next), task.status.isRunnable else {
+                continue
+            }
+            await restartForNewTask(taskID: next)
+            return
+        }
+    }
+
+    /// Builds the user-role message that seeds Brown's conversation history at task spawn.
+    /// Mechanically `task.title + task.description` plus optional Prior Progress / Last
+    /// Working State on resume — verbatim copies of fields the task store already owns,
+    /// no transformation. Used by both the run_task path and the autoRunInterruptedTasks
+    /// cold-launch path; previously posted as a Smith → Brown channel message which
+    /// duplicated the New Task banner's description in the user-facing transcript.
+    static func composeBrownTaskBriefing(for task: AgentTask) -> String {
+        var parts: [String] = []
+        parts.append("Task: \"\(task.title)\" (ID: \(task.id.uuidString))\n\n\(task.description)")
+        if !task.updates.isEmpty {
+            let history = task.updates.map { "- \($0.message)" }.joined(separator: "\n")
+            parts.append("## Prior Progress\n\(history)")
+        }
+        if let brownContext = task.lastBrownContext {
+            parts.append("## Last Working State\n\(brownContext)")
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
+    /// Re-arms wakes for any `.scheduled` task that doesn't already have a wake registered
+    /// on Smith's actor. Belt-and-suspenders pass run from `start(resumingTaskID:)` after
+    /// disk replay — covers stale-snapshot or first-launch cases where the persistence file
+    /// is missing a wake the task store still needs. Past-due `.scheduled` tasks are
+    /// promoted to `.pending` so the cold-launch task summary surfaces them.
+    /// `excluded` skips a task that's about to be promoted out of `.scheduled` by the
+    /// run_task path (no point arming a wake we'd immediately cancel).
+    private func rearmScheduledTaskWakes(excluding excluded: UUID?) async {
+        guard let smithAgent = smith else { return }
+        let existingTaskIDs: Set<UUID> = Set(
+            await smithAgent.listScheduledWakes().compactMap { $0.taskID }
+        )
+        let now = Date()
+        let scheduled = await taskStore.allTasks().filter {
+            $0.disposition == .active && $0.status == .scheduled && $0.id != excluded
+        }
+        for task in scheduled {
+            guard let fireAt = task.scheduledRunAt else { continue }
+            if fireAt > now {
+                if existingTaskIDs.contains(task.id) { continue }
+                let imperative = TaskActionKind.run.imperativeText(for: task, extra: nil)
+                _ = await smithAgent.scheduleWake(
+                    wakeAt: fireAt,
+                    instructions: imperative,
+                    taskID: task.id
+                )
+            } else {
+                await taskStore.promoteScheduledToPending(id: task.id)
+            }
+        }
     }
 
     public init(
@@ -345,6 +546,22 @@ public actor OrchestrationRuntime {
         await followUpScheduler.set(agent: smithAgent)
         await smithAgent.setUsageStore(usageStore)
         await smithAgent.setSessionID(currentSessionID)
+
+        // Auto-run wake fires bypass Smith and drive `restartForNewTask` directly. This
+        // is what "scheduled task → run at fire time" was always meant to be: fully
+        // mechanical, no LLM in the loop. Smith learns about the new run when its fresh
+        // process boots with `resumingTaskID` set (auto-spawned Brown, briefing pre-seeded).
+        //
+        // Gated on "nothing in flight": if a task is currently running or awaiting
+        // Smith's review, we do NOT yank it. The wake's task was already promoted to
+        // `.pending` by `AgentActor.checkScheduledWake`; it sits in the queue and the
+        // runtime's normal auto-advance (after the current task finishes via
+        // `review_work(accepted: true)`) picks it up. We post a system banner so the user
+        // sees that the schedule fired but was deferred.
+        await smithAgent.setOnAutoRunTask { [weak self] taskID in
+            guard let self else { return }
+            await self.dispatchAutoRunWake(taskID: taskID)
+        }
         if let turnCallback = onTurnRecorded {
             await smithAgent.setOnTurnRecorded { turn in turnCallback(.smith, turn) }
         }
@@ -365,9 +582,16 @@ public actor OrchestrationRuntime {
             return await Self.assembleBrownActivityDigest(channel: digestChannel, since: since)
         }
         // Cancel any task-scoped wakes when the task transitions to a terminal status the first time.
+        // Also drain `pendingScheduledRunQueue` so any deferred scheduled task — or a paused
+        // task awaiting resume after an interrupt — runs immediately when the in-flight slot
+        // frees up. Drain runs INDEPENDENTLY of `autoAdvanceEnabled` because scheduled wakes
+        // are a commitment, not a deferred suggestion.
         let scheduler = followUpScheduler
-        await taskStore.setOnTaskTerminated { taskID in
-            Task { await scheduler.cancelWakesForTask(taskID) }
+        await taskStore.setOnTaskTerminated { [weak self] taskID in
+            Task {
+                await scheduler.cancelWakesForTask(taskID)
+                await self?.drainPendingScheduledRunQueue()
+            }
         }
 
         // Wire timer lifecycle callbacks from Smith's actor into the runtime's event log so
@@ -408,6 +632,33 @@ public actor OrchestrationRuntime {
         }
         agentSubscriptions[id] = [subID]
 
+        // Replay persisted wakes onto the freshly-built Smith. Runs on every `start()` —
+        // cold launch AND `restartForNewTask` — so wakes survive run_task restarts in
+        // addition to app quit. The disk file is kept current via `onTimerEventForChannel`.
+        // Without this, every `restartForNewTask` silently dropped the previous Smith's
+        // in-memory wake list, so a second-or-later scheduled task simply never fired.
+        if let loader = loadPersistedWakes {
+            let wakes = await loader()
+            if !wakes.isEmpty {
+                await smithAgent.restoreScheduledWakes(wakes)
+            }
+        }
+
+        // Re-seed the pending-scheduled-run queue from disk so wakes that fired and were
+        // deferred (or paused tasks queued for resume after an interrupt) still run when
+        // the slot frees up. The queue is per-session, so each window's runtime restores
+        // its own list — no cross-session bleed.
+        if let loader = loadPendingScheduledRunQueue {
+            let queue = await loader()
+            if !queue.isEmpty {
+                pendingScheduledRunQueue = queue
+            }
+        }
+        // Belt-and-suspenders: re-arm any `.scheduled` task that doesn't yet have a wake
+        // after disk replay (covers stale snapshots, first-run, etc.). Past-due `.scheduled`
+        // tasks get promoted to `.pending` so the cold-launch instruction surfaces them.
+        await rearmScheduledTaskWakes(excluding: resumingTaskID)
+
         // Mark any leftover running tasks as interrupted — no Brown is running them anymore.
         // (Clean shutdowns mark these interrupted via AppViewModel; this catches crashes/force-quits.)
         // Skip the resuming task if present — it will be set to running momentarily.
@@ -432,31 +683,21 @@ public actor OrchestrationRuntime {
                     // Re-read to get the latest state (includes any amendments from run_task)
                     resumingTask = await taskStore.task(id: resumingTaskID) ?? resumingTask
 
-                    // Compose and deliver task briefing directly to Brown
-                    var briefingParts: [String] = []
-                    briefingParts.append("## Task: \(resumingTask.title)\n\n\(resumingTask.description)")
-
-                    if !resumingTask.updates.isEmpty {
-                        let history = resumingTask.updates.map { "- \($0.message)" }.joined(separator: "\n")
-                        briefingParts.append("## Prior Progress\n\(history)")
-                    }
-                    if let brownContext = resumingTask.lastBrownContext {
-                        briefingParts.append("## Last Working State\n\(brownContext)")
-                    }
-
-                    // Queue the synthetic ack BEFORE posting the briefing so it's
-                    // guaranteed to be set before Brown's run loop processes the
-                    // briefing message. Zero tokens, zero latency, no LLM call.
+                    // Seed Brown's conversation directly from the task store. We used to
+                    // post this as a Smith → Brown channel message, which duplicated the
+                    // New Task banner's description in the user's transcript. The briefing
+                    // is mechanically `task.title + task.description` plus optional resume
+                    // context — all already in the task store; Brown is the only consumer
+                    // (Jones reads task.description directly). Direct seeding keeps the
+                    // data flow clean and stays symmetric with `rebuildContextFromTask`.
+                    let briefing = Self.composeBrownTaskBriefing(for: resumingTask)
                     if let brownAgent = agents[brownID] {
+                        // Synthetic ack runs BEFORE any LLM call on Brown's first run-loop
+                        // tick — set it before seeding so the synthetic-tool-call branch
+                        // doesn't accidentally race with the seeded user message.
                         await brownAgent.setSyntheticFirstToolCall("task_acknowledged")
+                        await brownAgent.appendUserMessage(briefing)
                     }
-
-                    await channel.post(ChannelMessage(
-                        sender: .agent(.smith),
-                        recipientID: brownID,
-                        recipient: .agent(.brown),
-                        content: briefingParts.joined(separator: "\n\n")
-                    ))
                     brownSpawned = true
                 } else {
                     brownSpawned = false
@@ -532,25 +773,9 @@ public actor OrchestrationRuntime {
                     .prefix(5)
             )
 
-            // Re-arm scheduled-task wakes that were lost when the previous run quit. For each
-            // .scheduled task: if its `scheduledRunAt` is still in the future, register a wake
-            // bound to it. If the time has elapsed during downtime, promote the task to .pending
-            // and let it surface in the cold-launch instruction below — the user will see it as a
-            // pending task and can run it (or auto-advance picks it up).
+            // Note: re-arming scheduled-task wakes happens earlier in `start()` via
+            // `rearmScheduledTaskWakes()` — it runs on every restart path, not just cold launch.
             let nowAtBoot = Date()
-            for task in scheduledTasks {
-                guard let fireAt = task.scheduledRunAt else { continue }
-                if fireAt > nowAtBoot {
-                    let imperative = TaskActionKind.run.imperativeText(for: task, extra: nil)
-                    _ = await smithAgent.scheduleWake(
-                        wakeAt: fireAt,
-                        instructions: imperative,
-                        taskID: task.id
-                    )
-                } else {
-                    await taskStore.promoteScheduledToPending(id: task.id)
-                }
-            }
 
             // If autoRunInterruptedTasks is enabled and no awaitingReview task needs attention first,
             // auto-start the first interrupted task by spawning Brown and delivering the briefing.
@@ -560,24 +785,11 @@ public actor OrchestrationRuntime {
                     await taskStore.updateStatus(id: task.id, status: .running)
                     await taskStore.assignAgent(taskID: task.id, agentID: brownID)
 
-                    var briefingParts: [String] = []
-                    briefingParts.append("## Task: \(task.title)\n\n\(task.description)")
-                    if !task.updates.isEmpty {
-                        let history = task.updates.map { "- \($0.message)" }.joined(separator: "\n")
-                        briefingParts.append("## Prior Progress\n\(history)")
-                    }
-                    if let brownContext = task.lastBrownContext {
-                        briefingParts.append("## Last Working State\n\(brownContext)")
-                    }
+                    let briefing = Self.composeBrownTaskBriefing(for: task)
                     if let brownAgent = agents[brownID] {
                         await brownAgent.setSyntheticFirstToolCall("task_acknowledged")
+                        await brownAgent.appendUserMessage(briefing)
                     }
-                    await channel.post(ChannelMessage(
-                        sender: .agent(.smith),
-                        recipientID: brownID,
-                        recipient: .agent(.brown),
-                        content: briefingParts.joined(separator: "\n\n")
-                    ))
                     autoResumedTask = task
                 }
             }
@@ -704,7 +916,11 @@ public actor OrchestrationRuntime {
 
         await channel.post(ChannelMessage(
             sender: .system,
-            content: "System online. Smith agent active."
+            content: "System online. Smith agent active.",
+            metadata: [
+                "messageKind": .string("restart_chrome"),
+                "restartChromeKind": .string("system_online")
+            ]
         ))
 
         monitoringTimer = MonitoringTimer(
@@ -713,6 +929,19 @@ public actor OrchestrationRuntime {
             taskStore: taskStore
         )
         await monitoringTimer?.start()
+
+        // Cold-launch drain: if the queue restored from disk has entries AND nothing is
+        // currently in flight, kick off the head right now. We hop through Task.detached
+        // with a tiny grace so this `start()` call fully unwinds before
+        // `drainPendingScheduledRunQueue` calls `restartForNewTask` (which itself wraps
+        // a `stopAll() + start()` in a detached task — calling it from within `start()`
+        // would race the in-progress build).
+        if !pendingScheduledRunQueue.isEmpty {
+            Task.detached { [weak self] in
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                await self?.drainPendingScheduledRunQueue()
+            }
+        }
     }
 
     /// Sends a user message (with optional attachments) privately to Smith.
@@ -770,7 +999,11 @@ public actor OrchestrationRuntime {
 
         await channel.post(ChannelMessage(
             sender: .system,
-            content: "All agents stopped."
+            content: "All agents stopped.",
+            metadata: [
+                "messageKind": .string("restart_chrome"),
+                "restartChromeKind": .string("agents_stopped")
+            ]
         ))
     }
 

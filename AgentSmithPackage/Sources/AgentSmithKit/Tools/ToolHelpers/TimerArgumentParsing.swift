@@ -1,6 +1,6 @@
 import Foundation
 
-/// Shared argument parsing for `schedule_reminder`, `schedule_task_action`, and (in
+/// Shared argument parsing for `schedule_task_action`, `reschedule_wake`, and (in
 /// `CreateTaskTool`) the `scheduled_run_at` field. Centralizes the validation rules so
 /// behaviour stays identical across tools — same min/max delay, same ISO-8601 forgiveness,
 /// same recurrence schema.
@@ -153,7 +153,7 @@ enum TimerArgumentParsing {
         }
     }
 
-    /// Formats the user-facing tool result for `schedule_reminder` / `schedule_task_action`.
+    /// Formats the user-facing tool result for `schedule_task_action` / `reschedule_wake`.
     static func formatScheduleOutcome(_ outcome: ScheduleWakeOutcome, kind: String) -> ToolExecutionResult {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"

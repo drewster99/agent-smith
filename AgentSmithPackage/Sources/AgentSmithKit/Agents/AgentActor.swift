@@ -138,6 +138,14 @@ public actor AgentActor {
     /// single fire per LLM turn instead of N rows.
     private var onWakeFired: (@Sendable (ScheduledWake, [ScheduledWake]) -> Void)?
     private var onWakeCancelled: (@Sendable (ScheduledWake, WakeCancellationCause) -> Void)?
+    /// Hook the runtime wires to auto-execute `run_task` for a fired wake without going
+    /// through Smith's LLM. Eliminates the dependency on the model to follow the
+    /// `[System: A timer has fired]` imperative — weak local models (e.g. gemma3:27b)
+    /// were asking the user for confirmation instead of executing. The wake is
+    /// considered an "auto-run" wake when its imperative was rendered by
+    /// `TaskActionKind.run.imperativeText` AND it carries a `taskID`. Other actions
+    /// (pause/stop/summarize/clone_and_run) still flow through Smith for now.
+    private var onAutoRunTask: (@Sendable (UUID) async -> Void)?
 
     private var maxToolCallsPerIteration: Int
     /// Maximum concurrent Jones security evaluations to prevent overwhelming the LLM backend.
@@ -251,6 +259,20 @@ public actor AgentActor {
     /// Returns a snapshot of the agent's full conversation history for inspection.
     public func contextSnapshot() -> [LLMMessage] {
         conversationHistory
+    }
+
+    /// Appends a user-role message to this agent's conversation history before any LLM
+    /// call. Used by the orchestration runtime to seed Brown with the task briefing at
+    /// spawn time without going through the public channel — the briefing was previously
+    /// posted as a Smith → Brown channel message that duplicated the New Task banner's
+    /// description for the user. Direct injection keeps the data flow `taskStore → Brown`
+    /// instead of `taskStore → Smith → channel.post → Brown`, eliminates the redundant
+    /// transcript row, and stays symmetric with `rebuildContextFromTask` (which already
+    /// seeds Brown's history from the task store on the rebuild path).
+    public func appendUserMessage(_ text: String) {
+        conversationHistory.append(LLMMessage(role: .user, text: text))
+        hasUnprocessedInput = true
+        pushLiveContext()
     }
 
     /// Returns a snapshot of recent LLM turns for per-turn inspection.
@@ -373,6 +395,25 @@ public actor AgentActor {
         onWakeScheduled = onScheduled
         onWakeFired = onFired
         onWakeCancelled = onCancelled
+    }
+
+    /// Wires the runtime's auto-run handler. When a wake fires whose imperative matches
+    /// the `TaskActionKind.run` shape, `checkScheduledWake` calls this directly instead
+    /// of injecting the imperative into Smith's conversation. The runtime then drives
+    /// `restartForNewTask`; Smith finds out about the new run when its fresh process
+    /// boots with `resumingTaskID` set.
+    public func setOnAutoRunTask(_ handler: @escaping @Sendable (UUID) async -> Void) {
+        onAutoRunTask = handler
+    }
+
+    /// Returns true when this wake was scheduled by `TaskActionKind.run.imperativeText` —
+    /// i.e. its imperative starts with "Call \`run_task\` on ". This is the only action
+    /// whose execution is fully mechanical (no LLM judgment required), so the runtime
+    /// can drive it directly. The wake's `taskID` is the source of truth for which task
+    /// to run; the imperative string match is just the action discriminator.
+    static func wakeIsAutoRunRunTask(_ wake: ScheduledWake) -> Bool {
+        wake.taskID != nil
+            && wake.instructions.hasPrefix("Call `run_task` on ")
     }
 
     /// Starts the agent's run loop.
@@ -539,7 +580,7 @@ public actor AgentActor {
             }
 
             drainPendingMessages()
-            checkScheduledWake()
+            await checkScheduledWake()
             checkBrownSilenceNudge()
             await checkSmithDigest()
             await pruneHistoryIfNeeded()
@@ -1615,16 +1656,24 @@ public actor AgentActor {
         return max(0, messageDebounceInterval - Date().timeIntervalSince(last))
     }
 
-    /// Fires every scheduled wake whose deadline has arrived. Injects one combined `[System: ...]`
-    /// user-role marker that lists each elapsed wake (id, time, reason, taskID if any) so the
-    /// model can address them in order.
+    /// Fires every scheduled wake whose deadline has arrived.
+    ///
+    /// Wakes are partitioned into two groups:
+    ///   - **auto-run wakes** (the wake's imperative was rendered by `TaskActionKind.run`
+    ///     and it carries a `taskID`): the runtime executes `restartForNewTask` directly
+    ///     via `onAutoRunTask`. Smith never sees the imperative — it learns about the new
+    ///     run when its fresh process boots with `resumingTaskID` set. This is by design:
+    ///     scheduling a task to run at time T is fully mechanical, so no LLM judgment is
+    ///     needed and weak local models (gemma3:27b et al.) can't fail to execute by
+    ///     asking for confirmation.
+    ///   - **smith-driven wakes** (everything else — pause, stop, summarize, clone_and_run,
+    ///     plus any auto-run wake that fires alongside another auto-run in the same batch
+    ///     since `restartForNewTask` is single-target): injected as a combined `[System: ...]`
+    ///     user-role marker so Smith can address them in order.
     ///
     /// During `awaitingTaskReview`, elapsed wakes are held in the queue rather than dropped.
-    /// They fire on the next loop iteration after review completes (Smith approves with
-    /// rejection feedback or otherwise resumes Brown). Cross-session/cross-window routing for
-    /// wakes that belong to a *different* task or to no task at all is tracked in ROADMAP.md
-    /// and not yet implemented — those still fire on the originating actor.
-    private func checkScheduledWake() {
+    /// They fire on the next loop iteration after review completes.
+    func checkScheduledWake() async {
         let now = Date()
         let due = scheduledWakes.filter { $0.wakeAt <= now }
         guard !due.isEmpty else { return }
@@ -1635,30 +1684,69 @@ public actor AgentActor {
         }
         scheduledWakes.removeAll { $0.wakeAt <= now }
 
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        let lines = due.map { wake -> String in
-            let timeStr = formatter.string(from: wake.wakeAt)
-            let taskFragment = wake.taskID.map { " (linked task: \($0.uuidString))" } ?? ""
-            return "  • [\(timeStr)] \(wake.instructions)\(taskFragment)"
+        // Promote any `.scheduled` task referenced by a fired wake to `.pending` so the
+        // imperative ("Call run_task on <id>…") will be accepted — `run_task` rejects
+        // `.scheduled` status by design (see `AgentTask.Status.isRunnable`). Without this,
+        // the task stays in `.scheduled` after fire time and Smith reads `list_tasks`
+        // status as "still scheduled," concludes the timer hasn't fired, and waits forever.
+        var promotedTaskIDs: Set<UUID> = []
+        for wake in due {
+            guard let taskID = wake.taskID, !promotedTaskIDs.contains(taskID) else { continue }
+            promotedTaskIDs.insert(taskID)
+            await toolContext.taskStore.promoteScheduledToPending(id: taskID)
         }
-        let header = due.count == 1
-            ? "[System: A timer has fired. You must immediately perform the following actions.]"
-            : "[System: \(due.count) timers have fired. You must immediately perform the following actions.]"
-        conversationHistory.append(LLMMessage(
-            role: .user,
-            text: """
-                \(header)
 
-                You must:
-                \(lines.joined(separator: "\n"))
+        // Partition wakes. If exactly one auto-run wake fires in this batch, drive it
+        // through the runtime directly. If multiple auto-runs fire concurrently, fall
+        // back to Smith-driven for ALL of them — `restartForNewTask` is single-target
+        // and serializing them would clobber each other (last-one-wins).
+        let autoRunCandidates = due.filter(Self.wakeIsAutoRunRunTask)
+        let runDirectly: [ScheduledWake]
+        let smithWakes: [ScheduledWake]
+        if autoRunCandidates.count == 1, let only = autoRunCandidates.first, onAutoRunTask != nil {
+            runDirectly = [only]
+            smithWakes = due.filter { $0.id != only.id }
+        } else {
+            runDirectly = []
+            smithWakes = due
+        }
 
-                Execute each instruction in order. If a step has already been done or is no longer appropriate (the user changed plans, the task was already started, etc.), skip that step and move on to the next. Do NOT schedule a new timer unless the user explicitly asked you to follow up again.
-                """
-        ))
-        hasUnprocessedInput = true
-        pushLiveContext()
+        for wake in runDirectly {
+            if let taskID = wake.taskID {
+                await onAutoRunTask?(taskID)
+            }
+        }
 
+        // Inject the system message ONLY for wakes Smith still has to interpret. If
+        // every fired wake was auto-run, we skip the LLM round-trip entirely.
+        if !smithWakes.isEmpty {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm:ss"
+            let lines = smithWakes.map { wake -> String in
+                let timeStr = formatter.string(from: wake.wakeAt)
+                let taskFragment = wake.taskID.map { " (linked task: \($0.uuidString))" } ?? ""
+                return "  • [\(timeStr)] \(wake.instructions)\(taskFragment)"
+            }
+            let header = smithWakes.count == 1
+                ? "[System: A timer has fired. You must immediately perform the following actions.]"
+                : "[System: \(smithWakes.count) timers have fired. You must immediately perform the following actions.]"
+            conversationHistory.append(LLMMessage(
+                role: .user,
+                text: """
+                    \(header)
+
+                    You must:
+                    \(lines.joined(separator: "\n"))
+
+                    Execute each instruction in order. If a step has already been done or is no longer appropriate (the user changed plans, the task was already started, etc.), skip that step and move on to the next. Do NOT schedule a new timer unless the user explicitly asked you to follow up again.
+                    """
+            ))
+            hasUnprocessedInput = true
+            pushLiveContext()
+        }
+
+        // Log to the timer-event history regardless of dispatch path so the View → Timers
+        // pane shows every fire, including the auto-run ones.
         if let primary = due.first {
             onWakeFired?(primary, due)
         }

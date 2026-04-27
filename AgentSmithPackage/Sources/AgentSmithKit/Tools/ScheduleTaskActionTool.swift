@@ -134,6 +134,25 @@ public struct ScheduleTaskActionTool: AgentTool {
 
         let imperative = action.imperativeText(for: task, extra: extra)
         let outcome = await context.scheduleWake(wakeAt, imperative, taskID, replacesID, recurrenceResult.value)
+        // Surface the schedule as a dedicated channel banner so the user sees a task-style
+        // row ("Pause", "Stop", "Summarize", "Clone+Run" — each with its own icon) instead
+        // of the generic `System ⏰ scheduled …` line. The paired timer_activity row gets
+        // suppressed in the channel log dispatch when this banner is present for the
+        // same taskID.
+        if case .scheduled(let wake) = outcome {
+            await context.post(ChannelMessage(
+                sender: .system,
+                content: action.bannerHeadline(for: task),
+                metadata: [
+                    "messageKind": .string("task_action_scheduled"),
+                    "actionKind": .string(action.rawValue),
+                    "taskID": .string(task.id.uuidString),
+                    "taskTitle": .string(task.title),
+                    "scheduledRunAt": .double(wakeAt.timeIntervalSince1970),
+                    "wakeID": .string(wake.id.uuidString)
+                ]
+            ))
+        }
         return TimerArgumentParsing.formatScheduleOutcome(outcome, kind: "Scheduled task action")
     }
 }
@@ -144,6 +163,36 @@ public struct ScheduleTaskActionTool: AgentTool {
 public enum TaskActionKind: String, Sendable, Codable {
     case run, pause, stop, summarize
     case cloneAndRun = "clone_and_run"
+
+    /// Headline shown in the channel-log banner that announces a `schedule_task_action` —
+    /// pairs with `bannerSymbolName` and `bannerLabel` for the four user-visible variants.
+    /// `run` returns the same headline as the others for consistency, even though the
+    /// matched task is usually announced via the New Task banner from `create_task`.
+    func bannerHeadline(for task: AgentTask) -> String {
+        task.title
+    }
+
+    /// Action label for the banner ("Pause", "Stop", "Summarize", "Clone & Run", "Run").
+    public var bannerLabel: String {
+        switch self {
+        case .run: return "Run"
+        case .pause: return "Pause"
+        case .stop: return "Stop"
+        case .summarize: return "Summarize"
+        case .cloneAndRun: return "Clone & Run"
+        }
+    }
+
+    /// SF Symbol used in the action banner.
+    public var bannerSymbolName: String {
+        switch self {
+        case .run: return "play.circle.fill"
+        case .pause: return "pause.circle.fill"
+        case .stop: return "stop.circle.fill"
+        case .summarize: return "doc.text.magnifyingglass"
+        case .cloneAndRun: return "plus.square.on.square"
+        }
+    }
 
     func imperativeText(for task: AgentTask, extra: String?) -> String {
         let suffix = extra.map { " " + $0 } ?? ""

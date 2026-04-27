@@ -15,9 +15,9 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
-            Tab("Account", systemImage: "person.crop.circle") {
+            Tab("General", systemImage: "gearshape") {
                 ScrollView {
-                    accountTab
+                    generalTab
                         .padding()
                 }
             }
@@ -50,9 +50,9 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Account Tab
+    // MARK: - General Tab
 
-    private var accountTab: some View {
+    private var generalTab: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Account")
                 .font(AppFonts.sectionHeader)
@@ -80,6 +80,33 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
 
             Text("Per-session options (auto-run next task, agent assignments, tunings) are configured in each window's Inspector.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            Text("Scheduling")
+                .font(AppFonts.sectionHeader)
+
+            Toggle("Scheduled tasks interrupt the running task", isOn: $shared.scheduledWakesInterruptRunning)
+
+            Text("When ON: a scheduled task's wake pauses any currently running task, runs the scheduled task to completion, then resumes the paused task. When OFF (default): the running task finishes first, then the scheduled task runs. Either way, scheduled tasks ALWAYS run when their wake fires — independent of \"Auto-run next task\".")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            Text("Display")
+                .font(AppFonts.sectionHeader)
+
+            Toggle("Show timestamps on task state changes", isOn: $shared.showTimestampsOnTaskBanners)
+            Toggle("Show timestamps on tool calls", isOn: $shared.showTimestampsOnToolCalls)
+            Toggle("Show timestamps on messaging", isOn: $shared.showTimestampsOnMessaging)
+            Toggle("Show timestamps on system messages", isOn: $shared.showTimestampsOnSystemMessages)
+            Toggle("Show elapsed time on tool calls", isOn: $shared.showElapsedTimeOnToolCalls)
+            Toggle("Show agent restart chrome", isOn: $shared.showRestartChrome)
+
+            Text("Timestamps and elapsed time are display-only — they don't change what gets sent to agents. \"Restart chrome\" controls whether transient lifecycle rows (agents stopping / coming online) appear in the transcript. Apply across all sessions and windows.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

@@ -101,10 +101,6 @@ final class AppViewModel {
     let persistenceManager: PersistenceManager
     /// Full message history — a superset of `messages`. Never cleared; always written to disk.
     private var allPersistedMessages: [ChannelMessage] = []
-    /// Wakes loaded from disk in `loadPersistedState()` and consumed by `start()` to seed
-    /// Smith's actor before the run loop begins. Drops to nil after consumption — subsequent
-    /// snapshots are taken live from the runtime via `currentScheduledWakes()`.
-    private var persistedWakesSnapshot: [ScheduledWake] = []
 
     init(session: Session, shared: SharedAppState) {
         self.session = session
@@ -265,16 +261,10 @@ final class AppViewModel {
             logger.error("Failed to load timer events: \(error.localizedDescription)")
         }
 
-        // Load persisted scheduled wakes so reminders survive app restart. The list is
-        // replayed onto Smith's actor in `start()` before the run loop begins, so any
-        // wakes whose `wakeAt` already elapsed during downtime fire on the first loop
-        // iteration. Empty list is the normal case for a fresh session.
-        do {
-            persistedWakesSnapshot = try await persistenceManager.loadScheduledWakes()
-        } catch {
-            logger.error("Failed to load scheduled wakes: \(error.localizedDescription)")
-            persistedWakesSnapshot = []
-        }
+        // Persisted scheduled wakes are loaded fresh from disk by the runtime on every
+        // `start()` call via the `loadPersistedWakes` closure wired below — both cold
+        // launch AND `restartForNewTask` use the same path, so wakes survive both app
+        // quit and run_task restarts. No pre-load needed here.
 
         hasLoadedPersistedState = true
     }
@@ -459,16 +449,24 @@ final class AppViewModel {
                 guard let self else { return }
                 if self.shared.showTimerActivityInTranscript {
                     let line = AppViewModel.transcriptLine(for: event)
+                    let eventID = event.id.uuidString
+                    let eventKindRaw = event.kind.rawValue
+                    let eventTaskID = event.taskID?.uuidString
                     Task { @MainActor [weak self] in
                         guard let self, let runtime = self.runtime else { return }
                         let channel = await runtime.channel
+                        var meta: [String: AnyCodable] = [
+                            "messageKind": .string("timer_activity"),
+                            "timerEventID": .string(eventID),
+                            "timerEventKind": .string(eventKindRaw)
+                        ]
+                        if let eventTaskID {
+                            meta["timerTaskID"] = .string(eventTaskID)
+                        }
                         await channel.post(ChannelMessage(
                             sender: .system,
                             content: line,
-                            metadata: [
-                                "messageKind": .string("timer_activity"),
-                                "timerEventID": .string(event.id.uuidString)
-                            ]
+                            metadata: meta
                         ))
                     }
                 }
@@ -479,14 +477,46 @@ final class AppViewModel {
             }
         }
 
-        // Replay wakes that survived a prior quit. We do this BEFORE `start()` so any wake
-        // whose `wakeAt` is already in the past fires on the first loop iteration — the
-        // user's "remind me at 9pm daily" doesn't silently miss days because the app was
-        // closed. After replay we drop the snapshot; subsequent persistence is driven by
-        // `onTimerEventForChannel` (every schedule/fire/cancel triggers a fresh snapshot).
-        if !persistedWakesSnapshot.isEmpty {
-            await newRuntime.restoreScheduledWakes(persistedWakesSnapshot)
-            persistedWakesSnapshot = []
+        // Live resolver for the scheduled-wakes-interrupt policy — consulted on every
+        // auto-run wake fire so toggling the setting takes effect immediately without
+        // restarting the runtime. The closure captures the @Observable shared state and
+        // reads its current value each invocation.
+        let sharedState = shared
+        await newRuntime.setScheduledWakesInterruptResolver {
+            await MainActor.run { sharedState.scheduledWakesInterruptRunning }
+        }
+
+        // Wire the disk-replay loader. The runtime calls this from inside `start()` —
+        // every restart path (cold launch AND `restartForNewTask`) — so wakes survive both
+        // app quit and run_task restarts. The snapshot is loaded fresh from disk each time
+        // rather than cached, so it always reflects the latest persisted state.
+        let persistence = persistenceManager
+        let logger = self.logger
+        await newRuntime.setPendingScheduledRunQueuePersistence(
+            load: {
+                do {
+                    return try await persistence.loadPendingScheduledRunQueue()
+                } catch {
+                    logger.error("Failed to load pending scheduled-run queue: \(error.localizedDescription)")
+                    return []
+                }
+            },
+            persist: { taskIDs in
+                do {
+                    try await persistence.savePendingScheduledRunQueue(taskIDs)
+                } catch {
+                    logger.error("Failed to persist pending scheduled-run queue: \(error.localizedDescription)")
+                }
+            }
+        )
+
+        await newRuntime.setLoadPersistedWakes {
+            do {
+                return try await persistence.loadScheduledWakes()
+            } catch {
+                logger.error("Failed to load scheduled wakes for replay: \(error.localizedDescription)")
+                return []
+            }
         }
 
         await newRuntime.start()
@@ -543,8 +573,9 @@ final class AppViewModel {
     }
 
     /// Parses the controlled `TaskActionKind.imperativeText` shape into `verb: "title"`.
-    /// Returns `nil` for free-form `schedule_reminder` instructions, where the caller
-    /// should fall back to the raw text.
+    /// Returns `nil` for any imperative that doesn't match that shape (e.g. legacy
+    /// `schedule_reminder` payloads still in persisted state), where the caller should
+    /// fall back to the raw text.
     private static func friendlyAction(from imperative: String) -> String? {
         let verb = imperative.firstMatch(of: /`([a-z_]+)`/).map { String($0.output.1) }
         let title = imperative.firstMatch(of: /"([^"]+)"/).map { String($0.output.1) }

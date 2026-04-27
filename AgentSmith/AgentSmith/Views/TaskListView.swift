@@ -137,6 +137,28 @@ private func taskTimestamp(_ date: Date) -> String {
     }
 }
 
+/// Future-fire-time label for a scheduled task. Today → bare time ("9:00 PM");
+/// tomorrow → "Tomorrow 9:00 AM"; within a week → weekday + time; further out →
+/// month/day + time. Shared by the task list rows and the channel log's New Task
+/// banner so the formatting stays consistent.
+func formatScheduledTime(_ date: Date) -> String {
+    let calendar = Calendar.current
+    let time = date.formatted(date: .omitted, time: .shortened)
+    if calendar.isDateInToday(date) {
+        return time
+    }
+    if calendar.isDateInTomorrow(date) {
+        return "Tomorrow \(time)"
+    }
+    let now = Date()
+    if let weekFromNow = calendar.date(byAdding: .day, value: 7, to: now), date < weekFromNow {
+        let weekday = date.formatted(.dateTime.weekday(.abbreviated))
+        return "\(weekday) \(time)"
+    }
+    let day = date.formatted(.dateTime.month(.abbreviated).day())
+    return "\(day) \(time)"
+}
+
 // MARK: - Active task row
 
 private struct ActiveTaskRow: View {
@@ -208,15 +230,27 @@ private struct ActiveTaskRow: View {
                         HStack(spacing: 4) {
                             Text(task.status.rawValue.capitalized)
                                 .font(.caption)
+                                .fixedSize(horizontal: true, vertical: false)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(Capsule().fill(TaskStatusBadge.color(for: task.status).opacity(0.2)))
                                 .foregroundStyle(TaskStatusBadge.color(for: task.status))
 
-                            Text(taskTimestamp(task.updatedAt))
+                            if task.status == .scheduled, let runAt = task.scheduledRunAt {
+                                HStack(spacing: 2) {
+                                    Image(systemName: "clock")
+                                        .imageScale(.small)
+                                    Text(formatScheduledTime(runAt))
+                                }
                                 .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(TaskStatusBadge.color(for: .scheduled))
                                 .fixedSize()
+                            } else {
+                                Text(taskTimestamp(task.updatedAt))
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    .fixedSize()
+                            }
                         }
                     }
                 }

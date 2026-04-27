@@ -35,6 +35,63 @@ final class SharedAppState {
         didSet { UserDefaults.standard.set(showTimerActivityInTranscript, forKey: "debugShowTimerActivityInTranscript") }
     }
 
+    /// When true, task lifecycle banners (created / acknowledged / ready for review /
+    /// completed / etc.) show their inline timestamp. Default true.
+    var showTimestampsOnTaskBanners: Bool = SharedAppState.boolDefault(key: "showTimestampsOnTaskBanners", default: true) {
+        didSet { UserDefaults.standard.set(showTimestampsOnTaskBanners, forKey: "showTimestampsOnTaskBanners") }
+    }
+
+    /// When true, tool-call rows show their timestamp. Default true.
+    var showTimestampsOnToolCalls: Bool = SharedAppState.boolDefault(key: "showTimestampsOnToolCalls", default: true) {
+        didSet { UserDefaults.standard.set(showTimestampsOnToolCalls, forKey: "showTimestampsOnToolCalls") }
+    }
+
+    /// When true, agent↔agent and agent↔user message rows show their timestamp. Default true.
+    var showTimestampsOnMessaging: Bool = SharedAppState.boolDefault(key: "showTimestampsOnMessaging", default: true) {
+        didSet { UserDefaults.standard.set(showTimestampsOnMessaging, forKey: "showTimestampsOnMessaging") }
+    }
+
+    /// When true, system-sender rows and system-feedback banners (memory saved/searched,
+    /// timer activity) show their timestamp. Default true.
+    var showTimestampsOnSystemMessages: Bool = SharedAppState.boolDefault(key: "showTimestampsOnSystemMessages", default: true) {
+        didSet { UserDefaults.standard.set(showTimestampsOnSystemMessages, forKey: "showTimestampsOnSystemMessages") }
+    }
+
+    /// When true, completed tool calls show the elapsed time between the request and its
+    /// output. Default false (off until the user opts in).
+    var showElapsedTimeOnToolCalls: Bool = SharedAppState.boolDefault(key: "showElapsedTimeOnToolCalls", default: false) {
+        didSet { UserDefaults.standard.set(showElapsedTimeOnToolCalls, forKey: "showElapsedTimeOnToolCalls") }
+    }
+
+    /// When true, transient lifecycle rows from agent restarts ("All agents stopped",
+    /// "Smith agent <id> is online", "Jones security evaluator online") are rendered. Off
+    /// by default — these are mostly noise inside an active session and only useful when
+    /// debugging spawn/stop flow. The runtime always emits the messages; this flag only
+    /// gates whether the channel log surfaces them.
+    var showRestartChrome: Bool = SharedAppState.boolDefault(key: "showRestartChrome", default: false) {
+        didSet { UserDefaults.standard.set(showRestartChrome, forKey: "showRestartChrome") }
+    }
+
+    /// Controls what happens when a scheduled task's wake fires while another task is
+    /// currently `.running` or `.awaitingReview`. Independent of `autoRunNextTask` —
+    /// scheduled wakes ALWAYS run when their time comes, regardless of that flag.
+    /// - `true`: pause the running task, run the scheduled task to completion, then
+    ///   resume the paused task. Disrupts in-flight work but honours the schedule
+    ///   precisely.
+    /// - `false` (default): let the running task finish, then run the scheduled task.
+    ///   Preserves in-flight work; the schedule slips by the running task's tail.
+    var scheduledWakesInterruptRunning: Bool = SharedAppState.boolDefault(key: "scheduledWakesInterruptRunning", default: false) {
+        didSet { UserDefaults.standard.set(scheduledWakesInterruptRunning, forKey: "scheduledWakesInterruptRunning") }
+    }
+
+    /// Reads a Bool from UserDefaults, defaulting to `default` when the key has never been set.
+    /// Used by the timestamp-display toggles so the documented "default true" survives the
+    /// classic `bool(forKey:)` returning false for missing keys.
+    private static func boolDefault(key: String, default fallback: Bool) -> Bool {
+        if UserDefaults.standard.object(forKey: key) == nil { return fallback }
+        return UserDefaults.standard.bool(forKey: key)
+    }
+
     /// SwiftLLMKit instance managing providers, models, and configurations (shared catalog).
     let llmKit = LLMKitManager(
         appIdentifier: Bundle.main.bundleIdentifier ?? "com.agentsmith",

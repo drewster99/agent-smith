@@ -92,8 +92,9 @@ struct AgentSmithApp: App {
                 }
                 .keyboardShortcut("t", modifiers: [.command, .option])
                 .disabled(sessionManager.sessions.isEmpty)
-            }
-            CommandMenu("Debug") {
+
+                Divider()
+
                 Toggle("Show Timer Activity in Transcript", isOn: Binding(
                     get: { shared.showTimerActivityInTranscript },
                     set: { shared.showTimerActivityInTranscript = $0 }

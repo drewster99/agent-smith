@@ -10,9 +10,8 @@ public struct RescheduleWakeTool: AgentTool {
     public let toolDescription = """
         Reschedule an existing wake to a new fire time. Preserves the wake's instructions and \
         any task linkage. Use this whenever the user asks to move/postpone/bring-forward a \
-        scheduled reminder or task action — do NOT call `cancel_wake` followed by \
-        `schedule_reminder`/`schedule_task_action`, that creates two unrelated transcript \
-        lines and is harder for the user to follow. \
+        scheduled task action — do NOT call `cancel_wake` followed by `schedule_task_action`, \
+        that creates two unrelated transcript lines and is harder for the user to follow. \
         \
         Required: `wake_id` and either `delay_seconds` OR `at_time` (ISO-8601). \
         Optional: `recurrence` to update the repeat pattern (omit to keep the existing one; \

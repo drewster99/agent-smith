@@ -8,12 +8,120 @@ private let sharedTimestampFormatter: DateFormatter = {
     return f
 }()
 
+/// Display preferences for the channel log — purely cosmetic toggles read from the global
+/// `SharedAppState` and threaded down through the SwiftUI environment so each banner / row
+/// can decide whether to render its timestamp without a per-init parameter.
+struct TimestampPreferences: Equatable, Sendable {
+    /// Show timestamps on task lifecycle banners (created, acknowledged, completed, etc.).
+    var taskBanners: Bool
+    /// Show timestamps on tool-call rows.
+    var toolCalls: Bool
+    /// Show timestamps on agent↔agent and agent↔user message rows.
+    var messaging: Bool
+    /// Show timestamps on system-sender rows and system-feedback banners (memory, timer activity).
+    var systemMessages: Bool
+    /// Show elapsed time (request → output) on completed tool calls.
+    var elapsedTimeOnToolCalls: Bool
+    /// Render transient lifecycle rows ("All agents stopped", "System online. Smith agent
+    /// active."). When false, these are suppressed from the transcript even though the
+    /// runtime still emits them — useful for keeping the channel log focused on actual work.
+    var showRestartChrome: Bool
+
+    /// Defaults used when the channel log is rendered without an explicit preferences
+    /// injection (e.g. SwiftUI previews).
+    static let `default` = TimestampPreferences(
+        taskBanners: true,
+        toolCalls: true,
+        messaging: true,
+        systemMessages: true,
+        elapsedTimeOnToolCalls: false,
+        showRestartChrome: false
+    )
+
+    /// Manual nonisolated `==` so this can be compared from `ChannelLogView`'s `nonisolated`
+    /// `Equatable` conformance — synthesized Equatable picks up the surrounding @MainActor
+    /// isolation in this file and would refuse to be called from a nonisolated context.
+    nonisolated static func == (lhs: TimestampPreferences, rhs: TimestampPreferences) -> Bool {
+        lhs.taskBanners == rhs.taskBanners
+        && lhs.toolCalls == rhs.toolCalls
+        && lhs.messaging == rhs.messaging
+        && lhs.systemMessages == rhs.systemMessages
+        && lhs.elapsedTimeOnToolCalls == rhs.elapsedTimeOnToolCalls
+        && lhs.showRestartChrome == rhs.showRestartChrome
+    }
+}
+
+private struct TimestampPreferencesKey: EnvironmentKey {
+    static let defaultValue = TimestampPreferences.default
+}
+
+extension EnvironmentValues {
+    /// Read the channel log's timestamp / elapsed-time toggles. Set by `ChannelLogView`
+    /// from `SharedAppState`; default keeps timestamps on for previews.
+    var timestampPreferences: TimestampPreferences {
+        get { self[TimestampPreferencesKey.self] }
+        set { self[TimestampPreferencesKey.self] = newValue }
+    }
+}
+
+/// Formats an elapsed `TimeInterval` as a compact tool-call duration: sub-second values
+/// in milliseconds (e.g. `420ms`), 1–60s with one decimal (`12.4s`), and longer durations
+/// as `Xm Ys`. Stays terse so it fits next to the tool name without wrapping the row.
+func formatToolCallElapsed(_ seconds: TimeInterval) -> String {
+    if seconds < 0 { return "" }
+    if seconds < 1 { return "\(Int(seconds * 1000))ms" }
+    if seconds < 60 { return String(format: "%.1fs", seconds) }
+    let mins = Int(seconds) / 60
+    let secs = Int(seconds) % 60
+    return "\(mins)m \(secs)s"
+}
+
+/// Which user-controlled toggle gates a given timestamp render.
+enum TimestampBucket {
+    case taskBanner
+    case systemMessage
+    case messaging
+    case toolCall
+}
+
+/// Renders a channel-log timestamp, gated by the matching user preference. Centralizes the
+/// font + colour treatment so banners and rows can swap it in without duplicating modifiers.
+struct ChannelTimestamp: View {
+    let timestamp: Date
+    let bucket: TimestampBucket
+    /// Hierarchical foreground style — `.secondary` for most banners, `.tertiary` for
+    /// MemoryBanner where the timestamp sits next to a chevron and benefits from a softer tone.
+    var foregroundStyle: HierarchicalShapeStyle = .secondary
+
+    @Environment(\.timestampPreferences) private var prefs
+
+    private var isVisible: Bool {
+        switch bucket {
+        case .taskBanner: return prefs.taskBanners
+        case .systemMessage: return prefs.systemMessages
+        case .messaging: return prefs.messaging
+        case .toolCall: return prefs.toolCalls
+        }
+    }
+
+    var body: some View {
+        if isVisible {
+            Text(sharedTimestampFormatter.string(from: timestamp))
+                .font(AppFonts.channelTimestamp)
+                .foregroundStyle(foregroundStyle)
+        }
+    }
+}
+
 /// Color-coded scrolling message stream with attachment display.
 struct ChannelLogView: View, Equatable {
     var messages: [ChannelMessage]
     var persistedHistoryCount: Int
     var hasRestoredHistory: Bool
     var onRestoreHistory: () -> Void
+    /// Display toggles forwarded into the environment so each banner / row reads them
+    /// without having to thread parameters through every initializer.
+    var displayPrefs: TimestampPreferences
 
     @State private var isAtBottom = true
     @State private var autoScrollEnabled = true
@@ -22,12 +130,14 @@ struct ChannelLogView: View, Equatable {
 
     /// Prevents body re-evaluation when only unrelated parent properties change (e.g. inputText).
     /// Closures and Bindings are excluded — they can't be meaningfully compared, and
-    /// the Binding manages its own invalidation internally.
+    /// the Binding manages its own invalidation internally. `displayPrefs` is included so
+    /// toggling a setting at runtime invalidates the cached body.
     nonisolated static func == (lhs: ChannelLogView, rhs: ChannelLogView) -> Bool {
         lhs.messages.count == rhs.messages.count
         && lhs.messages.last?.id == rhs.messages.last?.id
         && lhs.persistedHistoryCount == rhs.persistedHistoryCount
         && lhs.hasRestoredHistory == rhs.hasRestoredHistory
+        && lhs.displayPrefs == rhs.displayPrefs
     }
 
     private struct ScrollMetrics: Equatable {
@@ -72,6 +182,23 @@ struct ChannelLogView: View, Equatable {
         return dict
     }
 
+    /// Set of taskIDs whose paired `timer_activity` "scheduled" row should be suppressed —
+    /// either the task has a `task_created` banner (carrying the Scheduled chip) or a
+    /// `task_action_scheduled` banner (carrying the action + Fires-at chip). Match-by-taskID
+    /// is intentional: rescheduling the same task right after creation is rare and benign
+    /// to suppress; scheduled rows for ad-hoc wakes (no task linkage) still render normally.
+    private var taskIDsWithSchedulingBanner: Set<String> {
+        var ids = Set<String>()
+        for msg in messages {
+            let kind = msg.stringMetadata("messageKind")
+            guard kind == "task_created" || kind == "task_action_scheduled" else { continue }
+            if let taskID = msg.stringMetadata("taskID") {
+                ids.insert(taskID)
+            }
+        }
+        return ids
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ZStack(alignment: .bottom) {
@@ -95,12 +222,24 @@ struct ChannelLogView: View, Equatable {
                         let requestIDs = toolRequestIDs
                         let reviewLookup = securityReviewByRequestID
                         let outputLookup = toolOutputByRequestID
+                        let scheduledTaskBannerIDs = taskIDsWithSchedulingBanner
 
                         ForEach(messages) { message in
                             if shouldSuppress(message, toolRequestIDs: requestIDs) {
                                 // Folded into a tool_request row — don't render standalone
                             } else if case .string(let kind) = message.metadata?["messageKind"], kind == "agent_online" {
                                 // Agent online announcements are internal coordination messages
+                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "restart_chrome", !displayPrefs.showRestartChrome {
+                                // Lifecycle chrome ("All agents stopped", "System online. Smith
+                                // agent active.") — suppressed unless the user opts in via the
+                                // "Show agent restart chrome" setting.
+                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "timer_activity",
+                                      message.stringMetadata("timerEventKind") == "scheduled",
+                                      let timerTaskID = message.stringMetadata("timerTaskID"),
+                                      scheduledTaskBannerIDs.contains(timerTaskID) {
+                                // The "scheduled HH:MM — run_task: ..." system row that pairs with
+                                // a New Task banner's Scheduled chip — suppress it as a duplicate.
+                                // The chip carries the same information; this row would just be noise.
                             } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_update_guidance" {
                                 // System guidance to Smith about reviewing Brown's task update — internal only
                             } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_acknowledged" {
@@ -133,6 +272,17 @@ struct ChannelLogView: View, Equatable {
                                     timestamp: message.timestamp
                                 )
                                     .id(message.id)
+                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_action_scheduled" {
+                                let actionRaw = message.stringMetadata("actionKind") ?? "run"
+                                let action = TaskActionKind(rawValue: actionRaw) ?? .run
+                                TaskActionScheduledBanner(
+                                    actionLabel: action.bannerLabel,
+                                    symbolName: action.bannerSymbolName,
+                                    taskTitle: message.stringMetadata("taskTitle") ?? message.content,
+                                    scheduledRunAt: message.doubleMetadata("scheduledRunAt").map { Date(timeIntervalSince1970: $0) } ?? message.timestamp,
+                                    timestamp: message.timestamp
+                                )
+                                    .id(message.id)
                             } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_created" {
                                 TaskCreatedBanner(
                                     title: message.content,
@@ -141,7 +291,8 @@ struct ChannelLogView: View, Equatable {
                                     contextMemories: message.stringMetadata("contextMemories"),
                                     contextPriorTasks: message.stringMetadata("contextPriorTasks"),
                                     memoryCount: message.intMetadata("contextMemoryCount") ?? 0,
-                                    priorTaskCount: message.intMetadata("contextPriorTaskCount") ?? 0
+                                    priorTaskCount: message.intMetadata("contextPriorTaskCount") ?? 0,
+                                    scheduledRunAt: message.doubleMetadata("scheduledRunAt").map { Date(timeIntervalSince1970: $0) }
                                 )
                                     .id(message.id)
                             } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_update" {
@@ -207,6 +358,7 @@ struct ChannelLogView: View, Equatable {
                     .padding(8)
                 }
                 .background(AppColors.channelBackground)
+                .environment(\.timestampPreferences, displayPrefs)
                 .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
                     let distanceFromBottom = geometry.contentSize.height
                         - geometry.contentOffset.y
@@ -278,6 +430,8 @@ private struct MessageRow: View {
     let toolOutputMessage: ChannelMessage?
     @Binding var selectedImageAttachment: Attachment?
 
+    @Environment(\.timestampPreferences) private var displayPrefs
+
     @State private var isExpanded = false
     @State private var isHovering = false
 
@@ -304,6 +458,16 @@ private struct MessageRow: View {
 
     private var isToolRequest: Bool {
         messageKind == "tool_request"
+    }
+
+    /// Elapsed seconds between the tool request and its output, if both timestamps are
+    /// available. Used by the "show elapsed time on tool calls" display toggle. Returns nil
+    /// for in-flight calls (no output yet) or when the output predates the request (clock
+    /// skew, replay).
+    private var toolCallElapsedSeconds: TimeInterval? {
+        guard let output = toolOutputMessage else { return nil }
+        let elapsed = output.timestamp.timeIntervalSince(message.timestamp)
+        return elapsed >= 0 ? elapsed : nil
     }
 
     private var isToolOutput: Bool {
@@ -429,6 +593,24 @@ private struct MessageRow: View {
         return trimmed.lowercased().hasPrefix("error") ? firstLine : nil
     }
 
+    /// True when this row involves the human (sender == user OR recipient == user). The
+    /// header drops the lock + arrow + recipient annotation in that case — when Smith
+    /// addresses Drew, "Smith → Drew" reads as redundant clutter; same for Drew's input.
+    private var hidesPrivateRecipientAnnotation: Bool {
+        if case .user = message.sender { return true }
+        if case .user = message.recipient { return true }
+        return false
+    }
+
+    /// Whether this row should render its timestamp, given the current display prefs.
+    /// Tool calls, system messages, and agent↔agent / agent↔user messaging each have
+    /// their own toggle so the user can mute the categories they don't want.
+    private var shouldShowTimestamp: Bool {
+        if isToolRequest { return displayPrefs.toolCalls }
+        if case .system = message.sender { return displayPrefs.systemMessages }
+        return displayPrefs.messaging
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             // Sender header: name, timestamp, and private indicator if applicable
@@ -437,7 +619,7 @@ private struct MessageRow: View {
                     .font(AppFonts.channelSender)
                     .foregroundStyle(senderColor)
 
-                if message.isPrivate {
+                if message.isPrivate && !hidesPrivateRecipientAnnotation {
                     Image(systemName: "lock.fill")
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
@@ -446,9 +628,18 @@ private struct MessageRow: View {
                         .foregroundStyle(recipientColor)
                 }
 
-                Text(sharedTimestampFormatter.string(from: message.timestamp))
-                    .font(AppFonts.channelTimestamp)
-                    .foregroundStyle(.secondary)
+                if shouldShowTimestamp {
+                    Text(sharedTimestampFormatter.string(from: message.timestamp))
+                        .font(AppFonts.channelTimestamp)
+                        .foregroundStyle(.secondary)
+                }
+
+                if isToolRequest, displayPrefs.elapsedTimeOnToolCalls,
+                   let elapsed = toolCallElapsedSeconds {
+                    Text(formatToolCallElapsed(elapsed))
+                        .font(AppFonts.channelTimestamp)
+                        .foregroundStyle(.tertiary)
+                }
             }
 
             if isToolRequest {
@@ -971,11 +1162,18 @@ private struct TaskCreatedBanner: View {
     let contextPriorTasks: String?
     let memoryCount: Int
     let priorTaskCount: Int
+    /// When non-nil, the task was created with a future `scheduled_run_at`. The banner
+    /// renders a clock-icon chip on the right showing when the wake will fire — replaces
+    /// the standalone `System ⏰ scheduled …` row that used to follow this banner.
+    let scheduledRunAt: Date?
 
     @State private var isContextExpanded = false
 
     private let accentColor = AppColors.taskCreatedAccent
     private var hasContext: Bool { memoryCount > 0 || priorTaskCount > 0 }
+    private var hasScheduled: Bool { scheduledRunAt != nil }
+    /// Color used for the scheduled chip — matches the task list's `.scheduled` styling.
+    private var scheduledAccent: Color { TaskStatusBadge.color(for: .scheduled) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -993,9 +1191,7 @@ private struct TaskCreatedBanner: View {
 
                 Spacer()
 
-                Text(sharedTimestampFormatter.string(from: timestamp))
-                    .font(AppFonts.channelTimestamp)
-                    .foregroundStyle(.secondary)
+                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner)
             }
             .padding(.horizontal, 10)
             .padding(.top, 6)
@@ -1006,14 +1202,30 @@ private struct TaskCreatedBanner: View {
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 10)
-                .padding(.bottom, description != nil || hasContext ? 2 : 6)
+                .padding(.bottom, (description != nil || hasContext || hasScheduled) ? 2 : 6)
 
             if let description {
                 MarkdownText(content: description, baseFont: AppFonts.channelBody.italic())
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 10)
-                    .padding(.bottom, hasContext ? 2 : 6)
+                    .padding(.bottom, (hasContext || hasScheduled) ? 2 : 6)
+            }
+
+            // Scheduled-fire chip. Lives in its own band when there's no Context row;
+            // when there IS a Context row below, this sits as a complementary row above it.
+            if let runAt = scheduledRunAt {
+                HStack(spacing: 4) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 11))
+                        .foregroundStyle(scheduledAccent)
+                    Text("Scheduled \(formatScheduledTime(runAt))")
+                        .font(AppFonts.channelBody)
+                        .foregroundStyle(scheduledAccent)
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
             }
 
             // Semantic context retrieved at task creation
@@ -1135,6 +1347,68 @@ private func contextEntryView(_ entry: String) -> some View {
     .frame(maxWidth: .infinity, alignment: .leading)
 }
 
+/// Compact banner announcing a `schedule_task_action` — replaces the standalone
+/// `System ⏰ scheduled …` row with an action-typed banner (pause / stop / summarize /
+/// clone & run / run). The icon + label express the action; the right-side chip carries
+/// the fire time. Reuses the scheduled-task accent color so it visually relates to the
+/// New Task banner's chip and the task list's `.scheduled` styling.
+private struct TaskActionScheduledBanner: View {
+    let actionLabel: String
+    let symbolName: String
+    let taskTitle: String
+    let scheduledRunAt: Date
+    let timestamp: Date
+
+    private var accentColor: Color { TaskStatusBadge.color(for: .scheduled) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            accentColor.frame(height: 1).opacity(0.4)
+
+            HStack(spacing: 8) {
+                Image(systemName: symbolName)
+                    .font(.system(size: 13))
+                    .foregroundStyle(accentColor)
+
+                Text("Scheduled \(actionLabel)")
+                    .font(AppFonts.channelSender)
+                    .foregroundStyle(accentColor)
+
+                Spacer()
+
+                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+
+            Text(taskTitle)
+                .font(AppFonts.channelBody.bold())
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 2)
+
+            HStack(spacing: 4) {
+                Image(systemName: "clock")
+                    .font(.system(size: 11))
+                    .foregroundStyle(accentColor)
+                Text("Fires \(formatScheduledTime(scheduledRunAt))")
+                    .font(AppFonts.channelBody)
+                    .foregroundStyle(accentColor)
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 6)
+
+            accentColor.frame(height: 1).opacity(0.3)
+        }
+        .background(accentColor.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+        .padding(.vertical, 1)
+    }
+}
+
 /// Gold/amber banner marking a task's completion in the channel log.
 private struct TaskCompletedBanner: View {
     let title: String
@@ -1165,9 +1439,7 @@ private struct TaskCompletedBanner: View {
 
                 Spacer()
 
-                Text(sharedTimestampFormatter.string(from: timestamp))
-                    .font(AppFonts.channelTimestamp)
-                    .foregroundStyle(.secondary)
+                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner)
             }
             .padding(.horizontal, 10)
             .padding(.top, 6)
@@ -1234,9 +1506,7 @@ private struct TaskAcknowledgedBanner: View {
 
                 Spacer()
 
-                Text(sharedTimestampFormatter.string(from: timestamp))
-                    .font(AppFonts.channelTimestamp)
-                    .foregroundStyle(.secondary)
+                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner)
             }
             .padding(.horizontal, 10)
             .padding(.top, 6)
@@ -1280,9 +1550,7 @@ private struct TaskContinuingBanner: View {
 
                 Spacer()
 
-                Text(sharedTimestampFormatter.string(from: timestamp))
-                    .font(AppFonts.channelTimestamp)
-                    .foregroundStyle(.secondary)
+                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner)
             }
             .padding(.horizontal, 10)
             .padding(.top, 6)
@@ -1353,9 +1621,7 @@ private struct TaskReadyForReviewBanner: View {
 
                 Spacer()
 
-                Text(sharedTimestampFormatter.string(from: timestamp))
-                    .font(AppFonts.channelTimestamp)
-                    .foregroundStyle(.secondary)
+                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner)
             }
             .padding(.horizontal, 10)
             .padding(.top, 6)
@@ -1437,9 +1703,7 @@ private struct ChangesRequestedBanner: View {
 
                 Spacer()
 
-                Text(sharedTimestampFormatter.string(from: timestamp))
-                    .font(AppFonts.channelTimestamp)
-                    .foregroundStyle(.secondary)
+                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner)
             }
             .padding(.horizontal, 10)
             .padding(.top, 6)
@@ -1509,9 +1773,7 @@ private struct TaskSummarizedBanner: View {
 
                 Spacer()
 
-                Text(sharedTimestampFormatter.string(from: timestamp))
-                    .font(AppFonts.channelTimestamp)
-                    .foregroundStyle(.tertiary)
+                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner, foregroundStyle: .tertiary)
             }
             .contentShape(Rectangle())
             .onTapGesture { isExpanded.toggle() }
@@ -1558,9 +1820,7 @@ private struct TaskUpdateBanner: View {
 
                 Spacer()
 
-                Text(sharedTimestampFormatter.string(from: timestamp))
-                    .font(AppFonts.channelTimestamp)
-                    .foregroundStyle(.secondary)
+                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner)
             }
             .padding(.horizontal, 10)
             .padding(.top, 6)
@@ -1631,9 +1891,7 @@ private struct MemoryBanner: View {
                             .foregroundStyle(.tertiary)
                     }
 
-                    Text(sharedTimestampFormatter.string(from: timestamp))
-                        .font(AppFonts.channelTimestamp)
-                        .foregroundStyle(.tertiary)
+                    ChannelTimestamp(timestamp: timestamp, bucket: .systemMessage, foregroundStyle: .tertiary)
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)

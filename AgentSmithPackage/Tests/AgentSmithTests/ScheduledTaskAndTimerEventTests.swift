@@ -92,6 +92,81 @@ struct ScheduledTaskAndTimerEventTests {
         #expect(firstWake.originalID == firstWake.id)
     }
 
+    // MARK: - 3aa. Auto-run wake discriminator
+
+    /// Wakes scheduled by `TaskActionKind.run.imperativeText` are recognized as "auto-run"
+    /// and bypass Smith — the runtime drives `restartForNewTask` directly. Other actions
+    /// (pause, stop, summarize, clone_and_run) still flow through Smith because they
+    /// require LLM judgment or multi-step execution.
+    @Test("wakeIsAutoRunRunTask matches run-imperatives only when a taskID is present")
+    func autoRunDiscriminator() {
+        let taskID = UUID()
+        let task = AgentTask(id: taskID, title: "demo", description: "...")
+
+        let runWake = ScheduledWake(
+            wakeAt: Date(),
+            instructions: TaskActionKind.run.imperativeText(for: task, extra: nil),
+            taskID: taskID
+        )
+        #expect(AgentActor.wakeIsAutoRunRunTask(runWake) == true)
+
+        let pauseWake = ScheduledWake(
+            wakeAt: Date(),
+            instructions: TaskActionKind.pause.imperativeText(for: task, extra: nil),
+            taskID: taskID
+        )
+        #expect(AgentActor.wakeIsAutoRunRunTask(pauseWake) == false)
+
+        let stopWake = ScheduledWake(
+            wakeAt: Date(),
+            instructions: TaskActionKind.stop.imperativeText(for: task, extra: nil),
+            taskID: taskID
+        )
+        #expect(AgentActor.wakeIsAutoRunRunTask(stopWake) == false)
+
+        // Run-shaped imperative without a taskID — still treated as Smith-driven
+        // because the runtime has nothing to call `restartForNewTask` against.
+        let runWakeNoTaskID = ScheduledWake(
+            wakeAt: Date(),
+            instructions: TaskActionKind.run.imperativeText(for: task, extra: nil),
+            taskID: nil
+        )
+        #expect(AgentActor.wakeIsAutoRunRunTask(runWakeNoTaskID) == false)
+    }
+
+    // MARK: - 3a. Wake-fire promotes linked .scheduled task
+
+    /// Without this promotion, `run_task` (which gates on `Status.isRunnable` — `.pending |
+    /// .paused | .interrupted`) refuses the wake-time imperative ("Call `run_task` on <id>…")
+    /// and Smith stays stuck reading a `scheduled` status as "the timer hasn't fired yet."
+    @Test("wake fire promotes the linked .scheduled task to .pending")
+    func wakeFirePromotesScheduledTask() async {
+        let taskStore = TaskStore()
+        let scheduled = await taskStore.addTask(
+            title: "later",
+            description: "...",
+            scheduledRunAt: Date().addingTimeInterval(3600)
+        )
+        #expect(scheduled.status == .scheduled)
+
+        let actor = AgentActorTestFactory.make(taskStore: taskStore)
+        let outcome = await actor.scheduleWake(
+            wakeAt: Date().addingTimeInterval(-1),
+            instructions: "Call run_task on \(scheduled.id.uuidString)",
+            taskID: scheduled.id,
+            replacesID: nil,
+            recurrence: nil
+        )
+        guard case .scheduled = outcome else {
+            Issue.record("scheduleWake should have succeeded; got \(outcome)"); return
+        }
+
+        await actor.checkScheduledWake()
+
+        let after = await taskStore.task(id: scheduled.id)
+        #expect(after?.status == .pending)
+    }
+
     // MARK: - 4. TimerEvent factory captures wake metadata
 
     @Test("TimerEvent.scheduled captures instructions, recurrence display, and scheduled time")
@@ -130,10 +205,9 @@ struct ScheduledTaskAndTimerEventTests {
 }
 
 private enum AgentActorTestFactory {
-    static func make() -> AgentActor {
+    static func make(taskStore: TaskStore = TaskStore()) -> AgentActor {
         let provider = MockLLMProvider(responses: [])
         let channel = MessageChannel()
-        let taskStore = TaskStore()
         let memoryStore = MemoryStore(engine: SemanticSearchEngine())
         let config = AgentConfiguration(
             role: .smith,

@@ -71,6 +71,14 @@ struct MainView: View {
                     persistedHistoryCount: viewModel.persistedHistoryCount,
                     hasRestoredHistory: viewModel.hasRestoredHistory,
                     onRestoreHistory: { viewModel.restoreHistory() },
+                    displayPrefs: TimestampPreferences(
+                        taskBanners: shared.showTimestampsOnTaskBanners,
+                        toolCalls: shared.showTimestampsOnToolCalls,
+                        messaging: shared.showTimestampsOnMessaging,
+                        systemMessages: shared.showTimestampsOnSystemMessages,
+                        elapsedTimeOnToolCalls: shared.showElapsedTimeOnToolCalls,
+                        showRestartChrome: shared.showRestartChrome
+                    ),
                     selectedImageAttachment: $selectedImageAttachment
                 )
                 .equatable()
