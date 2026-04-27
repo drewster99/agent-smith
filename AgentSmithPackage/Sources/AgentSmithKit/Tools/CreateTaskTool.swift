@@ -10,15 +10,17 @@ import Foundation
 public struct CreateTaskTool: AgentTool {
     public let name = "create_task"
     public let toolDescription = """
-        Create a new task. Tasks default to pending — call `run_task` to start when ready. \
+        Create a new task. If no other task is currently running or awaiting review, the new task \
+        auto-starts immediately and the system restarts on it — you do NOT need a follow-up \
+        `run_task` call. If another task is running or awaiting review, the new task is queued as \
+        pending; the response tells you so and you should leave it alone until the current task \
+        finishes. \
         \
         Optional `scheduled_run_at`: an ISO-8601 timestamp at which the task should run. When \
-        set, the task is created with status `scheduled` and the auto-runner will not pick it \
-        up early; a timer is auto-scheduled to fire at that time and instruct you to call \
-        `run_task`. Do NOT call `schedule_task_action` separately when you've already passed \
-        `scheduled_run_at` — that would double-schedule the run. \
-        \
-        You can create multiple tasks before running any of them.
+        set, the task is created with status `scheduled` (auto-start is suppressed) and a timer is \
+        auto-scheduled to fire at that time and instruct you to call `run_task`. Do NOT call \
+        `schedule_task_action` separately when you've already passed `scheduled_run_at` — that \
+        would double-schedule the run.
         """
 
     public let parameters: [String: AnyCodable] = [
@@ -184,7 +186,21 @@ public struct CreateTaskTool: AgentTool {
             }
         }
 
-        return .success("Task created (ID: \(task.id), title: \"\(title)\").\(contextNote) Call `run_task` with this task ID to start it.")
+        // Auto-start the new task when nothing else is in flight. Prevents the failure mode
+        // where Smith creates a task and then idles instead of immediately calling run_task.
+        // Gated to active+pending sibling tasks so we don't yank focus from a running task or
+        // a task awaiting Smith's review.
+        let blockingTask = existingTasks.first { other in
+            other.id != task.id &&
+            other.disposition == .active &&
+            (other.status == .running || other.status == .awaitingReview)
+        }
+        if blockingTask == nil {
+            await context.restartForNewTask(task.id)
+            return .success("Task created (ID: \(task.id), title: \"\(title)\").\(contextNote) System is restarting with a clean context to begin work on this task.")
+        }
+
+        return .success("Task created (ID: \(task.id), title: \"\(title)\").\(contextNote) Task '\(blockingTask!.title)' is currently \(blockingTask!.status.rawValue); call `run_task` once it finishes.")
     }
 }
 

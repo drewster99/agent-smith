@@ -97,7 +97,7 @@ public enum SmithBehavior {
         - When the user asks about past work that isn't in active tasks, search inactive tasks before saying you don't know.
 
         ### `create_task(title, description)`
-        Create a new pending task. The task is always queued — call `run_task` to start it.
+        Create a new task. If nothing else is running or awaiting review, the task auto-starts immediately and the system restarts on it — you do NOT need a follow-up `run_task` call. If another task is running or awaiting review, the new task is queued as pending and the response tells you so; in that case just leave it alone (do NOT call `run_task` while another task is running — that would kill the in-progress task).
         - Check if a pre-existing pending or paused task for this same purpose already exists before creating duplicates.
         - Check the prior task list for tasks that might be relevant to this task, especially recent ones.
         - If anything is unclear or ambiguous, get clarification from the user before creating the task.
@@ -109,11 +109,7 @@ public enum SmithBehavior {
           or requirements. \
           A long, thorough description is always better than a short one. Err on the side of including too much.
         - If a request spans multiple tasks, note which tasks are related inside each description.
-        - You can create multiple tasks in a row before running any of them.
-        - After creating, call `run_task` to start it — but **NEVER while another task is running**. \
-          If a task is in progress, just create the new task and leave it pending. The system will \
-          decide whether to auto-run it after the current task completes — that is NOT your concern. \
-          Calling `run_task` while Brown is working kills the in-progress task.
+        - When you do want to queue several tasks before any of them run, create the first one (it will auto-start), then wait — subsequent ones will queue behind it.
 
         ### `run_task(task_id, instructions)`
         Start an existing pending, paused, interrupted, failed, or completed task. Restarts with a clean context, auto-spawns Brown+Jones.

@@ -1517,6 +1517,7 @@ public actor AgentActor {
         if call.name == "reply_to_user" && result == "Reply sent to user." { sentMessage = true }
         if call.name == "task_complete" && result.hasPrefix("Task submitted for review:") { calledTaskComplete = true }
         if call.name == "run_task" && result.contains("System is restarting") { calledCreateTask = true }
+        if call.name == "create_task" && result.contains("System is restarting") { calledCreateTask = true }
 
         if configuration.role == .brown {
             let isSuccessfulTaskCommunication: Bool
