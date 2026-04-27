@@ -564,6 +564,23 @@ public actor SecurityEvaluator {
             }
         }
 
+        // For `file_edit`, render the actual change as a unified-style diff alongside
+        // the raw arguments. The literal `new_string` includes anchor context (the
+        // existing line being modified) which Jones can otherwise misread as "the
+        // agent is adding both lines" — leading to spurious ABORT verdicts on
+        // legitimate single-line additions. The diff (computed via the same
+        // `DiffGenerator` the channel-log UI uses) shows what *actually changes*.
+        if toolName == "file_edit",
+           let diffText = Self.fileEditDiffText(toolParams: toolParams) {
+            requestSection += """
+
+                ## Resulting diff (the actual change `file_edit` will apply — read this, not just the raw parameters above)
+                ```diff
+                \(diffText)
+                ```
+                """
+        }
+
         if !toolParameterDefs.isEmpty {
             requestSection += "\n\(toolParameterDefs)"
         }
@@ -684,6 +701,22 @@ public actor SecurityEvaluator {
         default:
             return nil
         }
+    }
+
+    /// Renders a `file_edit` tool call's `old_string` / `new_string` arguments as a
+    /// plain-text unified diff using the *same* `DiffGenerator` the channel-log UI
+    /// uses. Returns nil when `toolParams` cannot be decoded or the strings are
+    /// missing — in that case the prompt falls back to the raw-parameter form, which
+    /// is what was being shown previously anyway. No double computation: this runs
+    /// once per evaluation; the UI's `DiffView` runs separately on render.
+    private static func fileEditDiffText(toolParams: String) -> String? {
+        guard let data = toolParams.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let oldString = obj["old_string"] as? String,
+              let newString = obj["new_string"] as? String else {
+            return nil
+        }
+        return DiffGenerator.renderAsText(old: oldString, new: newString)
     }
 
     /// Checks whether the target file of a file_write or file_edit tool call exists,
