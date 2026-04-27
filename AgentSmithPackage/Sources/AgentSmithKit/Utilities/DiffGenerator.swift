@@ -113,40 +113,6 @@ public enum DiffGenerator {
         return reversed.reversed().enumerated().map { DiffLine(id: $0.offset, kind: $0.element.kind, text: $0.element.text) }
     }
 
-    /// Renders an existing `[DiffLine]` array into a unified-diff-style plain-text
-    /// block — `+ ` for additions, `- ` for removals, `  ` for unchanged context
-    /// lines, plus a leading summary like `+1 -0`. Used to feed Jones (the security
-    /// evaluator) a representation of a `file_edit` call that's identical in shape
-    /// to what the UI displays, so Jones reasons about the *actual change* rather
-    /// than about the literal `new_string` parameter (which includes anchor context
-    /// and is easy to misread as "two added items" when only one is being added).
-    public static func renderAsText(lines: [DiffLine]) -> String {
-        guard !lines.isEmpty else { return "(no changes)" }
-        if lines.count == 1, lines[0].kind == .tooLarge {
-            return lines[0].text
-        }
-        let added = lines.reduce(into: 0) { $0 += ($1.kind == .added ? 1 : 0) }
-        let removed = lines.reduce(into: 0) { $0 += ($1.kind == .removed ? 1 : 0) }
-        var rendered: [String] = ["+\(added) -\(removed)"]
-        for line in lines {
-            switch line.kind {
-            case .context:   rendered.append("  " + line.text)
-            case .added:     rendered.append("+ " + line.text)
-            case .removed:   rendered.append("- " + line.text)
-            case .separator: rendered.append(line.text)
-            case .tooLarge:  rendered.append(line.text)
-            }
-        }
-        return rendered.joined(separator: "\n")
-    }
-
-    /// Convenience: generate-and-render in one call, matching what the UI's
-    /// `DiffView(oldContent:newContent:)` would display for the same inputs but
-    /// as plain text.
-    public static func renderAsText(old: String, new: String, contextLines: Int = 2) -> String {
-        renderAsText(lines: generate(old: old, new: new, contextLines: contextLines))
-    }
-
     /// Keeps only `contextLines` unchanged lines around each change hunk,
     /// inserting a separator between non-contiguous hunks.
     private static func trimContext(ops: [DiffLine], contextLines: Int) -> [DiffLine] {
