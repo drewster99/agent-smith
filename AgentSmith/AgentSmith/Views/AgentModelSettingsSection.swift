@@ -123,6 +123,22 @@ struct AgentModelSettingsSection: View {
         return llmKit.configurations.first { $0.id == id }
     }
 
+    /// Human-readable summary of the current selection for the dropdown's
+    /// closed-state label. Always leads with the model id (that's the part the
+    /// user actually picks per agent) and trails with the provider name in
+    /// parentheses for disambiguation. Falls back to a hint when nothing is
+    /// selected yet.
+    private var menuLabelText: String {
+        let providerName = selectedProvider?.name
+        if modelID.isEmpty {
+            return providerName.map { "Select a model… (\($0))" } ?? "Select a model…"
+        }
+        if let providerName {
+            return "\(modelID)  ·  \(providerName)"
+        }
+        return modelID
+    }
+
     // MARK: - Model dropdown (hierarchical: provider → models submenu)
 
     private var modelDropdown: some View {
@@ -136,17 +152,15 @@ struct AgentModelSettingsSection: View {
             }
         }, label: {
             HStack {
-                if let provider = selectedProvider {
-                    Text(provider.name)
-                        .foregroundStyle(.secondary)
-                    Text("/")
-                        .foregroundStyle(.tertiary)
-                    Text(modelID.isEmpty ? "Select a model…" : modelID)
-                        .foregroundStyle(modelID.isEmpty ? .secondary : .primary)
-                } else {
-                    Text(modelID.isEmpty ? "Select a model…" : modelID)
-                        .foregroundStyle(modelID.isEmpty ? .secondary : .primary)
-                }
+                // One Text node, model-first. The previous version stacked three
+                // Text views in an HStack — under SwiftUI's `.borderlessButton`
+                // menu style on macOS, the system rendered only the first node,
+                // hiding the model name behind the provider. Building a single
+                // String guarantees the actual selected model is always visible.
+                Text(menuLabelText)
+                    .foregroundStyle(modelID.isEmpty ? .secondary : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 Spacer()
                 Image(systemName: "chevron.down")
                     .font(.caption)
