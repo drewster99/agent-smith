@@ -414,7 +414,7 @@ public actor OrchestrationRuntime {
             // Capture session ID before stopAll() clears it — needed to attribute
             // Smith's pre-task planning calls to the task they produced.
             let priorSessionID = await self.currentSessionID
-            await self.stopAll()
+            await self.stopAll(preserveObserverCallbacks: true)
             // Backfill nil-taskID records from the prior session onto the new task.
             // All agent loops have exited by now, so every record has been written.
             if let priorSessionID {
@@ -975,7 +975,15 @@ public actor OrchestrationRuntime {
     }
 
     /// Stops all agents and the monitoring timer.
-    public func stopAll() async {
+    ///
+    /// `preserveObserverCallbacks: true` keeps the AppViewModel-set observer closures
+    /// (`onTurnRecorded`, `onEvaluationRecorded`, `onContextChanged`, `onAgentStarted`,
+    /// `onAbort`, `onTimerEventForChannel`) alive across the stop. Used by
+    /// `restartForNewTask`, which calls `stopAll` then `start` on the SAME runtime
+    /// instance — clearing the callbacks left every subsequent run blind to inspector
+    /// updates because nothing re-wires them. Default false matches the prior
+    /// "stopAll for good" semantics that AppViewModel.stopAll relies on.
+    public func stopAll(preserveObserverCallbacks: Bool = false) async {
         await powerManager?.shutdown()
         powerManager = nil
 
@@ -1020,7 +1028,16 @@ public actor OrchestrationRuntime {
         // view model and runtime; releasing them here makes lifetime crisp and
         // prevents any deferred Task captured before stopAll from invoking a
         // stale callback after the runtime has finished tearing down.
-        clearObserverCallbacks()
+        //
+        // SKIPPED for `restartForNewTask`: that flow calls `stopAll` then immediately
+        // `start` on the same runtime, and the AppViewModel-set observers are the only
+        // wiring that pushes turn / evaluation / context updates to the inspector.
+        // Clearing them mid-restart left every Brown after the first one with no
+        // observability — Jones's evaluation history disappeared from the right pane,
+        // turn records stopped accumulating, and timer-event channel posts went silent.
+        if !preserveObserverCallbacks {
+            clearObserverCallbacks()
+        }
 
         await channel.post(ChannelMessage(
             sender: .system,

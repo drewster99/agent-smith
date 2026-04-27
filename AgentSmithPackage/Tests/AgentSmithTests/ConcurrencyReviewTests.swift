@@ -239,6 +239,28 @@ struct CallbackClearingTests {
         #expect(afterCleared, "Every observer callback must be nilled out by stopAll()")
     }
 
+    /// Regression: `restartForNewTask` calls `stopAll(preserveObserverCallbacks: true)`
+    /// then `start` on the same runtime. If `stopAll` cleared the AppViewModel-set
+    /// observers anyway, the new Brown spawned by `start` would have no path to push
+    /// turns / evaluations / context updates back to the inspector — Jones's history
+    /// would silently disappear from the right pane on every task re-run.
+    @Test("stopAll(preserveObserverCallbacks: true) keeps every observer alive")
+    func stopAllPreserveKeepsCallbacks() async throws {
+        let runtime = makeRuntime()
+        await runtime.setOnAbort { _ in }
+        await runtime.setOnProcessingStateChange { _, _ in }
+        await runtime.setOnAgentStarted { _, _ in }
+        await runtime.setOnTurnRecorded { _, _ in }
+        await runtime.setOnEvaluationRecorded { _ in }
+        await runtime.setOnContextChanged { _, _ in }
+        await runtime.setOnTimerEventForChannel { _ in }
+
+        await runtime.stopAll(preserveObserverCallbacks: true)
+
+        let cleared = await runtime.observerCallbacksCleared
+        #expect(!cleared, "Observer callbacks must survive stopAll when preserveObserverCallbacks is true")
+    }
+
     /// Regression: `abort()` calls `stopAll()` (which clears callbacks) and then
     /// fires `onAbort`. If we read `onAbort` from the field after `stopAll()`
     /// runs, it would always be nil and the UI would silently miss every abort.
