@@ -1,5 +1,14 @@
 import SwiftUI
+import AppKit
 import AgentSmithKit
+
+/// Writes the task's UUID string to the system pasteboard so the user can paste it into
+/// a tool call, log search, or external note. Used by every task-row context menu.
+private func copyTaskIDToPasteboard(_ id: UUID) {
+    let pb = NSPasteboard.general
+    pb.clearContents()
+    pb.setString(id.uuidString, forType: .string)
+}
 
 /// Sidebar task list with active tasks, an optional archived section, and a recently-deleted section.
 struct TaskListView: View {
@@ -246,6 +255,10 @@ private struct ActiveTaskRow: View {
         .padding(.vertical, 8)
         .contentShape(Rectangle())
         .contextMenu {
+            Button(action: { copyTaskIDToPasteboard(task.id) }, label: {
+                Label("Copy Task ID", systemImage: "doc.on.doc")
+            })
+            Divider()
             switch task.status {
             case .completed:
                 Button(action: { Task { await viewModel.runTaskAgain(task) } }, label: {
@@ -342,6 +355,10 @@ private struct ArchivedTaskRow: View {
         .padding(.vertical, 8)
         .contentShape(Rectangle())
         .contextMenu {
+            Button(action: { copyTaskIDToPasteboard(task.id) }, label: {
+                Label("Copy Task ID", systemImage: "doc.on.doc")
+            })
+            Divider()
             Button(action: { Task { await viewModel.unarchiveTask(id: task.id) } }, label: {
                 Label("Unarchive", systemImage: "arrow.uturn.backward")
             })
@@ -385,6 +402,10 @@ private struct DeletedTaskRow: View {
         .padding(.vertical, 8)
         .contentShape(Rectangle())
         .contextMenu {
+            Button(action: { copyTaskIDToPasteboard(task.id) }, label: {
+                Label("Copy Task ID", systemImage: "doc.on.doc")
+            })
+            Divider()
             Button(action: { Task { await viewModel.undeleteTask(id: task.id) } }, label: {
                 Label("Undelete", systemImage: "arrow.uturn.backward")
             })
