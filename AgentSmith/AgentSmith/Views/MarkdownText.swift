@@ -167,11 +167,11 @@ struct MarkdownText: View, Equatable {
                 .padding(.vertical, 6)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.secondary.opacity(0.1))
+        .background(AppColors.codeBlockBackground)
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(Color.secondary.opacity(0.2), lineWidth: 0.5)
+                .strokeBorder(AppColors.codeBlockBorder, lineWidth: 0.5)
         )
         .padding(.vertical, 4)
     }
@@ -193,7 +193,7 @@ struct MarkdownText: View, Equatable {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(rowIdx == 0 ? Color.secondary.opacity(0.12) : Color.clear)
+                        .background(rowIdx == 0 ? AppColors.tableHeaderBackground : Color.clear)
                     }
                 }
                 Divider()
@@ -201,7 +201,7 @@ struct MarkdownText: View, Equatable {
         }
         .overlay(
             RoundedRectangle(cornerRadius: 4)
-                .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+                .stroke(AppColors.tableBorder, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .padding(.vertical, 4)
@@ -322,7 +322,7 @@ struct MarkdownText: View, Equatable {
             if segment.isCode {
                 let part = Text(segment.text)
                     .font(font)
-                    .foregroundColor(.cyan)
+                    .foregroundStyle(AppColors.inlineCode)
                 combined = Text("\(combined)\(part)")
             } else {
                 let part = Text(LocalizedStringKey(linkify(segment.text)))

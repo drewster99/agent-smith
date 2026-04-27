@@ -26,20 +26,14 @@ struct MainView: View {
                     .padding(.top, 12)
                     .padding(.bottom, 8)
 
-                Toggle("Auto-run next task", isOn: Binding(
-                    get: { viewModel.autoRunNextTask },
-                    set: { viewModel.autoRunNextTask = $0 }
-                ))
-                .font(.caption)
-                .padding(.horizontal, 12)
+                Toggle("Auto-run next task", isOn: $viewModel.autoRunNextTask)
+                    .font(.caption)
+                    .padding(.horizontal, 12)
 
-                Toggle("Auto-run interrupted tasks", isOn: Binding(
-                    get: { viewModel.autoRunInterruptedTasks },
-                    set: { viewModel.autoRunInterruptedTasks = $0 }
-                ))
-                .font(.caption)
-                .padding(.horizontal, 12)
-                .padding(.bottom, 6)
+                Toggle("Auto-run interrupted tasks", isOn: $viewModel.autoRunInterruptedTasks)
+                    .font(.caption)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 6)
 
                 ScrollView {
                     TaskListView(viewModel: viewModel)
@@ -116,7 +110,7 @@ struct MainView: View {
                 if isDropTargeted {
                     RoundedRectangle(cornerRadius: 8)
                         .stroke(.blue, lineWidth: 3)
-                        .background(.blue.opacity(0.08))
+                        .background(AppColors.dropTargetTint)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                         .allowsHitTesting(false)
                 }
@@ -213,10 +207,11 @@ struct MainView: View {
         .navigationTitle(viewModel.session.name)
         .onChange(of: viewModel.hasLoadedPersistedState) { _, loaded in
             guard loaded, shared.hasLoadedPersistedState else { return }
+            // Project rule: defer @State mutations out of .onChange.
             if shared.nickname.isEmpty {
-                showWelcomeSheet = true
+                DispatchQueue.main.async { showWelcomeSheet = true }
             } else if !viewModel.allAgentConfigsValid {
-                showValidationSheet = true
+                DispatchQueue.main.async { showValidationSheet = true }
             } else if shared.autoStartEnabled && !viewModel.isRunning {
                 Task { await viewModel.start() }
             }
@@ -224,9 +219,9 @@ struct MainView: View {
         .onChange(of: shared.hasLoadedPersistedState) { _, loaded in
             guard loaded, viewModel.hasLoadedPersistedState else { return }
             if shared.nickname.isEmpty {
-                showWelcomeSheet = true
+                DispatchQueue.main.async { showWelcomeSheet = true }
             } else if !viewModel.allAgentConfigsValid {
-                showValidationSheet = true
+                DispatchQueue.main.async { showValidationSheet = true }
             } else if shared.autoStartEnabled && !viewModel.isRunning {
                 Task { await viewModel.start() }
             }
@@ -387,7 +382,7 @@ private struct WelcomeSheet: View {
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: "hand.wave.fill")
-                .font(.system(size: 40))
+                .font(AppFonts.welcomeIcon)
                 .foregroundStyle(.blue)
 
             Text("Welcome to Agent Smith")

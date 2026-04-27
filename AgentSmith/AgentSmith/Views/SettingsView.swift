@@ -17,7 +17,7 @@ struct SettingsView: View {
         TabView {
             Tab("General", systemImage: "gearshape") {
                 ScrollView {
-                    generalTab
+                    generalTab()
                         .padding()
                 }
             }
@@ -31,14 +31,14 @@ struct SettingsView: View {
 
             Tab("Configurations", systemImage: "slider.horizontal.3") {
                 ScrollView {
-                    configurationsTab
+                    configurationsTab()
                         .padding()
                 }
             }
 
             Tab("Audio", systemImage: "speaker.wave.2") {
                 ScrollView {
-                    audioSettingsSection
+                    audioSettingsSection()
                         .padding()
                 }
             }
@@ -52,7 +52,9 @@ struct SettingsView: View {
 
     // MARK: - General Tab
 
-    private var generalTab: some View {
+    @ViewBuilder
+
+    private func generalTab() -> some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Account")
                 .font(AppFonts.sectionHeader)
@@ -126,7 +128,9 @@ struct SettingsView: View {
         var id: String { "\(providerID)/\(modelID)" }
     }
 
-    private var configurationsTab: some View {
+    @ViewBuilder
+
+    private func configurationsTab() -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Model Configurations")
@@ -304,9 +308,9 @@ struct SettingsView: View {
                     .font(.caption2)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1)
-                    .background(Color.blue.opacity(0.15))
+                    .background(AppColors.flagChipBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 3))
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(AppColors.flagChipForeground)
             }
         }
         .help("Per-model behavior flags resolved from bundled defaults + user overrides. Edit via the user model overrides JSON.")
@@ -325,7 +329,9 @@ struct SettingsView: View {
 
     // MARK: - Audio settings
 
-    private var audioSettingsSection: some View {
+    @ViewBuilder
+
+    private func audioSettingsSection() -> some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Audio Settings")
                 .font(.title2.bold())

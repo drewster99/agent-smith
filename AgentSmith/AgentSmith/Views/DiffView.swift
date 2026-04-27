@@ -54,7 +54,7 @@ struct DiffView: View {
             // Oversized diff — show a compact summary line instead.
             HStack(spacing: 4) {
                 Image(systemName: "doc.text.magnifyingglass")
-                    .font(.system(size: 11))
+                    .font(AppFonts.bannerIconSmall)
                     .foregroundStyle(.secondary)
                 Text(allLines[0].text)
                     .font(AppFonts.channelTimestamp)
@@ -71,21 +71,24 @@ struct DiffView: View {
                 : Array(allLines.prefix(defaultVisibleLines))
 
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 6) {
-                    Text("\(Text("+\(addedCount)").foregroundColor(.green))  \(Text("-\(removedCount)").foregroundColor(.red))")
-                        .font(AppFonts.channelTimestamp.monospacedDigit())
-                    if needsTruncation {
-                        Text(isExpanded ? "(show less)" : "(show more)")
-                            .font(.caption)
-                            .foregroundStyle(.blue)
-                    }
-                    Spacer()
-                }
-                .padding(.bottom, 2)
-                .contentShape(Rectangle())
-                .onTapGesture {
+                Button(action: {
                     if needsTruncation { isExpanded.toggle() }
-                }
+                }, label: {
+                    HStack(spacing: 6) {
+                        Text("\(Text("+\(addedCount)").foregroundStyle(AppColors.diffAddedForeground))  \(Text("-\(removedCount)").foregroundStyle(AppColors.diffRemovedForeground))")
+                            .font(AppFonts.channelTimestamp.monospacedDigit())
+                        if needsTruncation {
+                            Text(isExpanded ? "(show less)" : "(show more)")
+                                .font(.caption)
+                                .foregroundStyle(.blue)
+                        }
+                        Spacer()
+                    }
+                    .padding(.bottom, 2)
+                    .contentShape(Rectangle())
+                })
+                .buttonStyle(.plain)
+                .disabled(!needsTruncation)
 
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(visibleLines) { line in
@@ -116,24 +119,24 @@ struct DiffView: View {
             HStack(spacing: 0) {
                 Text("- ")
                     .font(AppFonts.channelBody.monospaced())
-                    .foregroundStyle(.red)
+                    .foregroundStyle(AppColors.diffRemovedForeground)
                 Text(line.text)
                     .font(AppFonts.channelBody.monospaced())
-                    .foregroundStyle(.red)
+                    .foregroundStyle(AppColors.diffRemovedForeground)
                 Spacer(minLength: 0)
             }
-            .background(Color.red.opacity(0.12))
+            .background(AppColors.diffRemovedBackground)
         case .added:
             HStack(spacing: 0) {
                 Text("+ ")
                     .font(AppFonts.channelBody.monospaced())
-                    .foregroundStyle(.green)
+                    .foregroundStyle(AppColors.diffAddedForeground)
                 Text(line.text)
                     .font(AppFonts.channelBody.monospaced())
-                    .foregroundStyle(.green)
+                    .foregroundStyle(AppColors.diffAddedForeground)
                 Spacer(minLength: 0)
             }
-            .background(Color.green.opacity(0.12))
+            .background(AppColors.diffAddedBackground)
         case .separator:
             Text(line.text)
                 .font(AppFonts.channelBody.monospaced())

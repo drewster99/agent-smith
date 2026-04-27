@@ -26,24 +26,22 @@ struct AgentInspectorWindow: View {
     private var contextMessages: [LLMMessage] { viewModel.inspectorStore.contextMessages(for: role) }
     private var llmTurns: [LLMTurnRecord] { viewModel.inspectorStore.turnsByRole[role] ?? [] }
 
-    private var roleMessages: [ChannelMessage] {
-        viewModel.messages.filter {
+    var body: some View {
+        // Single-pass message bucketing per body. Without this, roleMessages /
+        // recentMessages / recentToolUses each re-filtered viewModel.messages.
+        let roleMessages = viewModel.messages.filter {
             if case .agent(let r) = $0.sender { return r == role }
             return false
         }
-    }
-    private var hasActivity: Bool { !roleMessages.isEmpty }
-    private var recentMessages: [ChannelMessage] { Array(roleMessages.suffix(10).reversed()) }
-    private var recentToolUses: [ChannelMessage] {
-        Array(roleMessages.filter { $0.metadata?["tool"] != nil }.suffix(5).reversed())
-    }
+        let hasActivity = !roleMessages.isEmpty
+        let recentMessages = Array(roleMessages.suffix(10).reversed())
+        let recentToolUses = Array(roleMessages.filter { $0.metadata?["tool"] != nil }.suffix(5).reversed())
 
-    var body: some View {
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             // Header
             HStack(alignment: .center) {
                 Circle()
-                    .fill(hasActivity ? roleColor : Color.secondary.opacity(0.4))
+                    .fill(hasActivity ? roleColor : AppColors.inactiveDot)
                     .frame(width: 10, height: 10)
                 Text(inspectorDisplayName)
                     .font(.title2.bold())
@@ -141,7 +139,10 @@ struct AgentInspectorWindow: View {
                             if let last = llmTurns.last { expandedTurnIDs.insert(last.id) }
                         }
                         .onChange(of: llmTurns.count) {
-                            if let last = llmTurns.last { expandedTurnIDs.insert(last.id) }
+                            // Project rule: defer @State mutation out of .onChange.
+                            if let last = llmTurns.last {
+                                DispatchQueue.main.async { self.expandedTurnIDs.insert(last.id) }
+                            }
                         }
                     }
 
@@ -161,7 +162,10 @@ struct AgentInspectorWindow: View {
         .frame(minWidth: 600, idealWidth: 800, minHeight: 500, idealHeight: 700)
         .onAppear { if isProcessing { processingStartDate = Date() } }
         .onChange(of: isProcessing) { _, newValue in
-            processingStartDate = newValue ? Date() : nil
+            // Project rule: defer @State mutation out of .onChange.
+            DispatchQueue.main.async {
+                self.processingStartDate = newValue ? Date() : nil
+            }
         }
     }
 

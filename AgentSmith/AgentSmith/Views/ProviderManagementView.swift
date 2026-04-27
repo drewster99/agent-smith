@@ -34,8 +34,8 @@ struct ProviderManagementView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            builtInSection
-            customSection
+            builtInSection()
+            customSection()
         }
         .sheet(item: $editingProvider) { state in
             ProviderEditorSheet(
@@ -56,7 +56,7 @@ struct ProviderManagementView: View {
 
     // MARK: - Built-in section
 
-    private var builtInSection: some View {
+    private func builtInSection() -> some View {
         let visible = showAllBuiltIns ? allBuiltInsAlphabetical : defaultVisibleBuiltIns
         let canShowMore = !showAllBuiltIns && visible.count < BuiltInProviders.all.count
 
@@ -84,7 +84,9 @@ struct ProviderManagementView: View {
 
     // MARK: - Custom section
 
-    private var customSection: some View {
+    @ViewBuilder
+
+    private func customSection() -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Custom Providers")
@@ -276,8 +278,9 @@ private struct BuiltInProviderRow: View {
             // Re-sync the draft to the new saved value only when the user isn't
             // mid-edit. This catches undo/redo from another window or any other
             // external mutation without dropping what the user is currently typing.
+            // Project rule: defer the @State mutation out of .onChange.
             if !hasUnsavedChanges {
-                draftKey = savedKey
+                DispatchQueue.main.async { self.draftKey = self.savedKey }
             }
         }
     }
@@ -390,7 +393,7 @@ private struct ProviderEditorSheet: View {
                 HStack(spacing: 4) {
                     TextField("https://...", text: $state.endpointString)
                         .textFieldStyle(.roundedBorder)
-                    endpointPresetMenu
+                    endpointPresetMenu()
                 }
             }
 
@@ -423,7 +426,7 @@ private struct ProviderEditorSheet: View {
         })
     }
 
-    private var endpointPresetMenu: some View {
+    private func endpointPresetMenu() -> some View {
         let allPresets = ProviderAPIType.allEndpointPresets
         let cloudPresets = allPresets.filter { $0.preset.url.scheme == "https" }
         let localPresets = allPresets.filter { $0.preset.url.scheme != "https" }

@@ -13,7 +13,7 @@ struct ConfigValidationView: View {
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: "gear.badge.checkmark")
-                .font(.system(size: 40))
+                .font(AppFonts.welcomeIcon)
                 .foregroundStyle(.secondary)
 
             Text("Configuration Check")

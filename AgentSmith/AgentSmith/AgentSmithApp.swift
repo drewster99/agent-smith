@@ -95,10 +95,10 @@ struct AgentSmithApp: App {
 
                 Divider()
 
-                Toggle("Show Timer Activity in Transcript", isOn: Binding(
-                    get: { shared.showTimerActivityInTranscript },
-                    set: { shared.showTimerActivityInTranscript = $0 }
-                ))
+                Toggle(
+                    "Show Timer Activity in Transcript",
+                    isOn: Bindable(shared).showTimerActivityInTranscript
+                )
             }
         }
 
@@ -228,9 +228,12 @@ struct SessionScene: View {
                   let session = sessionManager.sessions.first(where: { $0.id == id }) else {
                 return
             }
-            shared.renameSessionRequestID = nil
-            renameDraft = session.name
-            showRenameSheet = true
+            // Project rule: defer @State / @Observable mutations out of .onChange.
+            DispatchQueue.main.async {
+                shared.renameSessionRequestID = nil
+                renameDraft = session.name
+                showRenameSheet = true
+            }
         }
         .sheet(isPresented: $showRenameSheet) {
             RenameSessionSheet(

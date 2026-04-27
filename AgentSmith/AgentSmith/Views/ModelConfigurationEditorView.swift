@@ -26,17 +26,17 @@ struct ModelConfigurationEditorView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    nameSection
-                    providerSection
-                    modelSection
-                    parametersSection
+                    nameSection()
+                    providerSection()
+                    modelSection()
+                    parametersSection()
                     if selectedProviderAPIType == .anthropic || selectedProviderAPIType == .alibabaCloud {
-                        thinkingSection
+                        thinkingSection()
                     }
                     if selectedProviderAPIType == .anthropic {
-                        cacheTTLSection
+                        cacheTTLSection()
                     }
-                    streamingSection
+                    streamingSection()
                 }
             }
 
@@ -56,14 +56,18 @@ struct ModelConfigurationEditorView: View {
 
     // MARK: - Sections
 
-    private var nameSection: some View {
+    @ViewBuilder
+
+    private func nameSection() -> some View {
         LabeledContent("Name") {
             TextField("e.g. Claude Heavy, Local Fast", text: $name)
                 .textFieldStyle(.roundedBorder)
         }
     }
 
-    private var providerSection: some View {
+    @ViewBuilder
+
+    private func providerSection() -> some View {
         LabeledContent("Provider") {
             Picker("", selection: $selectedProviderID) {
                 Text("Select a provider...").tag("")
@@ -75,7 +79,9 @@ struct ModelConfigurationEditorView: View {
         }
     }
 
-    private var modelSection: some View {
+    @ViewBuilder
+
+    private func modelSection() -> some View {
         VStack(alignment: .leading, spacing: 4) {
             LabeledContent("Model") {
                 HStack(spacing: 4) {
@@ -83,7 +89,7 @@ struct ModelConfigurationEditorView: View {
                         .textFieldStyle(.roundedBorder)
 
                     if !providerModels.isEmpty {
-                        modelPickerMenu
+                        modelPickerMenu()
                     }
                 }
             }
@@ -100,7 +106,9 @@ struct ModelConfigurationEditorView: View {
         selectedProviderAPIType == .anthropic && thinkingBudget > 0
     }
 
-    private var parametersSection: some View {
+    @ViewBuilder
+
+    private func parametersSection() -> some View {
         VStack(alignment: .leading, spacing: 10) {
             LabeledContent("Temperature") {
                 HStack {
@@ -113,8 +121,9 @@ struct ModelConfigurationEditorView: View {
                 }
             }
             .onChange(of: temperature) { _, newValue in
+                // Project rule: don't mutate @State directly inside .onChange.
                 if selectedProviderAPIType == .anthropic && newValue != 1.0 {
-                    thinkingBudget = 0
+                    DispatchQueue.main.async { self.thinkingBudget = 0 }
                 }
             }
 
@@ -128,7 +137,10 @@ struct ModelConfigurationEditorView: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 120)
                     .onChange(of: maxOutputTokens) { _, newValue in
-                        maxOutputTokens = max(1, newValue)
+                        // Project rule: clamp on next runloop tick.
+                        if newValue < 1 {
+                            DispatchQueue.main.async { self.maxOutputTokens = 1 }
+                        }
                     }
             }
 
@@ -137,13 +149,17 @@ struct ModelConfigurationEditorView: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 120)
                     .onChange(of: maxContextTokens) { _, newValue in
-                        maxContextTokens = max(1, newValue)
+                        if newValue < 1 {
+                            DispatchQueue.main.async { self.maxContextTokens = 1 }
+                        }
                     }
             }
         }
     }
 
-    private var thinkingSection: some View {
+    @ViewBuilder
+
+    private func thinkingSection() -> some View {
         VStack(alignment: .leading, spacing: 6) {
             LabeledContent("Thinking Budget") {
                 HStack(spacing: 8) {
@@ -151,14 +167,20 @@ struct ModelConfigurationEditorView: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 120)
                         .onChange(of: thinkingBudget) { _, newValue in
+                            // Project rule: defer @State mutations to next runloop tick.
+                            // The clamp re-fires this onChange with the corrected value;
+                            // no special atomicity is needed because this view persists
+                            // via an explicit Save button (no commit-per-keystroke).
                             if newValue > 0 {
-                                thinkingBudget = max(1024, newValue)
-                                // Anthropic requires temperature = 1.0 when thinking is enabled.
-                                if selectedProviderAPIType == .anthropic {
-                                    temperature = 1.0
+                                DispatchQueue.main.async {
+                                    self.thinkingBudget = max(1024, newValue)
+                                    // Anthropic requires temperature = 1.0 when thinking is enabled.
+                                    if self.selectedProviderAPIType == .anthropic {
+                                        self.temperature = 1.0
+                                    }
                                 }
-                            } else {
-                                thinkingBudget = 0
+                            } else if newValue < 0 {
+                                DispatchQueue.main.async { self.thinkingBudget = 0 }
                             }
                         }
 
@@ -197,7 +219,9 @@ struct ModelConfigurationEditorView: View {
         }
     }
 
-    private var cacheTTLSection: some View {
+    @ViewBuilder
+
+    private func cacheTTLSection() -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Toggle("Extended Prompt Cache (1 hour)", isOn: $extendedCacheTTL)
             Text("Use 1-hour cache TTL instead of the default 5-minute. Cached input tokens cost 2x the base price.")
@@ -206,7 +230,9 @@ struct ModelConfigurationEditorView: View {
         }
     }
 
-    private var streamingSection: some View {
+    @ViewBuilder
+
+    private func streamingSection() -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Toggle("Streaming", isOn: $streaming)
                 .disabled(true)
@@ -230,7 +256,9 @@ struct ModelConfigurationEditorView: View {
         llmKit.providers.first { $0.id == selectedProviderID }?.apiType
     }
 
-    private var modelPickerMenu: some View {
+    @ViewBuilder
+
+    private func modelPickerMenu() -> some View {
         Menu(
             content: {
                 ForEach(providerModels) { model in

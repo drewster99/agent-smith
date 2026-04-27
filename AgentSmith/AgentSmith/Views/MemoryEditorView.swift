@@ -47,14 +47,14 @@ struct MemoryEditorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            headerBar
+            headerBar()
             Divider()
             if showTaskSummaries {
-                taskSummaryList
+                taskSummaryList()
             } else {
-                memoryList
+                memoryList()
             }
-            statsFooter
+            statsFooter()
         }
         .frame(minWidth: 600, minHeight: 400)
         .task {
@@ -64,15 +64,26 @@ struct MemoryEditorView: View {
             searchTask?.cancel()
             let query = searchText.trimmingCharacters(in: .whitespaces)
             if query.isEmpty {
-                memorySimilarities.removeAll()
-                taskSummarySimilarities.removeAll()
-                isSearching = false
-                searchErrorMessage = nil
-                searchStats = nil
+                // Project rule: defer @State mutations out of .onChange so they don't
+                // race the @Observable change that fired this closure.
+                DispatchQueue.main.async {
+                    self.memorySimilarities.removeAll()
+                    self.taskSummarySimilarities.removeAll()
+                    self.isSearching = false
+                    self.searchErrorMessage = nil
+                    self.searchStats = nil
+                }
                 return
             }
-            isSearching = true
-            searchErrorMessage = nil
+            DispatchQueue.main.async {
+                self.isSearching = true
+                self.searchErrorMessage = nil
+            }
+            // Note: `searchTask = Task { … }` is intentionally synchronous here, not wrapped
+            // in DispatchQueue.main.async. The cancel-then-replace pattern at the top of
+            // this closure (`searchTask?.cancel()`) relies on the assignment landing before
+            // the next keystroke's onChange runs; deferring would let two tasks race past
+            // their cancellation guards on rapid typing.
             searchTask = Task {
                 try? await Task.sleep(for: .milliseconds(300))
                 guard !Task.isCancelled else { return }
@@ -162,7 +173,8 @@ struct MemoryEditorView: View {
     ///    list above is showing stale results from a previous query)
     /// 2. `searchStats != nil` → most recent search's docs/vectors/time breakdown
     /// 3. otherwise → corpus stats (memory + task summary counts and total vectors)
-    private var statsFooter: some View {
+    @ViewBuilder
+    private func statsFooter() -> some View {
         VStack(spacing: 0) {
             Divider()
             HStack(spacing: 8) {
@@ -239,7 +251,9 @@ struct MemoryEditorView: View {
 
     // MARK: - Header
 
-    private var headerBar: some View {
+    @ViewBuilder
+
+    private func headerBar() -> some View {
         HStack(spacing: 12) {
             Picker("", selection: $showTaskSummaries) {
                 Text("Memories (\(shared.storedMemories.count))").tag(false)
@@ -306,7 +320,8 @@ struct MemoryEditorView: View {
     }
 
     @ViewBuilder
-    private var memoryList: some View {
+
+    private func memoryList() -> some View {
         let filtered = filteredMemories
         if let error = searchErrorMessage {
             ContentUnavailableView(
@@ -343,25 +358,35 @@ struct MemoryEditorView: View {
                 description: Text("No memories from this source. Change the Source filter to see other memories.")
             )
         } else {
-            List {
-                if isAddingMemory {
-                    newMemoryRow
-                }
-                ForEach(filtered) { memory in
-                    if editingMemoryID == memory.id {
-                        editRow(memory: memory)
-                    } else {
-                        memoryRow(memory: memory)
+            ScrollView {
+                VStack(spacing: 0) {
+                    if isAddingMemory {
+                        newMemoryRow()
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                    }
+                    ForEach(Array(filtered.enumerated()), id: \.element.id) { index, memory in
+                        Group {
+                            if editingMemoryID == memory.id {
+                                editRow(memory: memory)
+                            } else {
+                                memoryRow(memory: memory)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(index.isMultiple(of: 2) ? Color.clear : AppColors.subtleRowBackgroundDim)
                     }
                 }
             }
-            .listStyle(.inset(alternatesRowBackgrounds: true))
         }
     }
 
     /// Inline composer pinned to the top of the list while `isAddingMemory` is true.
     /// Mirrors `editRow`'s shape so users get a consistent affordance for content + tags.
-    private var newMemoryRow: some View {
+    @ViewBuilder
+    private func newMemoryRow() -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("New Memory")
                 .font(.caption)
@@ -370,7 +395,7 @@ struct MemoryEditorView: View {
             TextEditor(text: $newMemoryContent)
                 .font(.body)
                 .frame(minHeight: 60, maxHeight: 120)
-                .border(Color.secondary.opacity(0.2))
+                .border(AppColors.codeBlockBorder)
 
             LabeledContent("Tags") {
                 TextField("comma-separated tags", text: $newMemoryTags)
@@ -518,7 +543,7 @@ struct MemoryEditorView: View {
             TextEditor(text: $editContent)
                 .font(.body)
                 .frame(minHeight: 60, maxHeight: 120)
-                .border(Color.secondary.opacity(0.2))
+                .border(AppColors.codeBlockBorder)
 
             LabeledContent("Tags") {
                 TextField("comma-separated tags", text: $editTags)
@@ -577,7 +602,8 @@ struct MemoryEditorView: View {
     }
 
     @ViewBuilder
-    private var taskSummaryList: some View {
+
+    private func taskSummaryList() -> some View {
         let filtered = filteredTaskSummaries
         if let error = searchErrorMessage {
             ContentUnavailableView(
@@ -604,48 +630,52 @@ struct MemoryEditorView: View {
                 description: Text("Tasks become searchable after they complete or fail and a summary is generated.")
             )
         } else {
-            List {
-                ForEach(filtered) { summary in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text(summary.title)
-                                .font(.body.bold())
-                            Spacer()
-                            if let score = taskSummarySimilarities[summary.id] {
-                                Text(String(format: "%.0f%%", score * 100))
-                                    .font(.caption.bold().monospaced())
-                                    .foregroundStyle(similarityColor(score))
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(Array(filtered.enumerated()), id: \.element.id) { index, summary in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(summary.title)
+                                    .font(.body.bold())
+                                Spacer()
+                                if let score = taskSummarySimilarities[summary.id] {
+                                    Text(String(format: "%.0f%%", score * 100))
+                                        .font(.caption.bold().monospaced())
+                                        .foregroundStyle(similarityColor(score))
+                                }
+                                Text(summary.status.rawValue)
+                                    .font(.caption2)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(statusColor(summary.status).opacity(0.15))
+                                    .foregroundStyle(statusColor(summary.status))
+                                    .clipShape(RoundedRectangle(cornerRadius: 3))
                             }
-                            Text(summary.status.rawValue)
-                                .font(.caption2)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(statusColor(summary.status).opacity(0.15))
-                                .foregroundStyle(statusColor(summary.status))
-                                .clipShape(RoundedRectangle(cornerRadius: 3))
-                        }
 
-                        MarkdownText(content: summary.summary, baseFont: .callout)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-
-                        // ID on the lower left (matching the Task Details window),
-                        // creation date of the actual task on the lower right.
-                        HStack(spacing: 8) {
-                            Text("ID: \(summary.id.uuidString)")
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.tertiary)
+                            MarkdownText(content: summary.summary, baseFont: .callout)
+                                .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
-                            Spacer()
-                            Text("Created \(formatDateTime(summary.taskCreatedAt))")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
+
+                            // ID on the lower left (matching the Task Details window),
+                            // creation date of the actual task on the lower right.
+                            HStack(spacing: 8) {
+                                Text("ID: \(summary.id.uuidString)")
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.tertiary)
+                                    .textSelection(.enabled)
+                                Spacer()
+                                Text("Created \(formatDateTime(summary.taskCreatedAt))")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(index.isMultiple(of: 2) ? Color.clear : AppColors.subtleRowBackgroundDim)
                     }
-                    .padding(.vertical, 4)
                 }
             }
-            .listStyle(.inset(alternatesRowBackgrounds: true))
         }
     }
 

@@ -49,12 +49,19 @@ private struct ActiveTimersList: View {
                 description: Text("Reminders and task-action timers will appear here while they're scheduled.")
             )
         } else {
-            List(viewModel.activeTimers, id: \.id) { wake in
-                ActiveTimerRow(wake: wake, taskTitle: taskTitle(for: wake.taskID), onCancel: {
-                    Task { await viewModel.cancelTimer(id: wake.id) }
-                })
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(Array(viewModel.activeTimers.enumerated()), id: \.element.id) { index, wake in
+                        ActiveTimerRow(wake: wake, taskTitle: taskTitle(for: wake.taskID), onCancel: {
+                            Task { await viewModel.cancelTimer(id: wake.id) }
+                        })
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(index.isMultiple(of: 2) ? Color.clear : AppColors.subtleRowBackgroundDim)
+                    }
+                }
             }
-            .listStyle(.inset)
         }
     }
 
@@ -130,10 +137,17 @@ private struct TimerHistoryList: View {
                 description: Text("Once timers are scheduled, fired, or cancelled their lifecycle events appear here.")
             )
         } else {
-            List(history, id: \.id) { event in
-                TimerHistoryRow(event: event)
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(Array(history.enumerated()), id: \.element.id) { index, event in
+                        TimerHistoryRow(event: event)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(index.isMultiple(of: 2) ? Color.clear : AppColors.subtleRowBackgroundDim)
+                    }
+                }
             }
-            .listStyle(.inset)
         }
     }
 }

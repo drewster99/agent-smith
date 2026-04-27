@@ -145,7 +145,7 @@ struct TaskDetailWindow: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
-                        .background(.purple.opacity(0.06))
+                        .background(AppColors.summarySectionBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
 

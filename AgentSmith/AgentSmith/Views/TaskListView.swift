@@ -129,7 +129,7 @@ private struct TaskSectionHeader: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.secondary.opacity(0.06))
+            .background(AppColors.subtleRowBackground)
     }
 }
 
@@ -379,7 +379,7 @@ private struct DeletedTaskRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: TaskStatusBadge.icon(for: task.status))
-                .foregroundStyle(Color.secondary.opacity(0.35))
+                .foregroundStyle(AppColors.dimSecondary35)
                 .imageScale(.medium)
                 .frame(width: 18)
 

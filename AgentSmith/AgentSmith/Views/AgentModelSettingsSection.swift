@@ -87,7 +87,7 @@ struct AgentModelSettingsSection: View {
                 }
             }
 
-            modelDropdown
+            modelDropdown()
 
             if let info = selectedModelInfo {
                 modelInfoBar(for: info)
@@ -97,13 +97,13 @@ struct AgentModelSettingsSection: View {
                     .foregroundStyle(.orange)
             }
 
-            parametersSection
+            parametersSection()
 
             if thinkingSupported {
-                thinkingSection
+                thinkingSection()
             }
             if anthropicCacheVisible {
-                cacheTTLSection
+                cacheTTLSection()
             }
         }
         .onAppear { loadFromViewModel() }
@@ -141,7 +141,9 @@ struct AgentModelSettingsSection: View {
 
     // MARK: - Model dropdown (hierarchical: provider → models submenu)
 
-    private var modelDropdown: some View {
+    @ViewBuilder
+
+    private func modelDropdown() -> some View {
         Menu(content: {
             if sortedProviders.isEmpty {
                 Text("No providers configured. Add one in Settings → Providers.")
@@ -168,7 +170,7 @@ struct AgentModelSettingsSection: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .background(Color.secondary.opacity(0.08))
+            .background(AppColors.subtleRowBackgroundLift)
             .clipShape(RoundedRectangle(cornerRadius: 6))
         })
         .menuStyle(.borderlessButton)
@@ -263,7 +265,9 @@ struct AgentModelSettingsSection: View {
 
     // MARK: - Parameters
 
-    private var parametersSection: some View {
+    @ViewBuilder
+
+    private func parametersSection() -> some View {
         VStack(alignment: .leading, spacing: 10) {
             LabeledContent("Temperature") {
                 HStack {
@@ -277,8 +281,21 @@ struct AgentModelSettingsSection: View {
             }
             .onChange(of: temperature) { _, newValue in
                 guard !isSyncingFromExternal else { return }
+                // Project rule: don't mutate @State directly inside .onChange.
+                // For Anthropic models, dropping below temp=1.0 also forces thinking off
+                // — that's a TWO-variable cascade, so we defer both the assignment and
+                // the commit to the same async block, with `isSyncingFromExternal`
+                // suppressing the cascading thinkingBudget onChange's redundant commit.
+                // Result: one atomic commit that reflects both new values, instead of
+                // a stale-thinkingBudget commit followed by a corrective second commit.
                 if selectedAPIType == .anthropic && newValue != 1.0 {
-                    thinkingBudget = 0
+                    DispatchQueue.main.async {
+                        self.isSyncingFromExternal = true
+                        self.thinkingBudget = 0
+                        self.isSyncingFromExternal = false
+                        self.commit()
+                    }
+                    return
                 }
                 commit()
             }
@@ -298,7 +315,11 @@ struct AgentModelSettingsSection: View {
                     .frame(width: 120)
                     .onSubmit { commit() }
                     .onChange(of: maxOutputTokens) { _, newValue in
-                        if newValue < 1 { maxOutputTokens = 1 }
+                        // Clamp on next runloop tick so we don't mutate @State inside
+                        // .onChange (project rule).
+                        if newValue < 1 {
+                            DispatchQueue.main.async { self.maxOutputTokens = 1 }
+                        }
                         guard !isSyncingFromExternal else { return }
                         commit()
                     }
@@ -310,7 +331,9 @@ struct AgentModelSettingsSection: View {
                     .frame(width: 120)
                     .onSubmit { commit() }
                     .onChange(of: maxContextTokens) { _, newValue in
-                        if newValue < 1 { maxContextTokens = 1 }
+                        if newValue < 1 {
+                            DispatchQueue.main.async { self.maxContextTokens = 1 }
+                        }
                         guard !isSyncingFromExternal else { return }
                         commit()
                     }
@@ -318,7 +341,9 @@ struct AgentModelSettingsSection: View {
         }
     }
 
-    private var thinkingSection: some View {
+    @ViewBuilder
+
+    private func thinkingSection() -> some View {
         VStack(alignment: .leading, spacing: 6) {
             LabeledContent("Thinking Budget") {
                 HStack(spacing: 8) {
@@ -327,22 +352,31 @@ struct AgentModelSettingsSection: View {
                         .frame(width: 120)
                         .onSubmit { commit() }
                         .onChange(of: thinkingBudget) { _, newValue in
-                            // Two-phase clamp: if the typed value is below the 1024 floor
-                            // (or negative), we rewrite it to the corrected value and bail
-                            // out — the resulting state change re-fires this handler with
-                            // the clamped value, which falls through to commit() once.
-                            // No double-commit because the buttons no longer call commit()
-                            // directly; they set state and let this handler do the work.
+                            // Project rule: never mutate @State directly inside .onChange —
+                            // wrap with DispatchQueue.main.async so the assignment happens
+                            // on the next runloop tick. The clamps below skip commit() and
+                            // let the post-clamp .onChange re-fire (with the corrected
+                            // value) handle the commit.
                             if newValue > 0 && newValue < 1024 {
-                                thinkingBudget = 1024
+                                DispatchQueue.main.async { self.thinkingBudget = 1024 }
                                 return
                             }
                             if newValue < 0 {
-                                thinkingBudget = 0
+                                DispatchQueue.main.async { self.thinkingBudget = 0 }
                                 return
                             }
+                            // Anthropic cascade: enabling thinking forces temperature=1.0.
+                            // Use the same atomic pattern as the temperature .onChange so
+                            // both @State variables and the persisted config update in one
+                            // transaction (single undo entry, no stale-temperature commit).
                             if newValue > 0 && selectedAPIType == .anthropic {
-                                temperature = 1.0
+                                DispatchQueue.main.async {
+                                    self.isSyncingFromExternal = true
+                                    self.temperature = 1.0
+                                    self.isSyncingFromExternal = false
+                                    self.commit()
+                                }
+                                return
                             }
                             guard !isSyncingFromExternal else { return }
                             commit()
@@ -378,7 +412,9 @@ struct AgentModelSettingsSection: View {
         }
     }
 
-    private var cacheTTLSection: some View {
+    @ViewBuilder
+
+    private func cacheTTLSection() -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Toggle("Extended Prompt Cache (1 hour)", isOn: $extendedCacheTTL)
                 .onChange(of: extendedCacheTTL) { _, _ in

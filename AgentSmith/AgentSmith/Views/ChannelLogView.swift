@@ -113,6 +113,35 @@ struct ChannelTimestamp: View {
     }
 }
 
+/// Discriminator for the channel log's banner family. Each raw value matches the
+/// `messageKind` string set by the runtime when posting `ChannelMessage`.
+///
+/// Replaces a 16-branch `else if case .string(let kind) = message.metadata?["messageKind"]`
+/// ladder. Adding a new banner kind now means adding a case here AND a switch arm in
+/// `bannerView(for:in:)` — both fail at compile time if forgotten, instead of silently
+/// falling through to a generic `MessageRow`.
+enum ChannelBannerKind: String {
+    /// Internal coordination row — not rendered.
+    case agentOnline = "agent_online"
+    /// Lifecycle chrome — gated by the user's "Show agent restart chrome" preference.
+    case restartChrome = "restart_chrome"
+    /// Timer activity — duplicate of a task's Scheduled chip when paired; otherwise rendered.
+    case timerActivity = "timer_activity"
+    /// Internal Smith guidance — not rendered.
+    case taskUpdateGuidance = "task_update_guidance"
+    case taskAcknowledged = "task_acknowledged"
+    case taskContinuing = "task_continuing"
+    case taskComplete = "task_complete"
+    case changesRequested = "changes_requested"
+    case taskActionScheduled = "task_action_scheduled"
+    case taskCreated = "task_created"
+    case taskUpdate = "task_update"
+    case taskCompleted = "task_completed"
+    case taskSummarized = "task_summarized"
+    case memorySaved = "memory_saved"
+    case memorySearched = "memory_searched"
+}
+
 /// Color-coded scrolling message stream with attachment display.
 struct ChannelLogView: View, Equatable {
     var messages: [ChannelMessage]
@@ -225,133 +254,14 @@ struct ChannelLogView: View, Equatable {
                         let scheduledTaskBannerIDs = taskIDsWithSchedulingBanner
 
                         ForEach(messages) { message in
-                            if shouldSuppress(message, toolRequestIDs: requestIDs) {
-                                // Folded into a tool_request row — don't render standalone
-                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "agent_online" {
-                                // Agent online announcements are internal coordination messages
-                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "restart_chrome", !displayPrefs.showRestartChrome {
-                                // Lifecycle chrome ("All agents stopped", "System online. Smith
-                                // agent active.") — suppressed unless the user opts in via the
-                                // "Show agent restart chrome" setting.
-                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "timer_activity",
-                                      message.stringMetadata("timerEventKind") == "scheduled",
-                                      let timerTaskID = message.stringMetadata("timerTaskID"),
-                                      scheduledTaskBannerIDs.contains(timerTaskID) {
-                                // The "scheduled HH:MM — run_task: ..." system row that pairs with
-                                // a New Task banner's Scheduled chip — suppress it as a duplicate.
-                                // The chip carries the same information; this row would just be noise.
-                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_update_guidance" {
-                                // System guidance to Smith about reviewing Brown's task update — internal only
-                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_acknowledged" {
-                                TaskAcknowledgedBanner(
-                                    title: message.content,
-                                    timestamp: message.timestamp
+                            if !shouldSuppress(message, toolRequestIDs: requestIDs) {
+                                bannerView(
+                                    for: message,
+                                    reviewLookup: reviewLookup,
+                                    outputLookup: outputLookup,
+                                    scheduledTaskBannerIDs: scheduledTaskBannerIDs
                                 )
-                                    .id(message.id)
-                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_continuing" {
-                                TaskContinuingBanner(
-                                    title: message.content,
-                                    timestamp: message.timestamp
-                                )
-                                    .id(message.id)
-                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_complete" {
-                                TaskReadyForReviewBanner(
-                                    taskTitle: message.stringMetadata("taskTitle") ?? "",
-                                    content: message.content,
-                                    senderName: message.sender.displayName,
-                                    recipientName: message.recipient?.displayName,
-                                    timestamp: message.timestamp
-                                )
-                                    .id(message.id)
-                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "changes_requested" {
-                                ChangesRequestedBanner(
-                                    taskTitle: message.stringMetadata("taskTitle") ?? "",
-                                    content: message.content,
-                                    senderName: message.sender.displayName,
-                                    recipientName: message.recipient?.displayName,
-                                    timestamp: message.timestamp
-                                )
-                                    .id(message.id)
-                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_action_scheduled" {
-                                let actionRaw = message.stringMetadata("actionKind") ?? "run"
-                                let action = TaskActionKind(rawValue: actionRaw) ?? .run
-                                TaskActionScheduledBanner(
-                                    actionLabel: action.bannerLabel,
-                                    symbolName: action.bannerSymbolName,
-                                    taskTitle: message.stringMetadata("taskTitle") ?? message.content,
-                                    scheduledRunAt: message.doubleMetadata("scheduledRunAt").map { Date(timeIntervalSince1970: $0) } ?? message.timestamp,
-                                    timestamp: message.timestamp
-                                )
-                                    .id(message.id)
-                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_created" {
-                                TaskCreatedBanner(
-                                    title: message.content,
-                                    description: message.stringMetadata("taskDescription"),
-                                    timestamp: message.timestamp,
-                                    contextMemories: message.stringMetadata("contextMemories"),
-                                    contextPriorTasks: message.stringMetadata("contextPriorTasks"),
-                                    memoryCount: message.intMetadata("contextMemoryCount") ?? 0,
-                                    priorTaskCount: message.intMetadata("contextPriorTaskCount") ?? 0,
-                                    scheduledRunAt: message.doubleMetadata("scheduledRunAt").map { Date(timeIntervalSince1970: $0) }
-                                )
-                                    .id(message.id)
-                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_update" {
-                                TaskUpdateBanner(
-                                    content: message.content,
-                                    senderName: message.sender.displayName,
-                                    recipientName: message.recipient?.displayName,
-                                    timestamp: message.timestamp
-                                )
-                                    .id(message.id)
-                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_completed" {
-                                TaskCompletedBanner(
-                                    title: message.content,
-                                    result: message.stringMetadata("taskResult"),
-                                    durationSeconds: message.doubleMetadata("durationSeconds"),
-                                    timestamp: message.timestamp
-                                )
-                                    .id(message.id)
-                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "task_summarized" {
-                                TaskSummarizedBanner(
-                                    taskTitle: message.stringMetadata("taskTitle") ?? "task",
-                                    latencyMs: message.intMetadata("latencyMs") ?? 0,
-                                    summary: message.content,
-                                    timestamp: message.timestamp
-                                )
-                                    .id(message.id)
-                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "memory_saved" {
-                                let isConsolidated = message.boolMetadata("consolidated") ?? false
-                                MemoryBanner(
-                                    kind: isConsolidated ? .consolidated : .saved,
-                                    summary: message.content,
-                                    detail: message.stringMetadata("memoryContent"),
-                                    tags: message.stringMetadata("memoryTags"),
-                                    source: message.stringMetadata("memorySource"),
-                                    timestamp: message.timestamp
-                                )
-                                    .id(message.id)
-                            } else if case .string(let kind) = message.metadata?["messageKind"], kind == "memory_searched" {
-                                MemoryBanner(
-                                    kind: .searched,
-                                    summary: message.stringMetadata("searchQuery") ?? message.content,
-                                    detail: nil,
-                                    tags: nil,
-                                    source: nil,
-                                    timestamp: message.timestamp,
-                                    memoryCount: message.intMetadata("memoryCount") ?? 0,
-                                    taskCount: message.intMetadata("taskCount") ?? 0,
-                                    memoryResults: message.stringMetadata("memoryResults"),
-                                    taskResults: message.stringMetadata("taskResults")
-                                )
-                                    .id(message.id)
-                            } else {
-                                MessageRow(
-                                    message: message,
-                                    securityReviewMessage: message.stringMetadata("requestID").flatMap { reviewLookup[$0] },
-                                    toolOutputMessage: message.stringMetadata("requestID").flatMap { outputLookup[$0] },
-                                    selectedImageAttachment: $selectedImageAttachment
-                                )
-                                    .id(message.id)
+                                .id(message.id)
                             }
                         }
                     }
@@ -419,6 +329,149 @@ struct ChannelLogView: View, Equatable {
         guard isFollowUp else { return false }
         // Only suppress if the parent tool_request exists in the messages array
         return toolRequestIDs.contains(reqID)
+    }
+
+    /// Renders the right banner / row for a single channel message. Replaces the
+    /// 16-branch metadata-keyed ladder that used to live in `body`. Each `nil`-returning
+    /// case represents an internal coordination message that's intentionally suppressed.
+    @ViewBuilder
+    private func bannerView(
+        for message: ChannelMessage,
+        reviewLookup: [String: ChannelMessage],
+        outputLookup: [String: ChannelMessage],
+        scheduledTaskBannerIDs: Set<String>
+    ) -> some View {
+        let kind = message.stringMetadata("messageKind").flatMap(ChannelBannerKind.init(rawValue:))
+        switch kind {
+        case .agentOnline, .taskUpdateGuidance:
+            // Internal coordination messages — never rendered.
+            EmptyView()
+        case .restartChrome:
+            // Lifecycle chrome ("All agents stopped", "Smith agent active") — gated by
+            // the user's "Show agent restart chrome" preference.
+            if displayPrefs.showRestartChrome {
+                MessageRow(
+                    message: message,
+                    securityReviewMessage: message.stringMetadata("requestID").flatMap { reviewLookup[$0] },
+                    toolOutputMessage: message.stringMetadata("requestID").flatMap { outputLookup[$0] },
+                    selectedImageAttachment: $selectedImageAttachment
+                )
+            }
+        case .timerActivity:
+            // Suppress the "scheduled HH:MM — run_task: …" row when paired with a Task
+            // banner whose chip carries the same info; otherwise render via MessageRow.
+            if message.stringMetadata("timerEventKind") == "scheduled",
+               let timerTaskID = message.stringMetadata("timerTaskID"),
+               scheduledTaskBannerIDs.contains(timerTaskID) {
+                EmptyView()
+            } else {
+                MessageRow(
+                    message: message,
+                    securityReviewMessage: message.stringMetadata("requestID").flatMap { reviewLookup[$0] },
+                    toolOutputMessage: message.stringMetadata("requestID").flatMap { outputLookup[$0] },
+                    selectedImageAttachment: $selectedImageAttachment
+                )
+            }
+        case .taskAcknowledged:
+            TaskAcknowledgedBanner(
+                title: message.content,
+                timestamp: message.timestamp
+            )
+        case .taskContinuing:
+            TaskContinuingBanner(
+                title: message.content,
+                timestamp: message.timestamp
+            )
+        case .taskComplete:
+            TaskReadyForReviewBanner(
+                taskTitle: message.stringMetadata("taskTitle") ?? "",
+                content: message.content,
+                senderName: message.sender.displayName,
+                recipientName: message.recipient?.displayName,
+                timestamp: message.timestamp
+            )
+        case .changesRequested:
+            ChangesRequestedBanner(
+                taskTitle: message.stringMetadata("taskTitle") ?? "",
+                content: message.content,
+                senderName: message.sender.displayName,
+                recipientName: message.recipient?.displayName,
+                timestamp: message.timestamp
+            )
+        case .taskActionScheduled:
+            let actionRaw = message.stringMetadata("actionKind") ?? "run"
+            let action = TaskActionKind(rawValue: actionRaw) ?? .run
+            TaskActionScheduledBanner(
+                actionLabel: action.bannerLabel,
+                symbolName: action.bannerSymbolName,
+                taskTitle: message.stringMetadata("taskTitle") ?? message.content,
+                scheduledRunAt: message.doubleMetadata("scheduledRunAt").map { Date(timeIntervalSince1970: $0) } ?? message.timestamp,
+                timestamp: message.timestamp
+            )
+        case .taskCreated:
+            TaskCreatedBanner(
+                title: message.content,
+                description: message.stringMetadata("taskDescription"),
+                timestamp: message.timestamp,
+                contextMemories: message.stringMetadata("contextMemories"),
+                contextPriorTasks: message.stringMetadata("contextPriorTasks"),
+                memoryCount: message.intMetadata("contextMemoryCount") ?? 0,
+                priorTaskCount: message.intMetadata("contextPriorTaskCount") ?? 0,
+                scheduledRunAt: message.doubleMetadata("scheduledRunAt").map { Date(timeIntervalSince1970: $0) }
+            )
+        case .taskUpdate:
+            TaskUpdateBanner(
+                content: message.content,
+                senderName: message.sender.displayName,
+                recipientName: message.recipient?.displayName,
+                timestamp: message.timestamp
+            )
+        case .taskCompleted:
+            TaskCompletedBanner(
+                title: message.content,
+                result: message.stringMetadata("taskResult"),
+                durationSeconds: message.doubleMetadata("durationSeconds"),
+                timestamp: message.timestamp
+            )
+        case .taskSummarized:
+            TaskSummarizedBanner(
+                taskTitle: message.stringMetadata("taskTitle") ?? "task",
+                latencyMs: message.intMetadata("latencyMs") ?? 0,
+                summary: message.content,
+                timestamp: message.timestamp
+            )
+        case .memorySaved:
+            let isConsolidated = message.boolMetadata("consolidated") ?? false
+            MemoryBanner(
+                kind: isConsolidated ? .consolidated : .saved,
+                summary: message.content,
+                detail: message.stringMetadata("memoryContent"),
+                tags: message.stringMetadata("memoryTags"),
+                source: message.stringMetadata("memorySource"),
+                timestamp: message.timestamp
+            )
+        case .memorySearched:
+            MemoryBanner(
+                kind: .searched,
+                summary: message.stringMetadata("searchQuery") ?? message.content,
+                detail: nil,
+                tags: nil,
+                source: nil,
+                timestamp: message.timestamp,
+                memoryCount: message.intMetadata("memoryCount") ?? 0,
+                taskCount: message.intMetadata("taskCount") ?? 0,
+                memoryResults: message.stringMetadata("memoryResults"),
+                taskResults: message.stringMetadata("taskResults")
+            )
+        case .none:
+            // Plain message — fall through to the generic row.
+            MessageRow(
+                message: message,
+                securityReviewMessage: message.stringMetadata("requestID").flatMap { reviewLookup[$0] },
+                toolOutputMessage: message.stringMetadata("requestID").flatMap { outputLookup[$0] },
+                selectedImageAttachment: $selectedImageAttachment
+            )
+        }
     }
 }
 
@@ -621,7 +674,7 @@ private struct MessageRow: View {
 
                 if message.isPrivate && !hidesPrivateRecipientAnnotation {
                     Image(systemName: "lock.fill")
-                        .font(.system(size: 9))
+                        .font(AppFonts.metaIcon)
                         .foregroundStyle(.secondary)
                     Text("\u{2192} \(message.recipient?.displayName ?? "private")")
                         .font(AppFonts.channelTimestamp)
@@ -643,10 +696,10 @@ private struct MessageRow: View {
             }
 
             if isToolRequest {
-                toolRequestBody
+                toolRequestBody()
             } else if isToolOutput {
                 // Standalone tool output (no parent tool_request found — edge case)
-                standaloneToolOutput
+                standaloneToolOutput()
             } else if isSecurityReview {
                 // Standalone security review (no parent tool_request found — edge case)
                 MarkdownText(content: message.content, baseFont: AppFonts.channelBody)
@@ -679,7 +732,7 @@ private struct MessageRow: View {
             if isErrorMessage { return AppColors.errorBackground }
             if isSmithToUser { return AppColors.smithToUserBackground }
             switch securityDisposition {
-            case "warning", "denied": return Color.orange.opacity(0.10)
+            case "warning", "denied": return AppColors.warningRowBackground
             case "abort": return AppColors.errorBackground
             default: break
             }
@@ -694,7 +747,7 @@ private struct MessageRow: View {
                     NSPasteboard.general.setString(message.content, forType: .string)
                 }) {
                     Image(systemName: "doc.on.doc")
-                        .font(.system(size: 10))
+                        .font(AppFonts.metaIconSmall)
                         .foregroundStyle(.secondary)
                         .padding(4)
                         .background(.ultraThinMaterial)
@@ -769,49 +822,53 @@ private struct MessageRow: View {
     }
 
     @ViewBuilder
-    private var toolRequestBody: some View {
+
+    private func toolRequestBody() -> some View {
         if isFileWrite {
-            fileWriteRequestBody
+            fileWriteRequestBody()
         } else {
-            genericToolRequestBody
+            genericToolRequestBody()
         }
     }
 
     // MARK: file_write display
 
     @ViewBuilder
-    private var fileWriteRequestBody: some View {
+
+    private func fileWriteRequestBody() -> some View {
         // Line 1: "file_write /dir/path/filename ⚡1/3 (show more) ✅"
-        HStack(alignment: .firstTextBaseline, spacing: 4) {
-            FileWritePathView(path: message.stringMetadata("fileWritePath") ?? "")
-            if let badge = parallelBadge {
-                Text("⚡\(badge)")
-                    .font(.caption2.bold())
-                    .foregroundStyle(.cyan)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(.cyan.opacity(0.15))
-                    .clipShape(Capsule())
-            }
-            if isExpanded {
-                Text("(show less)")
-                    .font(.caption)
-                    .foregroundStyle(.blue)
-            } else if toolOutputHasMore {
-                Text("(show more)")
-                    .font(.caption)
-                    .foregroundStyle(.blue)
-            }
-            if let indicator = dispositionIndicator {
-                if let tooltip = dispositionTooltipText {
-                    Text(indicator).hoverTooltip(tooltip)
-                } else {
-                    Text(indicator)
+        Button(action: { isExpanded.toggle() }, label: {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                FileWritePathView(path: message.stringMetadata("fileWritePath") ?? "")
+                if let badge = parallelBadge {
+                    Text("⚡\(badge)")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.cyan)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(AppColors.cyanBadgeBackground)
+                        .clipShape(Capsule())
+                }
+                if isExpanded {
+                    Text("(show less)")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                } else if toolOutputHasMore {
+                    Text("(show more)")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                }
+                if let indicator = dispositionIndicator {
+                    if let tooltip = dispositionTooltipText {
+                        Text(indicator).hoverTooltip(tooltip)
+                    } else {
+                        Text(indicator)
+                    }
                 }
             }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { isExpanded.toggle() }
+            .contentShape(Rectangle())
+        })
+        .buttonStyle(.plain)
 
         // Disposition comment (for WARN/UNSAFE/ABORT)
         if let comment = dispositionComment {
@@ -906,63 +963,65 @@ private struct MessageRow: View {
     }
 
     @ViewBuilder
-    private var genericToolRequestBody: some View {
-        // Line 1: "[bash] pwd (more) ✅" — tool name as chip, rest in secondary
-        HStack(alignment: .firstTextBaseline, spacing: 4) {
-            let displayText = isExpanded ? message.content : toolCallDisplayText
-            let toolName = message.stringMetadata("tool") ?? displayText.prefix(while: { $0 != ":" }).description
-            ToolNameChip(name: toolName)
-            if let path = toolFilePath {
-                // Show path with highlighted filename, then remaining args.
-                // Tap on the path opens the file (or reveals a directory) in Finder /
-                // the default app — the inner gesture wins over the row's expand-toggle,
-                // so clicking the filename doesn't accidentally collapse the row. If the
-                // path doesn't exist, fall through to the expand-toggle behavior.
-                ToolPathText(path: path)
-                    .onTapGesture { openFileOrFallback(path: path) }
-                let extra = remainderWithoutPath(displayText, path: path)
-                if !extra.isEmpty {
-                    Text(extra)
+
+    private func genericToolRequestBody() -> some View {
+        // Line 1: "[bash] pwd (more) ✅" — tool name as chip, rest in secondary.
+        // Outer Button toggles expand; inner Button on path opens the file. The inner
+        // Button consumes its own hits so tapping the path doesn't collapse the row.
+        Button(action: { isExpanded.toggle() }, label: {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                let displayText = isExpanded ? message.content : toolCallDisplayText
+                let toolName = message.stringMetadata("tool") ?? displayText.prefix(while: { $0 != ":" }).description
+                ToolNameChip(name: toolName)
+                if let path = toolFilePath {
+                    Button(action: { openFileOrFallback(path: path) }, label: {
+                        ToolPathText(path: path)
+                    })
+                    .buttonStyle(.plain)
+                    let extra = remainderWithoutPath(displayText, path: path)
+                    if !extra.isEmpty {
+                        Text(extra)
+                            .font(AppFonts.channelBody)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(isExpanded ? nil : 1)
+                    }
+                } else {
+                    let remainder = displayText.hasPrefix(toolName) ? String(displayText.dropFirst(toolName.count)) : ": \(displayText)"
+                    let cleanRemainder = remainder.hasPrefix(": ") ? String(remainder.dropFirst(2)) : remainder
+                    Text(cleanRemainder)
                         .font(AppFonts.channelBody)
                         .foregroundStyle(.secondary)
                         .lineLimit(isExpanded ? nil : 1)
                 }
-            } else {
-                let remainder = displayText.hasPrefix(toolName) ? String(displayText.dropFirst(toolName.count)) : ": \(displayText)"
-                let cleanRemainder = remainder.hasPrefix(": ") ? String(remainder.dropFirst(2)) : remainder
-                Text(cleanRemainder)
-                    .font(AppFonts.channelBody)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(isExpanded ? nil : 1)
-            }
-            if let badge = parallelBadge {
-                Text("⚡\(badge)")
-                    .font(.caption2.bold())
-                    .foregroundStyle(.cyan)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(.cyan.opacity(0.15))
-                    .clipShape(Capsule())
-            }
-            if isExpanded {
-                Text("(show less)")
-                    .font(.caption)
-                    .foregroundStyle(.blue)
-            } else if toolOutputHasMore {
-                Text("(show more)")
-                    .font(.caption)
-                    .foregroundStyle(.blue)
-            }
-            if let indicator = dispositionIndicator {
-                if let tooltip = dispositionTooltipText {
-                    Text(indicator).hoverTooltip(tooltip)
-                } else {
-                    Text(indicator)
+                if let badge = parallelBadge {
+                    Text("⚡\(badge)")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.cyan)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(AppColors.cyanBadgeBackground)
+                        .clipShape(Capsule())
+                }
+                if isExpanded {
+                    Text("(show less)")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                } else if toolOutputHasMore {
+                    Text("(show more)")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                }
+                if let indicator = dispositionIndicator {
+                    if let tooltip = dispositionTooltipText {
+                        Text(indicator).hoverTooltip(tooltip)
+                    } else {
+                        Text(indicator)
+                    }
                 }
             }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { isExpanded.toggle() }
+            .contentShape(Rectangle())
+        })
+        .buttonStyle(.plain)
 
         // Disposition comment (for WARN/UNSAFE/ABORT) — always shown in full
         if let comment = dispositionComment {
@@ -1039,7 +1098,8 @@ private struct MessageRow: View {
     }
 
     @ViewBuilder
-    private var standaloneToolOutput: some View {
+
+    private func standaloneToolOutput() -> some View {
         DisclosureGroup(isExpanded: $isExpanded) {
             Text(message.content)
                 .font(AppFonts.channelBody.monospaced())
@@ -1095,33 +1155,36 @@ private struct MessageRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if needsTruncation {
-                Text("(show less)")
-                    .font(.caption)
-                    .foregroundStyle(.blue)
-                    .padding(.leading, isSummarizerMessage ? 12 : 0)
-                    .onTapGesture { isExpanded = false }
+                Button(action: { isExpanded = false }, label: {
+                    Text("(show less)")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                        .padding(.leading, isSummarizerMessage ? 12 : 0)
+                })
+                .buttonStyle(.plain)
             }
         } else {
             let visibleLines = Array(lines.prefix(maxLines))
-            VStack(alignment: .leading, spacing: 1) {
-                ForEach(Array(visibleLines.dropLast().enumerated()), id: \.offset) { index, line in
-                    MarkdownText(content: line, baseFont: AppFonts.channelBody)
-                        .padding(.leading, isSummarizerMessage && index > 0 ? 12 : 0)
+            Button(action: { isExpanded = true }, label: {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(Array(visibleLines.dropLast().enumerated()), id: \.offset) { index, line in
+                        MarkdownText(content: line, baseFont: AppFonts.channelBody)
+                            .padding(.leading, isSummarizerMessage && index > 0 ? 12 : 0)
+                    }
+                    HStack(alignment: .firstTextBaseline, spacing: 0) {
+                        Text(visibleLines.last ?? "")
+                            .font(AppFonts.channelBody)
+                            .lineLimit(1)
+                        Text(" (show more)")
+                            .font(.caption)
+                            .foregroundStyle(.blue)
+                    }
+                    .padding(.leading, isSummarizerMessage && maxLines > 1 ? 12 : 0)
                 }
-                // Last visible line gets inline "(show more)"
-                HStack(alignment: .firstTextBaseline, spacing: 0) {
-                    Text(visibleLines.last ?? "")
-                        .font(AppFonts.channelBody)
-                        .lineLimit(1)
-                    Text(" (show more)")
-                        .font(.caption)
-                        .foregroundStyle(.blue)
-                }
-                .padding(.leading, isSummarizerMessage && maxLines > 1 ? 12 : 0)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture { isExpanded = true }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            })
+            .buttonStyle(.plain)
         }
     }
 }
@@ -1153,1114 +1216,3 @@ private extension ChannelMessage {
     }
 }
 
-/// Visually distinct banner announcing a newly created task in the channel log.
-private struct TaskCreatedBanner: View {
-    let title: String
-    let description: String?
-    let timestamp: Date
-    let contextMemories: String?
-    let contextPriorTasks: String?
-    let memoryCount: Int
-    let priorTaskCount: Int
-    /// When non-nil, the task was created with a future `scheduled_run_at`. The banner
-    /// renders a clock-icon chip on the right showing when the wake will fire — replaces
-    /// the standalone `System ⏰ scheduled …` row that used to follow this banner.
-    let scheduledRunAt: Date?
-
-    @State private var isContextExpanded = false
-
-    private let accentColor = AppColors.taskCreatedAccent
-    private var hasContext: Bool { memoryCount > 0 || priorTaskCount > 0 }
-    private var hasScheduled: Bool { scheduledRunAt != nil }
-    /// Color used for the scheduled chip — matches the task list's `.scheduled` styling.
-    private var scheduledAccent: Color { TaskStatusBadge.color(for: .scheduled) }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // Top rule
-            accentColor.frame(height: 1).opacity(0.4)
-
-            HStack(spacing: 8) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(accentColor)
-
-                Text("New Task")
-                    .font(AppFonts.channelSender)
-                    .foregroundStyle(accentColor)
-
-                Spacer()
-
-                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner)
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
-            .padding(.bottom, 2)
-
-            Text(title)
-                .font(AppFonts.channelBody.bold())
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.bottom, (description != nil || hasContext || hasScheduled) ? 2 : 6)
-
-            if let description {
-                MarkdownText(content: description, baseFont: AppFonts.channelBody.italic())
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, (hasContext || hasScheduled) ? 2 : 6)
-            }
-
-            // Scheduled-fire chip. Lives in its own band when there's no Context row;
-            // when there IS a Context row below, this sits as a complementary row above it.
-            if let runAt = scheduledRunAt {
-                HStack(spacing: 4) {
-                    Image(systemName: "clock")
-                        .font(.system(size: 11))
-                        .foregroundStyle(scheduledAccent)
-                    Text("Scheduled \(formatScheduledTime(runAt))")
-                        .font(AppFonts.channelBody)
-                        .foregroundStyle(scheduledAccent)
-                    Spacer()
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-            }
-
-            // Semantic context retrieved at task creation
-            if hasContext {
-                Divider().opacity(0.3).padding(.horizontal, 10)
-
-                HStack(spacing: 6) {
-                    Image(systemName: "brain.head.profile")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.purple)
-
-                    let parts = [
-                        memoryCount > 0
-                            ? "\(memoryCount) memor\(memoryCount == 1 ? "y" : "ies")"
-                            : nil,
-                        priorTaskCount > 0
-                            ? "\(priorTaskCount) prior task\(priorTaskCount == 1 ? "" : "s")"
-                            : nil
-                    ].compactMap { $0 }
-
-                    Text("Context: \(parts.joined(separator: ", "))")
-                        .font(AppFonts.channelBody)
-                        .foregroundStyle(.purple.opacity(0.8))
-
-                    Text(isContextExpanded ? "(hide)" : "(show)")
-                        .font(.caption)
-                        .foregroundStyle(.blue)
-
-                    Spacer()
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .contentShape(Rectangle())
-                .onTapGesture { isContextExpanded.toggle() }
-
-                if isContextExpanded {
-                    VStack(alignment: .leading, spacing: 10) {
-                        if let contextMemories {
-                            Text("Memories")
-                                .font(.caption.bold())
-                                .foregroundStyle(.secondary)
-                            let memoryEntries = parseContextEntries(contextMemories)
-                            ForEach(Array(memoryEntries.enumerated()), id: \.offset) { idx, entry in
-                                if idx > 0 {
-                                    Divider().opacity(0.4)
-                                }
-                                Text(entry)
-                                    .font(AppFonts.inspectorBody)
-                                    .foregroundStyle(.secondary)
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                        }
-                        if let contextPriorTasks {
-                            Text("Prior Tasks")
-                                .font(.caption.bold())
-                                .foregroundStyle(.secondary)
-                            let taskEntries = parseContextEntries(contextPriorTasks)
-                            ForEach(Array(taskEntries.enumerated()), id: \.offset) { idx, entry in
-                                if idx > 0 {
-                                    Divider().opacity(0.4)
-                                }
-                                contextEntryView(entry)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-
-            // Bottom rule
-            accentColor.frame(height: 1).opacity(0.4)
-        }
-        .background(accentColor.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .padding(.vertical, 4)
-    }
-
-}
-
-/// Splits a context metadata string into entries on the ASCII Record Separator (U+001E)
-/// that `CreateTaskTool` and `SearchMemoryTool` write between items. Falls back to
-/// splitting on newlines for backward compatibility with older persisted messages that
-/// pre-date the separator change. Empty entries are dropped.
-private func parseContextEntries(_ raw: String) -> [String] {
-    let parts: [String]
-    if raw.contains("\u{1E}") {
-        parts = raw.components(separatedBy: "\u{1E}")
-    } else {
-        parts = raw.components(separatedBy: "\n")
-    }
-    return parts
-        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { !$0.isEmpty }
-}
-
-/// Renders a single context entry as a bold header line followed by an optional body.
-/// The header is the first line of the entry; everything after the first newline is body.
-/// Used by both `TaskCreatedBanner` (prior tasks) and `MemoryBanner` (search results).
-@ViewBuilder
-private func contextEntryView(_ entry: String) -> some View {
-    let split = entry.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
-    let header = split.first.map(String.init) ?? entry
-    let body = split.count > 1 ? String(split[1]).trimmingCharacters(in: .whitespacesAndNewlines) : ""
-    VStack(alignment: .leading, spacing: 3) {
-        Text(header)
-            .font(AppFonts.inspectorBody.weight(.semibold))
-            .foregroundStyle(.primary)
-            .textSelection(.enabled)
-        if !body.isEmpty {
-            Text(body)
-                .font(AppFonts.inspectorBody)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-        }
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-}
-
-/// Compact banner announcing a `schedule_task_action` — replaces the standalone
-/// `System ⏰ scheduled …` row with an action-typed banner (pause / stop / summarize /
-/// clone & run / run). The icon + label express the action; the right-side chip carries
-/// the fire time. Reuses the scheduled-task accent color so it visually relates to the
-/// New Task banner's chip and the task list's `.scheduled` styling.
-private struct TaskActionScheduledBanner: View {
-    let actionLabel: String
-    let symbolName: String
-    let taskTitle: String
-    let scheduledRunAt: Date
-    let timestamp: Date
-
-    private var accentColor: Color { TaskStatusBadge.color(for: .scheduled) }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            accentColor.frame(height: 1).opacity(0.4)
-
-            HStack(spacing: 8) {
-                Image(systemName: symbolName)
-                    .font(.system(size: 13))
-                    .foregroundStyle(accentColor)
-
-                Text("Scheduled \(actionLabel)")
-                    .font(AppFonts.channelSender)
-                    .foregroundStyle(accentColor)
-
-                Spacer()
-
-                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner)
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
-            .padding(.bottom, 2)
-
-            Text(taskTitle)
-                .font(AppFonts.channelBody.bold())
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.bottom, 2)
-
-            HStack(spacing: 4) {
-                Image(systemName: "clock")
-                    .font(.system(size: 11))
-                    .foregroundStyle(accentColor)
-                Text("Fires \(formatScheduledTime(scheduledRunAt))")
-                    .font(AppFonts.channelBody)
-                    .foregroundStyle(accentColor)
-                Spacer()
-            }
-            .padding(.horizontal, 10)
-            .padding(.bottom, 6)
-
-            accentColor.frame(height: 1).opacity(0.3)
-        }
-        .background(accentColor.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 3))
-        .padding(.vertical, 1)
-    }
-}
-
-/// Gold/amber banner marking a task's completion in the channel log.
-private struct TaskCompletedBanner: View {
-    let title: String
-    let result: String?
-    let durationSeconds: Double?
-    let timestamp: Date
-
-    private let accentColor = AppColors.taskCompletedAccent
-
-    var body: some View {
-        VStack(spacing: 0) {
-            accentColor.frame(height: 1).opacity(0.4)
-
-            HStack(spacing: 8) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(accentColor)
-
-                Text("Task Completed")
-                    .font(AppFonts.channelSender)
-                    .foregroundStyle(accentColor)
-
-                if let duration = durationSeconds {
-                    Text("(\(Self.formattedDuration(duration)))")
-                        .font(AppFonts.channelTimestamp)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner)
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
-            .padding(.bottom, 2)
-
-            Text(title)
-                .font(AppFonts.channelBody.bold())
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.bottom, result == nil ? 6 : 4)
-
-            if let result, !result.isEmpty {
-                MarkdownText(content: result, baseFont: AppFonts.channelBody)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 6)
-            }
-
-            accentColor.frame(height: 1).opacity(0.4)
-        }
-        .background(accentColor.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .padding(.vertical, 4)
-    }
-
-    private static func formattedDuration(_ seconds: Double) -> String {
-        let totalSeconds = Int(seconds)
-        if totalSeconds < 60 {
-            return "\(totalSeconds)s"
-        }
-        let minutes = totalSeconds / 60
-        let secs = totalSeconds % 60
-        if minutes < 60 {
-            return secs > 0 ? "\(minutes)m \(secs)s" : "\(minutes)m"
-        }
-        let hours = minutes / 60
-        let mins = minutes % 60
-        return mins > 0 ? "\(hours)h \(mins)m" : "\(hours)h"
-    }
-
-}
-
-/// Banner for task_acknowledged messages in the channel log, styled like task created/completed.
-private struct TaskAcknowledgedBanner: View {
-    let title: String
-    let timestamp: Date
-
-    private let accentColor = AppColors.taskAcknowledgedAccent
-
-    var body: some View {
-        VStack(spacing: 0) {
-            accentColor.frame(height: 1).opacity(0.4)
-
-            HStack(spacing: 8) {
-                Image(systemName: "play.circle.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(accentColor)
-
-                Text("Task Acknowledged")
-                    .font(AppFonts.channelSender)
-                    .foregroundStyle(accentColor)
-
-                Spacer()
-
-                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner)
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
-            .padding(.bottom, 2)
-
-            Text(title)
-                .font(AppFonts.channelBody.bold())
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.bottom, 6)
-
-            accentColor.frame(height: 1).opacity(0.4)
-        }
-        .background(accentColor.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .padding(.vertical, 4)
-    }
-}
-
-/// Banner for re-acknowledgement after a rejection (task status returns to running).
-/// Visually distinct from `TaskAcknowledgedBanner` so it's obvious this isn't a fresh task.
-private struct TaskContinuingBanner: View {
-    let title: String
-    let timestamp: Date
-
-    private let accentColor = AppColors.taskAcknowledgedAccent
-
-    var body: some View {
-        VStack(spacing: 0) {
-            accentColor.frame(height: 1).opacity(0.4)
-
-            HStack(spacing: 8) {
-                Image(systemName: "arrow.counterclockwise.circle.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(accentColor)
-
-                Text("Continuing Task")
-                    .font(AppFonts.channelSender)
-                    .foregroundStyle(accentColor)
-
-                Spacer()
-
-                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner)
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
-            .padding(.bottom, 2)
-
-            Text(title)
-                .font(AppFonts.channelBody.bold())
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.bottom, 6)
-
-            accentColor.frame(height: 1).opacity(0.4)
-        }
-        .background(accentColor.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .padding(.vertical, 4)
-    }
-}
-
-/// Banner for Brown's `task_complete` submission — the task is awaiting Smith's review.
-private struct TaskReadyForReviewBanner: View {
-    let taskTitle: String
-    let content: String
-    let senderName: String
-    let recipientName: String?
-    let timestamp: Date
-
-    @State private var isExpanded = false
-
-    private let accentColor = AppColors.taskReadyForReviewAccent
-
-    /// Splits the banner's `content` into (header, body). The header is everything
-    /// before the first line that starts with "Result:"; the body is that line and
-    /// everything after it. If no "Result:" marker is present, the full content is
-    /// treated as the header and the body is nil.
-    private var splitContent: (header: String, body: String?) {
-        let lines = content.components(separatedBy: "\n")
-        guard let resultIndex = lines.firstIndex(where: { $0.hasPrefix("Result:") }) else {
-            return (content, nil)
-        }
-        let headerLines = lines[..<resultIndex]
-        let bodyLines = lines[resultIndex...]
-        let header = headerLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        let body = bodyLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        return (header, body.isEmpty ? nil : body)
-    }
-
-    var body: some View {
-        let parts = splitContent
-        VStack(spacing: 0) {
-            accentColor.frame(height: 1).opacity(0.4)
-
-            HStack(spacing: 8) {
-                Image(systemName: "tray.and.arrow.up.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(accentColor)
-
-                Text("Ready for Review")
-                    .font(AppFonts.channelSender)
-                    .foregroundStyle(accentColor)
-
-                if let recipientName {
-                    Text("\(senderName) \u{2192} \(recipientName)")
-                        .font(AppFonts.channelTimestamp)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner)
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
-            .padding(.bottom, 2)
-
-            if !taskTitle.isEmpty {
-                Text(taskTitle)
-                    .font(AppFonts.channelBody.bold())
-                    .foregroundStyle(.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 2)
-            }
-
-            if !parts.header.isEmpty {
-                MarkdownText(content: parts.header, baseFont: AppFonts.channelBody)
-                    .foregroundStyle(.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, parts.body == nil ? 6 : 2)
-            }
-
-            if let body = parts.body {
-                Button(action: { isExpanded.toggle() }) {
-                    Text(isExpanded ? "(hide result)" : "(show result)")
-                        .font(.caption)
-                        .foregroundStyle(.blue)
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.bottom, isExpanded ? 2 : 6)
-
-                if isExpanded {
-                    MarkdownText(content: body, baseFont: AppFonts.channelBody)
-                        .foregroundStyle(.primary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 10)
-                        .padding(.bottom, 6)
-                }
-            }
-
-            accentColor.frame(height: 1).opacity(0.4)
-        }
-        .background(accentColor.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .padding(.vertical, 4)
-    }
-}
-
-/// Banner for Smith's rejection — feedback sent to Brown with requested changes.
-private struct ChangesRequestedBanner: View {
-    let taskTitle: String
-    let content: String
-    let senderName: String
-    let recipientName: String?
-    let timestamp: Date
-
-    private let accentColor = AppColors.changesRequestedAccent
-
-    var body: some View {
-        VStack(spacing: 0) {
-            accentColor.frame(height: 1).opacity(0.4)
-
-            HStack(spacing: 8) {
-                Image(systemName: "arrow.uturn.backward.circle.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(accentColor)
-
-                Text("Changes Requested")
-                    .font(AppFonts.channelSender)
-                    .foregroundStyle(accentColor)
-
-                if let recipientName {
-                    Text("\(senderName) \u{2192} \(recipientName)")
-                        .font(AppFonts.channelTimestamp)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner)
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
-            .padding(.bottom, 2)
-
-            if !taskTitle.isEmpty {
-                Text(taskTitle)
-                    .font(AppFonts.channelBody.bold())
-                    .foregroundStyle(.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 2)
-            }
-
-            MarkdownText(content: content, baseFont: AppFonts.channelBody)
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.bottom, 6)
-
-            accentColor.frame(height: 1).opacity(0.4)
-        }
-        .background(accentColor.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .padding(.vertical, 4)
-    }
-}
-
-/// Compact 1-liner for task summarization events.
-private struct TaskSummarizedBanner: View {
-    let taskTitle: String
-    let latencyMs: Int
-    let summary: String
-    let timestamp: Date
-
-    /// Truncate long task titles so the banner stays one line.
-    private static let maxTitleLength = 60
-
-    @State private var isExpanded = false
-
-    private var displayTitle: String {
-        if taskTitle.count <= Self.maxTitleLength { return taskTitle }
-        return String(taskTitle.prefix(Self.maxTitleLength)) + "…"
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                Image(systemName: "doc.text.magnifyingglass")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-
-                Text("Summarized task '\(displayTitle)' in \(latencyMs)ms")
-                    .font(AppFonts.channelTimestamp)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                if isExpanded {
-                    Text("(show less)")
-                        .font(.caption)
-                        .foregroundStyle(.blue)
-                } else {
-                    Text("(show more)")
-                        .font(.caption)
-                        .foregroundStyle(.blue)
-                }
-
-                Spacer()
-
-                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner, foregroundStyle: .tertiary)
-            }
-            .contentShape(Rectangle())
-            .onTapGesture { isExpanded.toggle() }
-
-            if isExpanded {
-                MarkdownText(content: summary, baseFont: AppFonts.channelBody)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 4)
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-    }
-}
-
-/// Small banner for task_update messages in the channel log.
-private struct TaskUpdateBanner: View {
-    let content: String
-    let senderName: String
-    let recipientName: String?
-    let timestamp: Date
-
-    private let accentColor = AppColors.taskUpdateAccent
-
-    var body: some View {
-        VStack(spacing: 0) {
-            accentColor.frame(height: 1).opacity(0.4)
-
-            HStack(spacing: 8) {
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .font(.system(size: 12))
-                    .foregroundStyle(accentColor)
-
-                Text("Task Update")
-                    .font(AppFonts.channelSender)
-                    .foregroundStyle(accentColor)
-
-                if let recipientName {
-                    Text("\(senderName) \u{2192} \(recipientName)")
-                        .font(AppFonts.channelTimestamp)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                ChannelTimestamp(timestamp: timestamp, bucket: .taskBanner)
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
-            .padding(.bottom, 2)
-
-            MarkdownText(content: content, baseFont: AppFonts.channelBody)
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.bottom, 6)
-
-            accentColor.frame(height: 1).opacity(0.4)
-        }
-        .background(accentColor.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .padding(.vertical, 4)
-    }
-}
-
-/// Green mini-banner for memory save/search events in the channel log.
-private struct MemoryBanner: View {
-    enum Kind { case saved, consolidated, searched }
-
-    let kind: Kind
-    let summary: String
-    let detail: String?
-    let tags: String?
-    let source: String?
-    let timestamp: Date
-    var memoryCount: Int = 0
-    var taskCount: Int = 0
-    /// For `.searched` only — formatted memory result entries joined by `\u{1E}`.
-    var memoryResults: String? = nil
-    /// For `.searched` only — formatted task summary result entries joined by `\u{1E}`.
-    var taskResults: String? = nil
-
-    @State private var isExpanded = false
-
-    private let accentColor: Color = .green
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            accentColor.frame(height: 1).opacity(0.3)
-
-            Button(action: {
-                guard hasExpandableContent else { return }
-                withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
-            }, label: {
-                HStack(spacing: 6) {
-                    Image(systemName: iconName)
-                        .font(.system(size: 10))
-                        .foregroundStyle(accentColor)
-
-                    Text(headerText)
-                        .font(AppFonts.channelTimestamp)
-                        .foregroundStyle(accentColor)
-
-                    Text(summaryPreview)
-                        .font(AppFonts.channelTimestamp)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-
-                    Spacer()
-
-                    if hasExpandableContent {
-                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                            .font(.system(size: 8))
-                            .foregroundStyle(.tertiary)
-                    }
-
-                    ChannelTimestamp(timestamp: timestamp, bucket: .systemMessage, foregroundStyle: .tertiary)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-            })
-            .buttonStyle(.plain)
-
-            if isExpanded {
-                expandedBody
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 4)
-            }
-
-            accentColor.frame(height: 1).opacity(0.3)
-        }
-        .background(accentColor.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 3))
-        .padding(.vertical, 1)
-    }
-
-    private var headerText: String {
-        switch kind {
-        case .saved: return "Memory Saved"
-        case .consolidated: return "Memory Consolidated"
-        case .searched:
-            if memoryCount == 0 && taskCount == 0 {
-                return "Memory Search — no results"
-            }
-            var parts: [String] = []
-            if memoryCount > 0 { parts.append("\(memoryCount) memor\(memoryCount == 1 ? "y" : "ies")") }
-            if taskCount > 0 { parts.append("\(taskCount) task\(taskCount == 1 ? "" : "s")") }
-            return "Memory Search — \(parts.joined(separator: ", "))"
-        }
-    }
-
-    private var iconName: String {
-        switch kind {
-        case .saved: return "brain.head.profile"
-        case .consolidated: return "arrow.triangle.merge"
-        case .searched: return "magnifyingglass"
-        }
-    }
-
-    /// Single-line preview shown next to the header. Returns the full summary so SwiftUI's
-    /// `.lineLimit(1)` can truncate to fit the available width — no arbitrary char cap.
-    private var summaryPreview: String {
-        summary
-    }
-
-    private var hasExpandableContent: Bool {
-        switch kind {
-        case .saved, .consolidated:
-            return detail != nil && !(detail ?? "").isEmpty
-        case .searched:
-            let hasMemories = !(memoryResults?.isEmpty ?? true)
-            let hasTasks = !(taskResults?.isEmpty ?? true)
-            return hasMemories || hasTasks
-        }
-    }
-
-    @ViewBuilder
-    private var expandedBody: some View {
-        switch kind {
-        case .saved, .consolidated:
-            if let detail, !detail.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(detail)
-                        .font(AppFonts.channelBody)
-                        .foregroundStyle(.primary)
-                        .textSelection(.enabled)
-
-                    if let tags, !tags.isEmpty {
-                        Text("Tags: \(tags)")
-                            .font(AppFonts.channelTimestamp)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let source, !source.isEmpty {
-                        Text("Source: \(source)")
-                            .font(AppFonts.channelTimestamp)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-        case .searched:
-            VStack(alignment: .leading, spacing: 10) {
-                if let memoryResults, !memoryResults.isEmpty {
-                    Text("Memories")
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
-                    let entries = parseContextEntries(memoryResults)
-                    ForEach(Array(entries.enumerated()), id: \.offset) { idx, entry in
-                        if idx > 0 { Divider().opacity(0.4) }
-                        contextEntryView(entry)
-                    }
-                }
-                if let taskResults, !taskResults.isEmpty {
-                    Text("Prior Tasks")
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
-                    let entries = parseContextEntries(taskResults)
-                    ForEach(Array(entries.enumerated()), id: \.offset) { idx, entry in
-                        if idx > 0 { Divider().opacity(0.4) }
-                        contextEntryView(entry)
-                    }
-                }
-            }
-        }
-    }
-
-}
-
-/// Displays an attachment inline: images as cached thumbnails, other files as badges.
-/// Uses `ImageCache` for efficient tiered rendering. Tapping an image invokes `onTapImage`.
-private struct AttachmentView: View {
-    let attachment: Attachment
-    let tier: ImageCache.Tier
-    var onTapImage: (() -> Void)?
-
-    @State private var loadedImage: NSImage?
-
-    var body: some View {
-        if attachment.isImage {
-            imageView
-                .task(id: attachment.id) {
-                    loadedImage = await ImageCache.shared.image(for: attachment, tier: tier)
-                }
-        } else {
-            fileBadge
-        }
-    }
-
-    private var imageView: some View {
-        Group {
-            if let nsImage = loadedImage
-                ?? ImageCache.shared.cachedImage(for: attachment, tier: tier) {
-                Image(nsImage: nsImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: tier == .small ? 200 : 400,
-                           maxHeight: tier == .small ? 150 : 300)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .contentShape(Rectangle())
-                    .onTapGesture { onTapImage?() }
-                    .onHover { hovering in
-                        if hovering { NSCursor.pointingHand.set() }
-                        else { NSCursor.arrow.set() }
-                    }
-            } else {
-                ProgressView()
-                    .frame(width: 60, height: 60)
-            }
-        }
-    }
-
-    private var fileBadge: some View {
-        HStack(spacing: 6) {
-            Image(systemName: iconName)
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(attachment.filename)
-                    .font(.caption)
-                    .lineLimit(1)
-                Text(attachment.formattedSize)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(8)
-        .background(.quaternary)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-    }
-
-    private var iconName: String {
-        if attachment.isPDF { return "doc.richtext" }
-        if attachment.isImage { return "photo" }
-        if attachment.mimeType.hasPrefix("text/") { return "doc.text" }
-        if attachment.mimeType.hasPrefix("video/") { return "film" }
-        if attachment.mimeType.hasPrefix("audio/") { return "waveform" }
-        return "doc"
-    }
-}
-
-/// Full-screen overlay that displays an image at its original resolution.
-/// Dismisses on backdrop click or the close button. Escape is handled by the parent
-/// view via a @FocusState so it intercepts before MainView's stop-agents handler.
-struct ImageLightbox: View {
-    let attachment: Attachment
-    let onDismiss: () -> Void
-
-    @State private var fullImage: NSImage?
-    @State private var loadFailed = false
-
-    var body: some View {
-        ZStack {
-            Color.black.opacity(0.85)
-                .ignoresSafeArea()
-                .onTapGesture { onDismiss() }
-
-            if let nsImage = fullImage {
-                Image(nsImage: nsImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .padding(40)
-            } else if loadFailed {
-                VStack(spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.largeTitle)
-                        .foregroundStyle(.white.opacity(0.6))
-                    Text("Image could not be loaded")
-                        .font(.callout)
-                        .foregroundStyle(.white.opacity(0.6))
-                }
-            } else {
-                ProgressView()
-                    .controlSize(.large)
-            }
-
-            VStack {
-                HStack {
-                    Spacer()
-                    Button(action: onDismiss) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.title)
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(.white)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(16)
-                }
-                Spacer()
-                Text(attachment.filename)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.7))
-                    .padding(.bottom, 16)
-            }
-        }
-        .transition(.opacity)
-        .task {
-            let image = await ImageCache.shared.image(for: attachment, tier: .full)
-            if let image {
-                fullImage = image
-            } else {
-                loadFailed = true
-            }
-        }
-    }
-}
-
-/// Renders a `file_write` path with colored directory components and a clickable filename.
-/// If the path traversed a symlink (detected by checking the resolved path), shows the
-/// symlink destination as a secondary label.
-/// Renders a tool name as a styled chip (blue text, light background, subtle border).
-private struct ToolNameChip: View {
-    let name: String
-
-    var body: some View {
-        Text(name)
-            .font(AppFonts.channelBody)
-            .foregroundStyle(.blue)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(.blue.opacity(0.12))
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-            .overlay(
-                RoundedRectangle(cornerRadius: 4)
-                    .strokeBorder(.blue.opacity(0.4), lineWidth: 1.0)
-            )
-    }
-}
-
-/// Renders a file path with the directory dimmed and the filename highlighted in bold cyan.
-private struct ToolPathText: View {
-    let path: String
-
-    private var directory: String {
-        guard !path.isEmpty else { return "" }
-        let dir = (path as NSString).deletingLastPathComponent
-        return dir.hasSuffix("/") ? dir : dir + "/"
-    }
-
-    private var filename: String {
-        (path as NSString).lastPathComponent
-    }
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 0) {
-            Text(directory)
-                .font(AppFonts.channelBody)
-                .foregroundStyle(.secondary.opacity(0.7))
-                .lineLimit(1)
-            Text(filename)
-                .font(AppFonts.channelBody.bold())
-                .foregroundStyle(.cyan)
-                .lineLimit(1)
-        }
-    }
-}
-
-private struct FileWritePathView: View {
-    let path: String
-
-    private var url: URL { URL(fileURLWithPath: path) }
-
-    /// If the path is a symlink (or contains symlinks), returns the resolved destination.
-    private var symlinkDestination: String? {
-        guard !path.isEmpty else { return nil }
-        let resolved = url.resolvingSymlinksInPath().path
-        let standardized = url.standardized.path
-        return resolved != standardized ? resolved : nil
-    }
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 4) {
-            ToolNameChip(name: "file_write")
-            ToolPathText(path: path)
-                .onTapGesture { openInFinder() }
-
-            if let dest = symlinkDestination {
-                Text(" \u{2192} ")
-                    .font(AppFonts.channelBody)
-                    .foregroundStyle(.secondary)
-                Text(dest)
-                    .font(AppFonts.channelBody)
-                    .foregroundStyle(.purple.opacity(0.8))
-                    .onTapGesture { openInFinder(path: dest) }
-            }
-        }
-    }
-
-    private func openInFinder(path overridePath: String? = nil) {
-        let targetPath = overridePath ?? path
-        let targetURL = URL(fileURLWithPath: targetPath)
-        if FileManager.default.fileExists(atPath: targetPath) {
-            NSWorkspace.shared.activateFileViewerSelecting([targetURL])
-        }
-    }
-}
-
-// MARK: - Hover Tooltip
-
-/// A lightweight tooltip that appears immediately on hover, positioned above the anchor view.
-/// Avoids the long delay of the system `.help()` modifier.
-private struct HoverTooltip: ViewModifier {
-    let text: String
-
-    @State private var isHovering = false
-
-    func body(content: Content) -> some View {
-        content
-            .overlay(alignment: .top) {
-                if isHovering {
-                    Text(text)
-                        .font(.caption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(.ultraThinMaterial)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                        .shadow(color: .black.opacity(0.15), radius: 3, y: 1)
-                        .fixedSize()
-                        .offset(y: -26)
-                        .allowsHitTesting(false)
-                        .transition(.opacity.animation(.easeInOut(duration: 0.12)))
-                }
-            }
-            .onHover { isHovering = $0 }
-    }
-}
-
-private extension View {
-    func hoverTooltip(_ text: String) -> some View {
-        modifier(HoverTooltip(text: text))
-    }
-}

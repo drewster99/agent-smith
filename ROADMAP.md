@@ -451,6 +451,34 @@ Top 4 results were all genuinely relevant (contact-sending tasks like "Send iMes
 - Per-embedding latency on save (every `save_memory` and `task_complete` triggers an embed; if it's >100ms it'll be noticeable).
 - Re-embed pass time on startup (currently instant; may grow to seconds for a corpus of a few hundred entries).
 
+### SwiftUI review P3 — accessibility baseline pass
+From the 2026-04-27 SwiftUI review (P3 follow-ups). The app currently has zero `.accessibilityLabel`, `.accessibilityHint`, or `.accessibilityIdentifier` calls. VoiceOver auto-derives labels from string content, which works for `Text("Start")` but fails for icon-only buttons (e.g. `InspectorView`'s speech-mute and gear buttons render as silent icons under VoiceOver). UI tests have no stable hooks either.
+
+Plan:
+1. Every icon-only `Button(action:, label: { Image(systemName: ...) })` gets `.accessibilityLabel("...")` matching its existing `.help("...")`.
+2. Every primary action (Start, Stop All, Send, Pause/Stop on tasks, Mute/Unmute) gets a stable `.accessibilityIdentifier(...)` so future UI tests have hooks.
+3. Custom-laid-out rows (channel banners, inspector rows) get `.accessibilityElement(children: .combine)` with a single composed label per row.
+
+Estimated 30 minutes of mechanical work; no architectural change.
+
+### SwiftUI review P3 — `@retroactive Identifiable` on UUID
+`SpendingDashboardView.swift:705-707` adds `extension UUID: @retroactive Identifiable { public var id: UUID { self } }` to support `.sheet(item: $selectedTaskID)`. If a future Swift release adds Identifiable to UUID, this conflicts. Workaround: wrap the UUID in a private `IdentifiedTaskID` struct whose only purpose is `Identifiable` conformance for the sheet callsite. Low-risk, deferred until conflict appears.
+
+### SwiftUI review P3 — `.scrollPosition` modernization
+`ChannelLogView`'s auto-scroll-to-bottom is built on `ScrollViewReader` + `.onChange(of: messages.count)`. Modern SwiftUI offers `.scrollPosition(id:)` which is more declarative and integrates with `.scrollTargetBehavior`. Optional refactor — current implementation works.
+
+### SwiftUI review P3 — SwiftLint rule for `: some View` antipattern
+After the 2026-04-27 sweep eliminated 44 `: some View` property antipatterns, add a SwiftLint custom rule (or CI grep) to prevent reintroduction:
+
+```regex
+^\s*(@ViewBuilder\s+)?(private |fileprivate |internal )?var [a-zA-Z_]+: some View
+```
+
+The `swiftlint` skill is configured for this project. Pair with the `CodeStyleGuardTests` regression tests added in the same sweep so violations surface even without SwiftLint installed.
+
+### SwiftUI review P3 — Inspector double-scroll redesign
+`InspectorView.swift:22` (outer ScrollView) wraps `:315` and `:111` of `AgentInspectorWindow`, each a `ScrollView(.vertical) { ... }.frame(maxHeight: 300/400)`. The bounded-height inner scroll is intentional but on macOS produces double-scrollbar UX where users sometimes scroll the outer when meaning the inner. Lower priority — would need a custom container that lets the inner section grow up to N pt and then fold into the outer scroll.
+
 ## Blockers
 
 ### ~~SSH key not configured on this device~~ ✅ Resolved
