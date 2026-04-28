@@ -35,6 +35,11 @@ public struct AgentTask: Identifiable, Codable, Sendable {
     /// arrives) and will not be auto-run by the queue until this date passes. The runtime
     /// schedules a matching wake bound to `id` so Smith is notified at fire time.
     public var scheduledRunAt: Date?
+    /// Timestamp of the most recent user edit to `description` (or other user-mutable
+    /// fields, when added). `nil` for tasks that have never been edited. The UI surfaces
+    /// this as an "edited" indicator. Editing does not change `status` — a completed
+    /// task remains `.completed` after a description edit.
+    public var lastEditedAt: Date?
 
     /// A single progress update recorded on a task.
     public struct TaskUpdate: Codable, Sendable {
@@ -75,6 +80,21 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         public var isRunnable: Bool {
             self == .pending || self == .paused || self == .interrupted
         }
+
+        /// Whether the user can edit the task's description in this state. Includes the
+        /// runnable states plus terminal states (`completed`, `failed`) and `scheduled`.
+        /// Excludes `running` and `awaitingReview` — those are actively in-flight and
+        /// editing the description while Brown or Smith is reading it would be confusing.
+        /// Description edits never change the status; the "edited" affordance is surfaced
+        /// via `AgentTask.lastEditedAt` instead.
+        public var isDescriptionEditable: Bool {
+            switch self {
+            case .pending, .paused, .interrupted, .scheduled, .completed, .failed:
+                return true
+            case .running, .awaitingReview:
+                return false
+            }
+        }
     }
 
     public enum TaskDisposition: String, Codable, Sendable {
@@ -105,7 +125,8 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         summary: String? = nil,
         relevantMemories: [RelevantMemory]? = nil,
         relevantPriorTasks: [RelevantPriorTask]? = nil,
-        scheduledRunAt: Date? = nil
+        scheduledRunAt: Date? = nil,
+        lastEditedAt: Date? = nil
     ) {
         self.id = id
         self.title = title
@@ -126,12 +147,13 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         self.relevantMemories = relevantMemories
         self.relevantPriorTasks = relevantPriorTasks
         self.scheduledRunAt = scheduledRunAt
+        self.lastEditedAt = lastEditedAt
     }
 
     // MARK: - Codable (backward-compatible with persisted data lacking `disposition`)
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt, startedAt, completedAt, updates, acknowledgmentCount, lastBrownContext, summary, relevantMemories, relevantPriorTasks, scheduledRunAt
+        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt, startedAt, completedAt, updates, acknowledgmentCount, lastBrownContext, summary, relevantMemories, relevantPriorTasks, scheduledRunAt, lastEditedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -155,6 +177,7 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         relevantMemories = try c.decodeIfPresent([RelevantMemory].self, forKey: .relevantMemories)
         relevantPriorTasks = try c.decodeIfPresent([RelevantPriorTask].self, forKey: .relevantPriorTasks)
         scheduledRunAt = try c.decodeIfPresent(Date.self, forKey: .scheduledRunAt)
+        lastEditedAt = try c.decodeIfPresent(Date.self, forKey: .lastEditedAt)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -182,5 +205,6 @@ public struct AgentTask: Identifiable, Codable, Sendable {
         try c.encodeIfPresent(relevantMemories, forKey: .relevantMemories)
         try c.encodeIfPresent(relevantPriorTasks, forKey: .relevantPriorTasks)
         try c.encodeIfPresent(scheduledRunAt, forKey: .scheduledRunAt)
+        try c.encodeIfPresent(lastEditedAt, forKey: .lastEditedAt)
     }
 }

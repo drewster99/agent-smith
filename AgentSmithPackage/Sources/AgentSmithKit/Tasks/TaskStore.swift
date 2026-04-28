@@ -241,14 +241,31 @@ public actor TaskStore {
     }
 
     /// Replaces a task's description entirely.
-    /// Only allowed for runnable tasks (pending, paused, or interrupted).
-    /// Returns true if the update succeeded, false if the task wasn't found or status doesn't allow editing.
+    ///
+    /// Allowed in any state where `Status.isDescriptionEditable` returns true: the runnable
+    /// states (`pending`, `paused`, `interrupted`), the terminal states (`completed`,
+    /// `failed`), and `scheduled`. Excluded: `running` and `awaitingReview` — editing the
+    /// description while Brown is executing or while Smith is reviewing would change the
+    /// shared context out from under them.
+    ///
+    /// On success, `status` is preserved (a completed task stays completed) and
+    /// `lastEditedAt` is stamped so the UI can show an "edited" indicator. The body of the
+    /// edit is also no-op'd if the new description is identical to the old one — no
+    /// `lastEditedAt` change in that case.
+    ///
+    /// Returns true if the update succeeded, false if the task wasn't found or its status
+    /// doesn't allow editing.
     @discardableResult
     public func updateDescription(id: UUID, description: String) -> Bool {
         guard var task = tasks[id] else { return false }
-        guard task.status.isRunnable else { return false }
+        guard task.status.isDescriptionEditable else { return false }
+        // Skip the no-op edit so an "edited" badge doesn't appear from a Save click that
+        // didn't actually change anything.
+        guard task.description != description else { return true }
         task.description = description
-        task.updatedAt = Date()
+        let now = Date()
+        task.updatedAt = now
+        task.lastEditedAt = now
         tasks[id] = task
         onChange?()
         return true

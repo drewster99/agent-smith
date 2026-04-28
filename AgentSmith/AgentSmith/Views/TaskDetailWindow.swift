@@ -15,10 +15,12 @@ struct TaskDetailWindow: View {
         viewModel.tasks.first { $0.id == taskID }
     }
 
-    /// Whether the current task's description can be edited.
+    /// Whether the current task's description can be edited. Mirrors
+    /// `AgentTask.Status.isDescriptionEditable` so completed/failed/scheduled tasks accept
+    /// late corrections; only `running` and `awaitingReview` are read-only.
     private var isDescriptionEditable: Bool {
         guard let task else { return false }
-        return task.status.isRunnable
+        return task.status.isDescriptionEditable
     }
 
     var body: some View {
@@ -59,6 +61,9 @@ struct TaskDetailWindow: View {
                 HStack {
                     Text("Description")
                         .font(.title3.bold())
+                    if let editedAt = task.lastEditedAt {
+                        EditedBadge(editedAt: editedAt)
+                    }
                     Spacer()
                     copyButton(text: task.description, id: "description")
                     if isDescriptionEditable && !isEditingDescription {
@@ -71,6 +76,7 @@ struct TaskDetailWindow: View {
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
+                        .help("Edit description")
                     }
                 }
                 if isEditingDescription {
@@ -348,5 +354,33 @@ struct TaskDetailWindow: View {
         } else {
             return "\(seconds)s"
         }
+    }
+}
+
+/// Small "edited" pill shown next to the Description heading when the task's
+/// `lastEditedAt` is non-nil. Hover tooltip shows the absolute edit time.
+private struct EditedBadge: View {
+    let editedAt: Date
+
+    private static let tooltipFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .medium
+        return f
+    }()
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "pencil")
+                .font(.caption2)
+            Text("edited")
+                .font(.caption.weight(.medium))
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(AppColors.subtleRowBackgroundLift)
+        .clipShape(Capsule())
+        .help("Edited \(Self.tooltipFormatter.string(from: editedAt))")
     }
 }
