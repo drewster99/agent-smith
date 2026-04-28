@@ -33,7 +33,7 @@ struct ModelConfigurationEditorView: View {
                     if selectedProviderAPIType == .anthropic || selectedProviderAPIType == .alibabaCloud {
                         thinkingSection()
                     }
-                    if selectedProviderAPIType == .anthropic {
+                    if isAnthropicLineage {
                         cacheTTLSection()
                     }
                     streamingSection()
@@ -256,6 +256,19 @@ struct ModelConfigurationEditorView: View {
         llmKit.providers.first { $0.id == selectedProviderID }?.apiType
     }
 
+    /// True when the editor is configuring an Anthropic-lineage model — direct
+    /// Anthropic provider OR an Anthropic-prefixed model routed via OpenRouter.
+    /// OpenRouter passes top-level `cache_control` through to Anthropic, so the
+    /// extended-cache toggle is meaningful for those configurations too.
+    private var isAnthropicLineage: Bool {
+        if selectedProviderAPIType == .anthropic { return true }
+        if selectedProviderAPIType == .openRouter,
+           selectedModelID.lowercased().hasPrefix("anthropic/") {
+            return true
+        }
+        return false
+    }
+
     @ViewBuilder
 
     private func modelPickerMenu() -> some View {
@@ -390,7 +403,7 @@ struct ModelConfigurationEditorView: View {
             maxOutputTokens: maxOutputTokens,
             maxContextTokens: maxContextTokens,
             thinkingBudget: effectiveThinkingBudget,
-            extendedCacheTTL: selectedProviderAPIType == .anthropic && extendedCacheTTL,
+            extendedCacheTTL: isAnthropicLineage && extendedCacheTTL,
             useDefaultTemperature: useDefaultTemperature,
             streaming: streaming
         )

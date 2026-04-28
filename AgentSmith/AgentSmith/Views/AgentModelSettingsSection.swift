@@ -69,7 +69,15 @@ struct AgentModelSettingsSection: View {
     }
 
     private var anthropicCacheVisible: Bool {
-        selectedAPIType == .anthropic
+        selectedAPIType == .anthropic || isOpenRouterAnthropicModel
+    }
+
+    /// True when the current selection is an Anthropic-lineage model routed via
+    /// OpenRouter (model IDs are prefixed with "anthropic/" in OpenRouter's catalog).
+    /// OpenRouter passes top-level `cache_control` through to Anthropic, so the
+    /// extended-cache toggle is meaningful for these configurations.
+    private var isOpenRouterAnthropicModel: Bool {
+        selectedAPIType == .openRouter && modelID.lowercased().hasPrefix("anthropic/")
     }
 
     var body: some View {
@@ -528,7 +536,7 @@ struct AgentModelSettingsSection: View {
         updated.maxOutputTokens = max(1, maxOutputTokens)
         updated.maxContextTokens = max(1, maxContextTokens)
         updated.thinkingBudget = (thinkingSupported && thinkingBudget > 0) ? thinkingBudget : nil
-        updated.extendedCacheTTL = (selectedAPIType == .anthropic) && extendedCacheTTL
+        updated.extendedCacheTTL = anthropicCacheVisible && extendedCacheTTL
         updated.useDefaultTemperature = useDefaultTemperature
 
         // Skip if nothing meaningfully changed — saves both a redundant write and a
