@@ -7,6 +7,16 @@ import AgentSmithKit
 struct InspectorView: View {
     let viewModel: AppViewModel
 
+    // MARK: - Cached Data
+
+    /// Cached data for each agent role (excluding summarizer). Updated only when dependencies change.
+    @State private var smithData: AgentRoleData?
+    @State private var brownData: AgentRoleData?
+    @State private var jonesData: AgentRoleData?
+
+    /// Cached data for summarizer.
+    @State private var summarizerData: SummarizerData?
+
     /// Buckets channel messages by their sending agent role in one pass. The inspector
     /// renders four agent cards per body evaluation; without this bucketing each card's
     /// `roleMessages` filter scanned the full message array independently. Single-pass
@@ -21,11 +31,19 @@ struct InspectorView: View {
         return buckets
     }
 
-    var body: some View {
+    /// Recomputes all cached data from view model sources.
+    /// Called on appear and when dependencies change.
+    private func updateCachedData() {
         let store = viewModel.inspectorStore
-        // Bucket all messages by agent role once per body. Without this, each role's
-        // ForEach iteration re-filtered viewModel.messages, doing 4× full scans.
         let messagesByRole = Self.bucketMessagesByRole(viewModel.messages)
+
+        smithData = AgentRoleData.create(for: .smith, messagesByRole: messagesByRole, store: store, viewModel: viewModel)
+        brownData = AgentRoleData.create(for: .brown, messagesByRole: messagesByRole, store: store, viewModel: viewModel)
+        jonesData = AgentRoleData.create(for: .jones, messagesByRole: messagesByRole, store: store, viewModel: viewModel)
+        summarizerData = SummarizerData.create(store: store, viewModel: viewModel)
+    }
+
+    var body: some View {
         VStack(spacing: 0) {
             Text("Agents")
                 .font(AppFonts.sectionHeader)
@@ -38,71 +56,205 @@ struct InspectorView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(AgentRole.allCases.filter { $0 != .summarizer }, id: \.self) { role in
-                        let roleMessages = messagesByRole[role] ?? []
-                        let recentMessages = Array(roleMessages.suffix(5).reversed())
-                        let recentTools = Array(
-                            roleMessages.filter { $0.metadata?["tool"] != nil }.suffix(3).reversed()
-                        )
-                        let context = store.contextMessages(for: role)
-                        let turns = store.turnsByRole[role] ?? []
-                        let pollInterval = viewModel.agentPollIntervals[role] ?? 5
-                        let maxToolCalls = viewModel.agentMaxToolCalls[role] ?? 100
-                        let currentSystemPrompt = store.systemPrompt(for: role)
-
+                    // Smith Card
+                    if let data = smithData {
                         AgentCard(
                             viewModel: viewModel,
-                            role: role,
-                            isProcessing: viewModel.processingRoles.contains(role),
-                            hasActivity: !roleMessages.isEmpty,
-                            availableTools: viewModel.agentToolNames[role] ?? [],
-                            recentMessages: recentMessages,
-                            recentToolUses: recentTools,
-                            contextMessages: context,
-                            llmTurns: turns,
-                            modelConfig: viewModel.resolvedAgentConfigs[role],
-                            evaluationRecords: role == .jones ? store.evaluationRecords : [],
-                            currentSystemPrompt: currentSystemPrompt,
-                            pollInterval: pollInterval,
-                            maxToolCalls: maxToolCalls,
+                            role: data.role,
+                            isProcessing: data.isProcessing,
+                            hasActivity: data.hasActivity,
+                            availableTools: data.availableTools,
+                            recentMessages: data.recentMessages,
+                            recentToolUses: data.recentToolUses,
+                            contextMessages: data.contextMessages,
+                            llmTurns: data.llmTurns,
+                            modelConfig: data.modelConfig,
+                            evaluationRecords: data.evaluationRecords,
+                            currentSystemPrompt: data.currentSystemPrompt,
+                            pollInterval: data.pollInterval,
+                            maxToolCalls: data.maxToolCalls,
                             speechController: viewModel.shared.speechController,
                             onSendDirectMessage: { text in
-                                Task { await viewModel.sendDirectMessage(to: role, text: text) }
+                                Task { await viewModel.sendDirectMessage(to: data.role, text: text) }
                             },
                             onUpdateSystemPrompt: { prompt in
-                                Task { await viewModel.updateSystemPrompt(for: role, prompt: prompt) }
+                                Task { await viewModel.updateSystemPrompt(for: data.role, prompt: prompt) }
                             },
                             onUpdatePollInterval: { interval in
-                                Task { await viewModel.updatePollInterval(for: role, interval: interval) }
+                                Task { await viewModel.updatePollInterval(for: data.role, interval: interval) }
                             },
                             onUpdateMaxToolCalls: { count in
-                                Task { await viewModel.updateMaxToolCalls(for: role, count: count) }
+                                Task { await viewModel.updateMaxToolCalls(for: data.role, count: count) }
                             }
                         )
                     }
 
-                    SummarizerCard(
-                        viewModel: viewModel,
-                        messages: viewModel.messages,
-                        isProcessing: viewModel.processingRoles.contains(.summarizer),
-                        currentSystemPrompt: store.systemPrompt(for: .summarizer),
-                        pollInterval: viewModel.agentPollIntervals[.summarizer] ?? 5,
-                        maxToolCalls: viewModel.agentMaxToolCalls[.summarizer] ?? 100,
-                        speechController: viewModel.shared.speechController,
-                        onUpdateSystemPrompt: { prompt in
-                            Task { await viewModel.updateSystemPrompt(for: .summarizer, prompt: prompt) }
-                        },
-                        onUpdatePollInterval: { interval in
-                            Task { await viewModel.updatePollInterval(for: .summarizer, interval: interval) }
-                        },
-                        onUpdateMaxToolCalls: { count in
-                            Task { await viewModel.updateMaxToolCalls(for: .summarizer, count: count) }
-                        }
-                    )
+                    // Brown Card
+                    if let data = brownData {
+                        AgentCard(
+                            viewModel: viewModel,
+                            role: data.role,
+                            isProcessing: data.isProcessing,
+                            hasActivity: data.hasActivity,
+                            availableTools: data.availableTools,
+                            recentMessages: data.recentMessages,
+                            recentToolUses: data.recentToolUses,
+                            contextMessages: data.contextMessages,
+                            llmTurns: data.llmTurns,
+                            modelConfig: data.modelConfig,
+                            evaluationRecords: data.evaluationRecords,
+                            currentSystemPrompt: data.currentSystemPrompt,
+                            pollInterval: data.pollInterval,
+                            maxToolCalls: data.maxToolCalls,
+                            speechController: viewModel.shared.speechController,
+                            onSendDirectMessage: { text in
+                                Task { await viewModel.sendDirectMessage(to: data.role, text: text) }
+                            },
+                            onUpdateSystemPrompt: { prompt in
+                                Task { await viewModel.updateSystemPrompt(for: data.role, prompt: prompt) }
+                            },
+                            onUpdatePollInterval: { interval in
+                                Task { await viewModel.updatePollInterval(for: data.role, interval: interval) }
+                            },
+                            onUpdateMaxToolCalls: { count in
+                                Task { await viewModel.updateMaxToolCalls(for: data.role, count: count) }
+                            }
+                        )
+                    }
+
+                    // Jones Card
+                    if let data = jonesData {
+                        AgentCard(
+                            viewModel: viewModel,
+                            role: data.role,
+                            isProcessing: data.isProcessing,
+                            hasActivity: data.hasActivity,
+                            availableTools: data.availableTools,
+                            recentMessages: data.recentMessages,
+                            recentToolUses: data.recentToolUses,
+                            contextMessages: data.contextMessages,
+                            llmTurns: data.llmTurns,
+                            modelConfig: data.modelConfig,
+                            evaluationRecords: data.evaluationRecords,
+                            currentSystemPrompt: data.currentSystemPrompt,
+                            pollInterval: data.pollInterval,
+                            maxToolCalls: data.maxToolCalls,
+                            speechController: viewModel.shared.speechController,
+                            onSendDirectMessage: { text in
+                                Task { await viewModel.sendDirectMessage(to: data.role, text: text) }
+                            },
+                            onUpdateSystemPrompt: { prompt in
+                                Task { await viewModel.updateSystemPrompt(for: data.role, prompt: prompt) }
+                            },
+                            onUpdatePollInterval: { interval in
+                                Task { await viewModel.updatePollInterval(for: data.role, interval: interval) }
+                            },
+                            onUpdateMaxToolCalls: { count in
+                                Task { await viewModel.updateMaxToolCalls(for: data.role, count: count) }
+                            }
+                        )
+                    }
+
+                    // Summarizer Card
+                    if let data = summarizerData {
+                        SummarizerCard(
+                            viewModel: viewModel,
+                            messages: data.messages,
+                            isProcessing: data.isProcessing,
+                            currentSystemPrompt: data.currentSystemPrompt,
+                            pollInterval: data.pollInterval,
+                            maxToolCalls: data.maxToolCalls,
+                            speechController: viewModel.shared.speechController,
+                            onUpdateSystemPrompt: { prompt in
+                                Task { await viewModel.updateSystemPrompt(for: .summarizer, prompt: prompt) }
+                            },
+                            onUpdatePollInterval: { interval in
+                                Task { await viewModel.updatePollInterval(for: .summarizer, interval: interval) }
+                            },
+                            onUpdateMaxToolCalls: { count in
+                                Task { await viewModel.updateMaxToolCalls(for: .summarizer, count: count) }
+                            }
+                        )
+                    }
                 }
             }
         }
         .inspectorColumnWidth(min: 280, ideal: 320, max: 460)
+        .onAppear(perform: updateCachedData)
+        .onChange(of: viewModel.messages) { _, _ in updateCachedData() }
+        .onChange(of: viewModel.inspectorStore.turnsByRole) { _, _ in updateCachedData() }
+        .onChange(of: viewModel.agentPollIntervals) { _, _ in updateCachedData() }
+        .onChange(of: viewModel.agentMaxToolCalls) { _, _ in updateCachedData() }
+        .onChange(of: viewModel.processingRoles) { _, _ in updateCachedData() }
+        .onChange(of: viewModel.resolvedAgentConfigs) { _, _ in updateCachedData() }
+        .onChange(of: viewModel.agentToolNames) { _, _ in updateCachedData() }
+    }
+}
+
+// MARK: - Cached Data Structures
+
+/// Pre-computed data for a single agent role. This struct is lightweight and
+/// Equatable so SwiftUI can efficiently detect changes and avoid unnecessary
+/// body re-evaluations.
+struct AgentRoleData: Equatable {
+    let role: AgentRole
+    let roleMessages: [ChannelMessage]
+    let recentMessages: [ChannelMessage]
+    let recentToolUses: [ChannelMessage]
+    let contextMessages: [LLMMessage]
+    let llmTurns: [LLMTurnRecord]
+    let pollInterval: TimeInterval
+    let maxToolCalls: Int
+    let currentSystemPrompt: String
+    let hasActivity: Bool
+    let availableTools: [String]
+    let evaluationRecords: [EvaluationRecord]
+    let isProcessing: Bool
+    let modelConfig: ModelConfiguration?
+
+    /// Creates cached data for a specific role from view model sources.
+    static func create(
+        for role: AgentRole,
+        messagesByRole: [AgentRole: [ChannelMessage]],
+        store: AgentInspectorStore,
+        viewModel: AppViewModel
+    ) -> AgentRoleData {
+        let roleMessages = messagesByRole[role] ?? []
+        return AgentRoleData(
+            role: role,
+            roleMessages: roleMessages,
+            recentMessages: Array(roleMessages.suffix(5).reversed()),
+            recentToolUses: Array(roleMessages.filter { $0.metadata?["tool"] != nil }.suffix(3).reversed()),
+            contextMessages: store.contextMessages(for: role),
+            llmTurns: store.turnsByRole[role] ?? [],
+            pollInterval: viewModel.agentPollIntervals[role] ?? 5,
+            maxToolCalls: viewModel.agentMaxToolCalls[role] ?? 100,
+            currentSystemPrompt: store.systemPrompt(for: role),
+            hasActivity: !roleMessages.isEmpty,
+            availableTools: viewModel.agentToolNames[role] ?? [],
+            evaluationRecords: role == .jones ? store.evaluationRecords : [],
+            isProcessing: viewModel.processingRoles.contains(role),
+            modelConfig: viewModel.resolvedAgentConfigs[role]
+        )
+    }
+}
+
+/// Pre-computed data for the summarizer role.
+struct SummarizerData: Equatable {
+    let currentSystemPrompt: String
+    let pollInterval: TimeInterval
+    let maxToolCalls: Int
+    let isProcessing: Bool
+    let messages: [ChannelMessage]
+
+    static func create(store: AgentInspectorStore, viewModel: AppViewModel) -> SummarizerData {
+        SummarizerData(
+            currentSystemPrompt: store.systemPrompt(for: .summarizer),
+            pollInterval: viewModel.agentPollIntervals[.summarizer] ?? 5,
+            maxToolCalls: viewModel.agentMaxToolCalls[.summarizer] ?? 100,
+            isProcessing: viewModel.processingRoles.contains(.summarizer),
+            messages: viewModel.messages
+        )
     }
 }
 
