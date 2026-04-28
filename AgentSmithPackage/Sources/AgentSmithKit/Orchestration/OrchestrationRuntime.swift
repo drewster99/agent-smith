@@ -254,11 +254,14 @@ public actor OrchestrationRuntime {
     /// (typically from `onTaskTerminated`). Skips queue entries whose tasks are no longer
     /// runnable (e.g. cancelled by the user mid-queue) so a single bad entry can't stall
     /// the rest of the queue.
-    private func drainPendingScheduledRunQueue() async {
-        guard !pendingScheduledRunQueue.isEmpty else { return }
+    /// Returns `true` if a `restartForNewTask` was scheduled, so callers can skip
+    /// follow-on drains (like the pending-task auto-advance) that would race the same slot.
+    @discardableResult
+    private func drainPendingScheduledRunQueue() async -> Bool {
+        guard !pendingScheduledRunQueue.isEmpty else { return false }
         let activeTasks = await taskStore.allTasks().filter { $0.disposition == .active }
         let stillBusy = activeTasks.contains { $0.status == .running || $0.status == .awaitingReview }
-        guard !stillBusy else { return }
+        guard !stillBusy else { return false }
 
         while let next = pendingScheduledRunQueue.first {
             pendingScheduledRunQueue.removeFirst()
@@ -267,8 +270,38 @@ public actor OrchestrationRuntime {
                 continue
             }
             await restartForNewTask(taskID: next)
-            return
+            return true
         }
+        return false
+    }
+
+    /// Picks up the oldest active `.pending` task and drives `restartForNewTask` on it
+    /// when nothing is in flight. This is the auto-advance step that runs after a task
+    /// terminates (review_work accept/reject, task_failed, manual update_task, etc.) —
+    /// pairs with Smith's prompt directive to STOP after `review_work(accepted: true)`
+    /// and let the runtime advance the queue.
+    ///
+    /// Gated on `autoAdvanceEnabled`. Skips when:
+    ///   - auto-advance is off (user disabled "Auto-run next task")
+    ///   - a `.running` or `.awaitingReview` task already occupies the slot
+    ///   - the scheduled-run queue (`pendingScheduledRunQueue`) just kicked off a restart
+    ///     in this same drain pass — the caller is responsible for skipping us in that case
+    ///
+    /// `.scheduled` is deliberately excluded (those wait for their fire time) and so are
+    /// `.paused` / `.interrupted` (paused requires a deliberate user resume; interrupted
+    /// has its own cold-launch auto-resume controlled by `autoRunInterruptedTasks`).
+    private func drainPendingTaskQueue() async {
+        guard autoAdvanceEnabled else { return }
+        let activeTasks = await taskStore.allTasks().filter { $0.disposition == .active }
+        let stillBusy = activeTasks.contains { $0.status == .running || $0.status == .awaitingReview }
+        guard !stillBusy else { return }
+
+        let oldestPending = activeTasks
+            .filter { $0.status == .pending }
+            .sorted { $0.createdAt < $1.createdAt }
+            .first
+        guard let next = oldestPending else { return }
+        await restartForNewTask(taskID: next.id)
     }
 
     /// Builds the user-role message that seeds Brown's conversation history at task spawn.
@@ -597,8 +630,11 @@ public actor OrchestrationRuntime {
         // Cancel any task-scoped wakes when the task transitions to a terminal status the first time.
         // Also drain `pendingScheduledRunQueue` so any deferred scheduled task — or a paused
         // task awaiting resume after an interrupt — runs immediately when the in-flight slot
-        // frees up. Drain runs INDEPENDENTLY of `autoAdvanceEnabled` because scheduled wakes
-        // are a commitment, not a deferred suggestion.
+        // frees up. The scheduled-run drain runs INDEPENDENTLY of `autoAdvanceEnabled`
+        // (scheduled wakes are a commitment, not a deferred suggestion). The pending-task
+        // drain that follows IS gated on `autoAdvanceEnabled` and only runs when the
+        // scheduled drain didn't claim the slot — that's the auto-advance step Smith's
+        // prompt promises after `review_work(accepted: true)`.
         let scheduler = followUpScheduler
         await taskStore.setOnTaskTerminated { [weak self] taskID in
             // Fire-and-forget Task to stay synchronous from TaskStore's view.
@@ -608,7 +644,10 @@ public actor OrchestrationRuntime {
             // Task. (L3 from the 2026-04-27 concurrency review.)
             Task {
                 await scheduler.cancelWakesForTask(taskID)
-                await self?.drainPendingScheduledRunQueue()
+                let kicked = await self?.drainPendingScheduledRunQueue() ?? false
+                if !kicked {
+                    await self?.drainPendingTaskQueue()
+                }
             }
         }
 
