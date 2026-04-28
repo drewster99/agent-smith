@@ -10,6 +10,9 @@ import SwiftLLMKit
 struct TaskCostDetailSheet: View {
     let taskID: UUID
     let task: AgentTask?
+    /// Persisted summary of a completed/failed task, used to resolve title and status
+    /// when the live `AgentTask` isn't reachable from the dashboard.
+    let taskSummary: TaskSummaryEntry?
     let records: [UsageRecord]
     let allRecordsSummary: UsageSummary
     /// Number of distinct tasks in the parent dashboard's filtered time range,
@@ -21,7 +24,7 @@ struct TaskCostDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     private var summary: UsageSummary {
-        aggregator.summarize(records, scopeLabel: task?.title ?? "Unknown")
+        aggregator.summarize(records, scopeLabel: task?.title ?? taskSummary?.title ?? "Unknown")
     }
 
     var body: some View {
@@ -59,18 +62,20 @@ struct TaskCostDetailSheet: View {
     @ViewBuilder
 
     private func headerSection() -> some View {
+        let resolvedTitle = task?.title ?? taskSummary?.title ?? "Unknown Task"
+        let resolvedStatus: AgentTask.Status? = task?.status ?? taskSummary?.status
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text(task?.title ?? "Unknown Task")
+                Text(resolvedTitle)
                     .font(.title2.bold())
                 Spacer()
-                if let task {
+                if let resolvedStatus {
                     HStack(spacing: 4) {
-                        Image(systemName: TaskStatusBadge.icon(for: task.status))
-                            .foregroundStyle(TaskStatusBadge.color(for: task.status))
-                        Text(task.status.rawValue.capitalized)
+                        Image(systemName: TaskStatusBadge.icon(for: resolvedStatus))
+                            .foregroundStyle(TaskStatusBadge.color(for: resolvedStatus))
+                        Text(resolvedStatus.rawValue.capitalized)
                             .font(.callout.weight(.medium))
-                            .foregroundStyle(TaskStatusBadge.color(for: task.status))
+                            .foregroundStyle(TaskStatusBadge.color(for: resolvedStatus))
                     }
                 }
             }
@@ -352,7 +357,10 @@ struct TaskCostDetailSheet: View {
              + Double(record.cacheWriteTokens) * (rates.cacheWrite ?? 0)
     }
 
-    private func formatCost(_ cost: Double) -> String { String(format: "$%.2f", cost) }
+    private func formatCost(_ cost: Double) -> String {
+        if cost > 0 && cost < 0.01 { return String(format: "$%.4f", cost) }
+        return String(format: "$%.2f", cost)
+    }
     private func formatTokenCount(_ count: Int) -> String {
         if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }
         if count >= 1_000 { return String(format: "%.0fK", Double(count) / 1_000) }

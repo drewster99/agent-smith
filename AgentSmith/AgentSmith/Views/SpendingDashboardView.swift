@@ -127,13 +127,14 @@ struct SpendingDashboardView: View {
         }
         .sheet(item: $selectedTaskID) { taskID in
             let taskCount = aggregator.byTask(filteredRecords).keys.compactMap({ $0 }).count
-            // Usage records can come from any session; this sheet has no easy way to
-            // locate the source AgentTask without threading every session's task list
-            // through the dashboard. For now, the task-detail sheet renders a generic
-            // view when the `task` is nil — a reasonable degradation.
+            // The dashboard doesn't hold live AgentTask objects (those live per-session).
+            // Use the global task-summary store to resolve the title/status; the sheet
+            // gracefully degrades when neither is present.
+            let summaryEntry = shared.storedTaskSummaries.first(where: { $0.id == taskID })
             TaskCostDetailSheet(
                 taskID: taskID,
                 task: nil,
+                taskSummary: summaryEntry,
                 records: filteredRecords.filter { $0.taskID == taskID },
                 allRecordsSummary: currentSummary,
                 taskCountInRange: max(1, taskCount),
@@ -292,7 +293,13 @@ struct SpendingDashboardView: View {
     }
 
     private func costOverTimeChart() -> some View {
-        let bucketUnit: Calendar.Component = selectedRange == .all ? .month : .day
+        let bucketUnit: Calendar.Component = {
+            switch selectedRange {
+            case .today: return .hour
+            case .week, .month: return .day
+            case .all: return .month
+            }
+        }()
         let byProvider = aggregator.byProvider(filteredRecords)
         let providerIDs = byProvider.keys.compactMap { $0 }.sorted()
 
@@ -390,6 +397,7 @@ struct SpendingDashboardView: View {
         let formatter = DateFormatter()
         switch bucketUnit {
         case .month: formatter.dateFormat = "MMM yyyy"
+        case .hour: formatter.dateFormat = "h a, MMM d"
         default: formatter.dateFormat = "MMM d, yyyy"
         }
         let total = items.reduce(0.0) { $0 + $1.cost }
@@ -565,10 +573,12 @@ struct SpendingDashboardView: View {
     // MARK: - Section 4: Task Ledger
 
     private func taskLedger() -> some View {
-        // Tasks live per-session now. The dashboard doesn't have access to every session's
-        // task list from here, so task titles fall back to a truncated UUID. A future
-        // enhancement could take `SessionManager` and union tasks across sessions.
-        let taskLookup: [UUID: AgentTask] = [:]
+        // Live AgentTask objects are per-session and not threaded into the dashboard.
+        // Resolve titles from the global task-summary store; in-progress tasks without
+        // a summary yet still fall back to a truncated UUID.
+        let taskLookup: [UUID: TaskSummaryEntry] = Dictionary(
+            uniqueKeysWithValues: shared.storedTaskSummaries.map { ($0.id, $0) }
+        )
         let grouped = aggregator.byTask(filteredRecords)
         let planningSummary = grouped[nil]
         let byTask = grouped
@@ -674,7 +684,8 @@ struct SpendingDashboardView: View {
     }
 
     private func formatCost(_ cost: Double) -> String {
-        String(format: "$%.2f", cost)
+        if cost > 0 && cost < 0.01 { return String(format: "$%.4f", cost) }
+        return String(format: "$%.2f", cost)
     }
 
     private func formatTokenCount(_ count: Int) -> String {
