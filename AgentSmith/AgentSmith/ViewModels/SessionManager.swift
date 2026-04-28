@@ -87,9 +87,20 @@ final class SessionManager {
 
     /// Returns the view model for the given session ID, creating it on first access.
     /// Returns nil if the session ID isn't in the list.
+    ///
+    /// **Do not add stored-property mutations here.** SessionManager is `@Observable`, so
+    /// any mutation of one of its stored vars in this hot path would invalidate the SwiftUI
+    /// body that just called this method, which would re-call this method, repeat — a
+    /// runaway loop visible in logs as a `viewModel(for:)` count climbing into the hundreds
+    /// of thousands. (We learned this the hard way with a debug call counter.)
     func viewModel(for id: UUID) -> AppViewModel? {
-        if let cached = viewModels[id] { return cached }
-        guard let session = sessions.first(where: { $0.id == id }) else { return nil }
+        if let cached = viewModels[id] {
+            return cached
+        }
+        guard let session = sessions.first(where: { $0.id == id }) else {
+            return nil
+        }
+        logger.notice("viewModel(for:) CREATING new VM session=\(id.uuidString, privacy: .public) name=\(session.name, privacy: .public)")
         let vm = AppViewModel(session: session, shared: shared)
         viewModels[id] = vm
         Task { await vm.loadPersistedState() }

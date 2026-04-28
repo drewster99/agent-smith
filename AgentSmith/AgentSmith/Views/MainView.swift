@@ -2,6 +2,9 @@ import SwiftUI
 import SwiftLLMKit
 import AgentSmithKit
 import UniformTypeIdentifiers
+import os
+
+nonisolated private let dropLogger = Logger(subsystem: "com.agentsmith", category: "Drop")
 
 /// Primary app view: sidebar with tasks, detail with channel log and input.
 struct MainView: View {
@@ -259,12 +262,12 @@ struct MainView: View {
                 handled = true
                 provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, error in
                     if let error {
-                        print("[AgentSmith] Drop: failed to load file URL: \(error)")
+                        dropLogger.error("failed to load file URL: \(error.localizedDescription, privacy: .public)")
                         return
                     }
                     guard let data = item as? Data,
                           let url = URL(dataRepresentation: data, relativeTo: nil) else {
-                        print("[AgentSmith] Drop: could not decode file URL from dropped item")
+                        dropLogger.error("could not decode file URL from dropped item")
                         return
                     }
                     Task { @MainActor in
@@ -277,11 +280,11 @@ struct MainView: View {
                 handled = true
                 provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, error in
                     if let error {
-                        print("[AgentSmith] Drop: failed to load image data: \(error)")
+                        dropLogger.error("failed to load image data: \(error.localizedDescription, privacy: .public)")
                         return
                     }
                     guard let data else {
-                        print("[AgentSmith] Drop: image provider returned nil data")
+                        dropLogger.error("image provider returned nil data")
                         return
                     }
                     // Convert to PNG for consistency

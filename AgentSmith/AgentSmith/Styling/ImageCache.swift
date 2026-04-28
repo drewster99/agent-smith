@@ -1,6 +1,9 @@
 import AppKit
 import ImageIO
 import AgentSmithKit
+import os
+
+nonisolated private let imageCacheLogger = Logger(subsystem: "com.agentsmith", category: "ImageCache")
 
 /// Tiered image cache with efficient thumbnail generation via ImageIO.
 /// RAM cache for all tiers; disk cache (JPEG) for chip and small thumbnails
@@ -58,7 +61,7 @@ final class ImageCache {
                 withIntermediateDirectories: true
             )
         } catch {
-            print("[AgentSmith] Failed to create thumbnail cache directory: \(error)")
+            imageCacheLogger.error("Failed to create thumbnail cache directory: \(error.localizedDescription, privacy: .public)")
         }
 
         // Evict oldest thumbnails if the cache exceeds the size limit.
@@ -187,7 +190,7 @@ final class ImageCache {
         do {
             try jpegData.write(to: url, options: .atomic)
         } catch {
-            print("[AgentSmith] Failed to write thumbnail to disk: \(error)")
+            imageCacheLogger.error("Failed to write thumbnail to disk: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -218,7 +221,7 @@ final class ImageCache {
                     forKeys: [.fileSizeKey, .contentModificationDateKey]
                 )
             } catch {
-                print("[AgentSmith] Failed to read cache entry metadata: \(error)")
+                imageCacheLogger.error("Failed to read cache entry metadata: \(error.localizedDescription, privacy: .public)")
                 continue
             }
             let size = UInt64(values.fileSize ?? 0)
@@ -238,7 +241,7 @@ final class ImageCache {
                 try fm.removeItem(at: entry.url)
                 totalSize -= entry.size
             } catch {
-                print("[AgentSmith] Failed to evict cached thumbnail: \(error)")
+                imageCacheLogger.error("Failed to evict cached thumbnail: \(error.localizedDescription, privacy: .public)")
             }
         }
     }

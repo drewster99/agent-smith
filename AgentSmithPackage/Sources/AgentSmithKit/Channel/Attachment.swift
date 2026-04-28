@@ -5,7 +5,7 @@ private let attachmentLogger = Logger(subsystem: "com.agentsmith", category: "At
 
 /// A file attachment on a channel message. Supports any media type.
 /// File data is stored separately on disk; only metadata is persisted in the message JSON.
-public struct Attachment: Identifiable, Codable, Sendable {
+public struct Attachment: Identifiable, Codable, Sendable, Equatable {
     public var id: UUID
     public var filename: String
     public var mimeType: String

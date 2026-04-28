@@ -1,5 +1,8 @@
 import Foundation
+import os
 import SemanticSearch
+
+nonisolated private let memoryStoreLogger = Logger(subsystem: "com.agentsmith", category: "MemoryStore")
 
 /// Search result pairing a memory with its scoring breakdown.
 ///
@@ -382,7 +385,7 @@ public actor MemoryStore {
             threshold: threshold
         )
         let ms = Int(Date().timeIntervalSince(start) * 1000)
-        print("[MemoryStore] searchMemories: \(results.count) results from \(memories.count) memories in \(ms)ms (query: \(query.prefix(60)))")
+        memoryStoreLogger.debug("searchMemories: \(results.count, privacy: .public) results from \(self.memories.count, privacy: .public) memories in \(ms, privacy: .public)ms (query: \(query.prefix(60), privacy: .public))")
         return results
     }
 
@@ -447,7 +450,7 @@ public actor MemoryStore {
             threshold: threshold
         )
         let ms = Int(Date().timeIntervalSince(start) * 1000)
-        print("[MemoryStore] searchTaskSummaries: \(results.count) results from \(taskSummaries.count) summaries in \(ms)ms (query: \(query.prefix(60)))")
+        memoryStoreLogger.debug("searchTaskSummaries: \(results.count, privacy: .public) results from \(self.taskSummaries.count, privacy: .public) summaries in \(ms, privacy: .public)ms (query: \(query.prefix(60), privacy: .public))")
         return results
     }
 
@@ -550,7 +553,7 @@ public actor MemoryStore {
 
         guard !refs.isEmpty else {
             let ms = Int(Date().timeIntervalSince(start) * 1000)
-            print("[MemoryStore] searchAll: 0 results in \(ms)ms (query: \(query.prefix(60)))")
+            memoryStoreLogger.debug("searchAll: 0 results in \(ms, privacy: .public)ms (query: \(query.prefix(60), privacy: .public))")
             return SemanticSearchResults(memories: [], taskSummaries: [])
         }
 
@@ -603,7 +606,7 @@ public actor MemoryStore {
         if trackedAnyRetrieval { onChange?() }
 
         let ms = Int(Date().timeIntervalSince(start) * 1000)
-        print("[MemoryStore] searchAll: \(memoryResults.count) memories + \(taskResults.count) tasks in \(ms)ms (query: \(query.prefix(60)))")
+        memoryStoreLogger.debug("searchAll: \(memoryResults.count, privacy: .public) memories + \(taskResults.count, privacy: .public) tasks in \(ms, privacy: .public)ms (query: \(query.prefix(60), privacy: .public))")
         return SemanticSearchResults(memories: memoryResults, taskSummaries: taskResults)
     }
 

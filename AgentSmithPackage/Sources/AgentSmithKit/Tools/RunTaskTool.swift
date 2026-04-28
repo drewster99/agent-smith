@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+nonisolated private let runTaskLogger = Logger(subsystem: "com.agentsmith", category: "RunTaskTool")
 
 /// Allows Smith to run an existing pending, paused, interrupted, failed, or completed task
 /// without duplicating it. When invoked on a failed or completed task, the task's terminal
@@ -68,7 +71,7 @@ public struct RunTaskTool: AgentTool {
         if autoResolved {
             // Surface the auto-pick so the user sees it in the success banner and
             // a future log search can identify when this fallback fired.
-            print("[RunTaskTool] auto-resolved missing task_id → \(taskID.uuidString) (\"\(task.title)\")")
+            runTaskLogger.notice("auto-resolved missing task_id → \(taskID.uuidString, privacy: .public) (\(task.title, privacy: .public))")
         }
         // Allow pending/paused/interrupted directly. For failed, reset the task back to
         // pending first so the retry runs on the same task ID (preserving history and prior

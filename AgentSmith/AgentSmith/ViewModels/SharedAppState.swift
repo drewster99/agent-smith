@@ -257,7 +257,7 @@ final class SharedAppState {
             }
         } catch {
             let msg = "No bundled defaults (using hardcoded): \(error)"
-            print("[AgentSmith] \(msg)")
+            logger.error("\(msg, privacy: .public)")
             startupError = msg
         }
 
@@ -311,7 +311,7 @@ final class SharedAppState {
         for try await progress in engine.prepare() {
             embeddingPrepareProgress = progress
             let pct = Int(progress.fractionCompleted * 100)
-            print("[AgentSmith] Embedding model: \(progress.phase) \(pct)%")
+            logger.notice("Embedding model: \(String(describing: progress.phase), privacy: .public) \(pct, privacy: .public)%")
         }
         embeddingPrepareProgress = nil
         semanticSearchEngine = engine
@@ -356,7 +356,7 @@ final class SharedAppState {
                 await store.restore(memories: savedMemories, taskSummaries: savedTaskSummaries)
             }
         } catch {
-            print("[AgentSmith] Failed to load memories: \(error)")
+            logger.error("Failed to load memories: \(error.localizedDescription, privacy: .public)")
         }
 
         memoryStore = store
@@ -488,7 +488,7 @@ final class SharedAppState {
         do {
             return try await store.searchMemories(query: query, limit: limit, threshold: 0.0)
         } catch {
-            print("[SharedAppState] Memory search failed: \(error)")
+            logger.error("Memory search failed: \(error.localizedDescription, privacy: .public)")
             throw MemorySearchUIError.underlying(error)
         }
     }
@@ -498,7 +498,7 @@ final class SharedAppState {
         do {
             return try await store.searchTaskSummaries(query: query, limit: limit, threshold: 0.0)
         } catch {
-            print("[SharedAppState] Task summary search failed: \(error)")
+            logger.error("Task summary search failed: \(error.localizedDescription, privacy: .public)")
             throw MemorySearchUIError.underlying(error)
         }
     }

@@ -4,23 +4,37 @@ import SwiftLLMKit
 import AgentSmithKit
 
 /// Inspector panel showing per-agent status: activity, context, tools, and direct messaging.
+///
+/// **Performance design.** The inspector watches ~9 high-frequency view-model dependencies.
+/// To avoid the trap where every body evaluation re-computes ~27 derived values:
+///
+/// 1. The parent owns three per-role `@State` message buckets, populated once per
+///    `viewModel.messages` tick. Each child card receives only its own slice as a direct
+///    `@State` value.
+/// 2. Each `RoleAgentCard` owns its own cached `AgentRoleData?` and its own narrow
+///    `.onChange` watchers (one per source dictionary, narrowed to that role's key).
+///    The card body reads only the cached `@State` — never `viewModel.inspectorStore.*`
+///    or `viewModel.*` directly. SwiftUI's view-diff short-circuits AgentCard's body when
+///    the cached struct hasn't changed.
+/// 3. Cross-role keys (e.g. `turnsByRole`) still cause every card's outer body to
+///    re-evaluate (the Observation framework propagates whole-property changes), but the
+///    only work is "read 1 stable @State, hand to child View, SwiftUI diffs and skips."
+///    The heavy AgentCard body re-eval is avoided when the per-role narrowing
+///    (`turnsByRole[role]`) didn't change.
 struct InspectorView: View {
     let viewModel: AppViewModel
 
-    // MARK: - Cached Data
+    // Per-role message slices. Populated once when `viewModel.messages` ticks; each card
+    // watches only its own slice, so a Brown-only message doesn't dirty Smith or Jones.
+    // The summarizer slice is also bucketed here so SummarizerAgentCard doesn't need to
+    // run its own `viewModel.messages` watcher — having two watchers on the same source
+    // array led to SwiftUI's "tried to update multiple times per frame" warnings.
+    @State private var smithMessages: [ChannelMessage] = []
+    @State private var brownMessages: [ChannelMessage] = []
+    @State private var jonesMessages: [ChannelMessage] = []
+    @State private var summarizerMessages: [ChannelMessage] = []
 
-    /// Cached data for each agent role (excluding summarizer). Updated only when dependencies change.
-    @State private var smithData: AgentRoleData?
-    @State private var brownData: AgentRoleData?
-    @State private var jonesData: AgentRoleData?
-
-    /// Cached data for summarizer.
-    @State private var summarizerData: SummarizerData?
-
-    /// Buckets channel messages by their sending agent role in one pass. The inspector
-    /// renders four agent cards per body evaluation; without this bucketing each card's
-    /// `roleMessages` filter scanned the full message array independently. Single-pass
-    /// keeps the inspector cheap on long sessions.
+    /// Buckets channel messages by their sending agent role in one pass.
     static func bucketMessagesByRole(_ messages: [ChannelMessage]) -> [AgentRole: [ChannelMessage]] {
         var buckets: [AgentRole: [ChannelMessage]] = [:]
         for message in messages {
@@ -29,18 +43,6 @@ struct InspectorView: View {
             }
         }
         return buckets
-    }
-
-    /// Recomputes all cached data from view model sources.
-    /// Called on appear and when dependencies change.
-    private func updateCachedData() {
-        let store = viewModel.inspectorStore
-        let messagesByRole = Self.bucketMessagesByRole(viewModel.messages)
-
-        smithData = AgentRoleData.create(for: .smith, messagesByRole: messagesByRole, store: store, viewModel: viewModel)
-        brownData = AgentRoleData.create(for: .brown, messagesByRole: messagesByRole, store: store, viewModel: viewModel)
-        jonesData = AgentRoleData.create(for: .jones, messagesByRole: messagesByRole, store: store, viewModel: viewModel)
-        summarizerData = SummarizerData.create(store: store, viewModel: viewModel)
     }
 
     var body: some View {
@@ -56,146 +58,40 @@ struct InspectorView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    // Smith Card
-                    if let data = smithData {
-                        AgentCard(
-                            viewModel: viewModel,
-                            role: data.role,
-                            isProcessing: data.isProcessing,
-                            hasActivity: data.hasActivity,
-                            availableTools: data.availableTools,
-                            recentMessages: data.recentMessages,
-                            recentToolUses: data.recentToolUses,
-                            contextMessages: data.contextMessages,
-                            llmTurns: data.llmTurns,
-                            modelConfig: data.modelConfig,
-                            evaluationRecords: data.evaluationRecords,
-                            currentSystemPrompt: data.currentSystemPrompt,
-                            pollInterval: data.pollInterval,
-                            maxToolCalls: data.maxToolCalls,
-                            speechController: viewModel.shared.speechController,
-                            onSendDirectMessage: { text in
-                                Task { await viewModel.sendDirectMessage(to: data.role, text: text) }
-                            },
-                            onUpdateSystemPrompt: { prompt in
-                                Task { await viewModel.updateSystemPrompt(for: data.role, prompt: prompt) }
-                            },
-                            onUpdatePollInterval: { interval in
-                                Task { await viewModel.updatePollInterval(for: data.role, interval: interval) }
-                            },
-                            onUpdateMaxToolCalls: { count in
-                                Task { await viewModel.updateMaxToolCalls(for: data.role, count: count) }
-                            }
-                        )
-                    }
-
-                    // Brown Card
-                    if let data = brownData {
-                        AgentCard(
-                            viewModel: viewModel,
-                            role: data.role,
-                            isProcessing: data.isProcessing,
-                            hasActivity: data.hasActivity,
-                            availableTools: data.availableTools,
-                            recentMessages: data.recentMessages,
-                            recentToolUses: data.recentToolUses,
-                            contextMessages: data.contextMessages,
-                            llmTurns: data.llmTurns,
-                            modelConfig: data.modelConfig,
-                            evaluationRecords: data.evaluationRecords,
-                            currentSystemPrompt: data.currentSystemPrompt,
-                            pollInterval: data.pollInterval,
-                            maxToolCalls: data.maxToolCalls,
-                            speechController: viewModel.shared.speechController,
-                            onSendDirectMessage: { text in
-                                Task { await viewModel.sendDirectMessage(to: data.role, text: text) }
-                            },
-                            onUpdateSystemPrompt: { prompt in
-                                Task { await viewModel.updateSystemPrompt(for: data.role, prompt: prompt) }
-                            },
-                            onUpdatePollInterval: { interval in
-                                Task { await viewModel.updatePollInterval(for: data.role, interval: interval) }
-                            },
-                            onUpdateMaxToolCalls: { count in
-                                Task { await viewModel.updateMaxToolCalls(for: data.role, count: count) }
-                            }
-                        )
-                    }
-
-                    // Jones Card
-                    if let data = jonesData {
-                        AgentCard(
-                            viewModel: viewModel,
-                            role: data.role,
-                            isProcessing: data.isProcessing,
-                            hasActivity: data.hasActivity,
-                            availableTools: data.availableTools,
-                            recentMessages: data.recentMessages,
-                            recentToolUses: data.recentToolUses,
-                            contextMessages: data.contextMessages,
-                            llmTurns: data.llmTurns,
-                            modelConfig: data.modelConfig,
-                            evaluationRecords: data.evaluationRecords,
-                            currentSystemPrompt: data.currentSystemPrompt,
-                            pollInterval: data.pollInterval,
-                            maxToolCalls: data.maxToolCalls,
-                            speechController: viewModel.shared.speechController,
-                            onSendDirectMessage: { text in
-                                Task { await viewModel.sendDirectMessage(to: data.role, text: text) }
-                            },
-                            onUpdateSystemPrompt: { prompt in
-                                Task { await viewModel.updateSystemPrompt(for: data.role, prompt: prompt) }
-                            },
-                            onUpdatePollInterval: { interval in
-                                Task { await viewModel.updatePollInterval(for: data.role, interval: interval) }
-                            },
-                            onUpdateMaxToolCalls: { count in
-                                Task { await viewModel.updateMaxToolCalls(for: data.role, count: count) }
-                            }
-                        )
-                    }
-
-                    // Summarizer Card
-                    if let data = summarizerData {
-                        SummarizerCard(
-                            viewModel: viewModel,
-                            messages: data.messages,
-                            isProcessing: data.isProcessing,
-                            currentSystemPrompt: data.currentSystemPrompt,
-                            pollInterval: data.pollInterval,
-                            maxToolCalls: data.maxToolCalls,
-                            speechController: viewModel.shared.speechController,
-                            onUpdateSystemPrompt: { prompt in
-                                Task { await viewModel.updateSystemPrompt(for: .summarizer, prompt: prompt) }
-                            },
-                            onUpdatePollInterval: { interval in
-                                Task { await viewModel.updatePollInterval(for: .summarizer, interval: interval) }
-                            },
-                            onUpdateMaxToolCalls: { count in
-                                Task { await viewModel.updateMaxToolCalls(for: .summarizer, count: count) }
-                            }
-                        )
-                    }
+                    RoleAgentCard(viewModel: viewModel, role: .smith, roleMessages: smithMessages)
+                    RoleAgentCard(viewModel: viewModel, role: .brown, roleMessages: brownMessages)
+                    RoleAgentCard(viewModel: viewModel, role: .jones, roleMessages: jonesMessages)
+                    SummarizerAgentCard(viewModel: viewModel, summarizerMessages: summarizerMessages)
                 }
             }
         }
         .inspectorColumnWidth(min: 280, ideal: 320, max: 460)
-        .onAppear(perform: updateCachedData)
-        .onChange(of: viewModel.messages) { _, _ in updateCachedData() }
-        .onChange(of: viewModel.inspectorStore.turnsByRole) { _, _ in updateCachedData() }
-        .onChange(of: viewModel.agentPollIntervals) { _, _ in updateCachedData() }
-        .onChange(of: viewModel.agentMaxToolCalls) { _, _ in updateCachedData() }
-        .onChange(of: viewModel.processingRoles) { _, _ in updateCachedData() }
-        .onChange(of: viewModel.resolvedAgentConfigs) { _, _ in updateCachedData() }
-        .onChange(of: viewModel.agentToolNames) { _, _ in updateCachedData() }
+        .task { rebucket() }
+        .onChange(of: viewModel.messages) { _, _ in rebucket() }
+    }
+
+    /// Re-buckets `viewModel.messages` and assigns each per-role @State only if its slice
+    /// actually changed. Mutations are deferred via `DispatchQueue.main.async` per the
+    /// project rule (no synchronous @State mutation inside .onChange / .task closures).
+    private func rebucket() {
+        let buckets = Self.bucketMessagesByRole(viewModel.messages)
+        let nextSmith = buckets[.smith] ?? []
+        let nextBrown = buckets[.brown] ?? []
+        let nextJones = buckets[.jones] ?? []
+        let nextSummarizer = buckets[.summarizer] ?? []
+        DispatchQueue.main.async {
+            if smithMessages != nextSmith { smithMessages = nextSmith }
+            if brownMessages != nextBrown { brownMessages = nextBrown }
+            if jonesMessages != nextJones { jonesMessages = nextJones }
+            if summarizerMessages != nextSummarizer { summarizerMessages = nextSummarizer }
+        }
     }
 }
 
 // MARK: - Cached Data Structures
 
-/// Pre-computed data for a single agent role. This struct is lightweight and
-/// Equatable so SwiftUI can efficiently detect changes and avoid unnecessary
-/// body re-evaluations.
+/// Pre-computed data for a single agent role. Equatable so SwiftUI can short-circuit
+/// AgentCard's body re-evaluation when the cached struct is unchanged.
 struct AgentRoleData: Equatable {
     let role: AgentRole
     let roleMessages: [ChannelMessage]
@@ -211,16 +107,120 @@ struct AgentRoleData: Equatable {
     let evaluationRecords: [EvaluationRecord]
     let isProcessing: Bool
     let modelConfig: ModelConfiguration?
+}
 
-    /// Creates cached data for a specific role from view model sources.
-    static func create(
-        for role: AgentRole,
-        messagesByRole: [AgentRole: [ChannelMessage]],
-        store: AgentInspectorStore,
-        viewModel: AppViewModel
-    ) -> AgentRoleData {
-        let roleMessages = messagesByRole[role] ?? []
-        return AgentRoleData(
+/// Pre-computed data for the summarizer role.
+struct SummarizerData: Equatable {
+    let currentSystemPrompt: String
+    let pollInterval: TimeInterval
+    let maxToolCalls: Int
+    let isProcessing: Bool
+    let messages: [ChannelMessage]
+}
+
+// MARK: - Per-Role Card Wrappers
+//
+// Each wrapper owns its own cached `AgentRoleData?` (or `SummarizerData?`) populated only
+// via `.onChange` callbacks that narrow to a single key per source dictionary. The body
+// reads ONLY the cache — never `viewModel.*` or `viewModel.inspectorStore.*` directly —
+// so AgentCard's body re-evaluation is gated by the cache changing, which only happens
+// when this role's specific slice of any source actually changed.
+
+/// Wraps `AgentCard` with per-role @State caching and narrowed dependency watchers.
+private struct RoleAgentCard: View {
+    @Bindable var viewModel: AppViewModel
+    let role: AgentRole
+    let roleMessages: [ChannelMessage]
+
+    @State private var cached: AgentRoleData?
+
+    var body: some View {
+        // The Group wrapper gives the view-modifier chain (.onChange) a stable parent View
+        // to attach to even when the conditional `if let cached` is unsatisfied.
+        Group {
+            if let cached {
+                cardView(for: cached)
+            }
+        }
+        // Each .onChange watcher narrows to a per-role key where possible. Cross-role
+        // dictionaries (`turnsByRole`, `liveContexts`) still cause every card's outer body
+        // to re-evaluate when any role changes (Observation propagates whole-property
+        // changes), but the `[role]` subscript narrows the *callback* — recompute() fires
+        // only when this role's entry differs.
+        //
+        // Initial population is via `.task`, not `.onChange(initial: true)`. Two synchronous
+        // initial-fires per modifier (one for each watcher) on first body eval was
+        // contributing to SwiftUI's "tried to update multiple times per frame" warnings on
+        // the Array<ChannelMessage>-typed watchers.
+        .task { recompute() }
+        .onChange(of: roleMessages)                                                  { _, _ in recompute() }
+        .onChange(of: viewModel.inspectorStore.turnsByRole[role])                    { _, _ in recompute() }
+        .onChange(of: viewModel.inspectorStore.liveContexts[role])                   { _, _ in recompute() }
+        .onChange(of: role == .jones ? viewModel.inspectorStore.evaluationRecords.count : 0)
+                                                                                     { _, _ in recompute() }
+        .onChange(of: viewModel.processingRoles.contains(role))                      { _, _ in recompute() }
+        .onChange(of: viewModel.agentPollIntervals[role])                            { _, _ in recompute() }
+        .onChange(of: viewModel.agentMaxToolCalls[role])                             { _, _ in recompute() }
+        .onChange(of: viewModel.agentToolNames[role])                                { _, _ in recompute() }
+        .onChange(of: viewModel.resolvedAgentConfigs[role])                          { _, _ in recompute() }
+    }
+
+    /// Helper extracted to keep the AgentCard call out of the body's `@ViewBuilder`
+    /// type-checking context. With 17 parameters and four trailing closures, inlining the
+    /// call inside `body` blew the type-checker's exponential overload-resolution budget.
+    @ViewBuilder
+    private func cardView(for cached: AgentRoleData) -> some View {
+        let speechController = viewModel.shared.speechController
+        AgentCard(
+            viewModel: viewModel,
+            role: cached.role,
+            isProcessing: cached.isProcessing,
+            hasActivity: cached.hasActivity,
+            availableTools: cached.availableTools,
+            recentMessages: cached.recentMessages,
+            recentToolUses: cached.recentToolUses,
+            contextMessages: cached.contextMessages,
+            llmTurns: cached.llmTurns,
+            modelConfig: cached.modelConfig,
+            evaluationRecords: cached.evaluationRecords,
+            currentSystemPrompt: cached.currentSystemPrompt,
+            pollInterval: cached.pollInterval,
+            maxToolCalls: cached.maxToolCalls,
+            speechController: speechController,
+            onSendDirectMessage: makeSendMessageHandler(role: cached.role),
+            onUpdateSystemPrompt: makeUpdateSystemPromptHandler(role: cached.role),
+            onUpdatePollInterval: makeUpdatePollIntervalHandler(role: cached.role),
+            onUpdateMaxToolCalls: makeUpdateMaxToolCallsHandler(role: cached.role)
+        )
+    }
+
+    private func makeSendMessageHandler(role: AgentRole) -> (String) -> Void {
+        { [viewModel] text in
+            Task { await viewModel.sendDirectMessage(to: role, text: text) }
+        }
+    }
+
+    private func makeUpdateSystemPromptHandler(role: AgentRole) -> (String) -> Void {
+        { [viewModel] prompt in
+            Task { await viewModel.updateSystemPrompt(for: role, prompt: prompt) }
+        }
+    }
+
+    private func makeUpdatePollIntervalHandler(role: AgentRole) -> (TimeInterval) -> Void {
+        { [viewModel] interval in
+            Task { await viewModel.updatePollInterval(for: role, interval: interval) }
+        }
+    }
+
+    private func makeUpdateMaxToolCallsHandler(role: AgentRole) -> (Int) -> Void {
+        { [viewModel] count in
+            Task { await viewModel.updateMaxToolCalls(for: role, count: count) }
+        }
+    }
+
+    private func recompute() {
+        let store = viewModel.inspectorStore
+        let next = AgentRoleData(
             role: role,
             roleMessages: roleMessages,
             recentMessages: Array(roleMessages.suffix(5).reversed()),
@@ -236,25 +236,75 @@ struct AgentRoleData: Equatable {
             isProcessing: viewModel.processingRoles.contains(role),
             modelConfig: viewModel.resolvedAgentConfigs[role]
         )
+        // Skip the assignment if the struct didn't change — keeps body output stable
+        // and lets SwiftUI's diff short-circuit AgentCard's body. Project rule: defer
+        // the @State mutation out of .onChange via DispatchQueue.main.async.
+        DispatchQueue.main.async {
+            if cached != next { cached = next }
+        }
     }
 }
 
-/// Pre-computed data for the summarizer role.
-struct SummarizerData: Equatable {
-    let currentSystemPrompt: String
-    let pollInterval: TimeInterval
-    let maxToolCalls: Int
-    let isProcessing: Bool
-    let messages: [ChannelMessage]
+/// Wraps `SummarizerCard` with @State caching and narrowed dependency watchers.
+///
+/// `summarizerMessages` is the parent's pre-bucketed slice (sender == `.agent(.summarizer)`),
+/// so this card watches only its own slice — not the full `viewModel.messages` array — and
+/// avoids fighting with the parent's watcher for the same source.
+private struct SummarizerAgentCard: View {
+    @Bindable var viewModel: AppViewModel
+    let summarizerMessages: [ChannelMessage]
 
-    static func create(store: AgentInspectorStore, viewModel: AppViewModel) -> SummarizerData {
-        SummarizerData(
+    @State private var cached: SummarizerData?
+
+    var body: some View {
+        Group {
+            if let cached {
+                cardView(for: cached)
+            }
+        }
+        .task { recompute() }
+        .onChange(of: summarizerMessages)                              { _, _ in recompute() }
+        .onChange(of: viewModel.processingRoles.contains(.summarizer)) { _, _ in recompute() }
+        .onChange(of: viewModel.agentPollIntervals[.summarizer])       { _, _ in recompute() }
+        .onChange(of: viewModel.agentMaxToolCalls[.summarizer])        { _, _ in recompute() }
+    }
+
+    @ViewBuilder
+    private func cardView(for cached: SummarizerData) -> some View {
+        let speechController = viewModel.shared.speechController
+        SummarizerCard(
+            viewModel: viewModel,
+            messages: cached.messages,
+            isProcessing: cached.isProcessing,
+            currentSystemPrompt: cached.currentSystemPrompt,
+            pollInterval: cached.pollInterval,
+            maxToolCalls: cached.maxToolCalls,
+            speechController: speechController,
+            onUpdateSystemPrompt: { [viewModel] prompt in
+                Task { await viewModel.updateSystemPrompt(for: .summarizer, prompt: prompt) }
+            },
+            onUpdatePollInterval: { [viewModel] interval in
+                Task { await viewModel.updatePollInterval(for: .summarizer, interval: interval) }
+            },
+            onUpdateMaxToolCalls: { [viewModel] count in
+                Task { await viewModel.updateMaxToolCalls(for: .summarizer, count: count) }
+            }
+        )
+    }
+
+    private func recompute() {
+        let store = viewModel.inspectorStore
+        let next = SummarizerData(
             currentSystemPrompt: store.systemPrompt(for: .summarizer),
             pollInterval: viewModel.agentPollIntervals[.summarizer] ?? 5,
             maxToolCalls: viewModel.agentMaxToolCalls[.summarizer] ?? 100,
             isProcessing: viewModel.processingRoles.contains(.summarizer),
-            messages: viewModel.messages
+            messages: summarizerMessages
         )
+        // Project rule: defer @State mutation out of .onChange via DispatchQueue.main.async.
+        DispatchQueue.main.async {
+            if cached != next { cached = next }
+        }
     }
 }
 

@@ -1,5 +1,8 @@
 import SwiftUI
 import SwiftLLMKit
+import os
+
+nonisolated private let providerMgmtLogger = Logger(subsystem: "com.agentsmith", category: "ProviderManagement")
 
 /// Settings tab listing built-in providers (top, fixed) and custom providers (below).
 ///
@@ -337,7 +340,7 @@ private struct BuiltInProviderRow: View {
                             }
                         } catch {
                             // Best-effort undo — log only.
-                            print("[BuiltInProviderRow] undo failed: \(error)")
+                            providerMgmtLogger.error("undo failed: \(error.localizedDescription, privacy: .public)")
                         }
                     }
                 }

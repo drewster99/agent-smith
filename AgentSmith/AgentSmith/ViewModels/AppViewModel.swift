@@ -184,6 +184,7 @@ final class AppViewModel {
         // Load per-session settings (assignments, tunings, flags) if they exist.
         do {
             if let state = try await persistenceManager.loadSessionState() {
+                logger.notice("loadPersistedState: session=\(self.session.name, privacy: .public) loaded autoRunNextTask=\(state.autoRunNextTask, privacy: .public) autoRunInterruptedTasks=\(state.autoRunInterruptedTasks, privacy: .public)")
                 if !state.agentAssignments.isEmpty {
                     agentAssignments = state.agentAssignments
                 }
@@ -200,6 +201,7 @@ final class AppViewModel {
                 autoRunNextTask = state.autoRunNextTask
                 autoRunInterruptedTasks = state.autoRunInterruptedTasks
             } else {
+                logger.notice("loadPersistedState: session=\(self.session.name, privacy: .public) no state on disk — using defaults autoRunNextTask=true autoRunInterruptedTasks=false")
                 // No per-session state — fall back to the shared default assignments (from
                 // bundled defaults). New sessions get this the first time they're opened.
                 agentAssignments = shared.defaultAgentAssignments
@@ -214,7 +216,7 @@ final class AppViewModel {
         for (role, configID) in agentAssignments {
             if !validConfigIDs.contains(configID) {
                 agentAssignments[role] = nil
-                print("[AgentSmith] Cleared stale assignment in session \(session.name) for \(role.rawValue) → \(configID)")
+                logger.notice("Cleared stale assignment in session \(self.session.name, privacy: .public) for \(role.rawValue, privacy: .public) → \(configID, privacy: .public)")
             }
         }
 
@@ -240,10 +242,10 @@ final class AppViewModel {
             }
             if let chosen = nameMatch {
                 agentAssignments[role] = chosen.id
-                print("[AgentSmith] Auto-assigned \(role.rawValue) → \(chosen.name) (\(chosen.id)) [name match] in session \(session.name)")
+                logger.notice("Auto-assigned \(role.rawValue, privacy: .public) → \(chosen.name, privacy: .public) (\(chosen.id, privacy: .public)) [name match] in session \(self.session.name, privacy: .public)")
             } else if let fallback = validConfigs.first {
                 agentAssignments[role] = fallback.id
-                print("[AgentSmith] Auto-assigned \(role.rawValue) → \(fallback.name) (\(fallback.id)) [first-valid fallback; no \(roleName)-named config found] in session \(session.name)")
+                logger.notice("Auto-assigned \(role.rawValue, privacy: .public) → \(fallback.name, privacy: .public) (\(fallback.id, privacy: .public)) [first-valid fallback; no \(roleName, privacy: .public)-named config found] in session \(self.session.name, privacy: .public)")
             }
         }
 
@@ -270,7 +272,7 @@ final class AppViewModel {
                 }
             }
             if strippedCount > 0 {
-                print("[AgentSmith] Stripped stale file_write diff metadata from \(strippedCount) message(s) in session \(session.name); re-saving channel log.")
+                logger.notice("Stripped stale file_write diff metadata from \(strippedCount, privacy: .public) message(s) in session \(self.session.name, privacy: .public); re-saving channel log.")
                 do {
                     try await persistenceManager.saveChannelLog(savedMessages)
                 } catch {
@@ -281,7 +283,7 @@ final class AppViewModel {
             persistedHistoryCount = savedMessages.count
         } catch {
             let msg = "Failed to load channel log: \(error)"
-            print("[AgentSmith] \(msg)")
+            logger.error("\(msg, privacy: .public)")
             shared.startupError = msg
         }
 
@@ -322,7 +324,7 @@ final class AppViewModel {
             }
         } catch {
             let msg = "Failed to load tasks: \(error)"
-            print("[AgentSmith] \(msg)")
+            logger.error("\(msg, privacy: .public)")
             shared.startupError = msg
         }
 
@@ -399,7 +401,7 @@ final class AppViewModel {
             engine = try await shared.ensureSemanticEngine()
         } catch {
             let msg = "Failed to prepare embedding model: \(error.localizedDescription)"
-            print("[AgentSmith] \(msg)")
+            logger.error("\(msg, privacy: .public)")
             shared.startupError = msg
             return
         }
@@ -410,7 +412,7 @@ final class AppViewModel {
             sharedMemoryStore = try await shared.ensureMemoryStore()
         } catch {
             let msg = "Failed to prepare memory store: \(error.localizedDescription)"
-            print("[AgentSmith] \(msg)")
+            logger.error("\(msg, privacy: .public)")
             shared.startupError = msg
             return
         }
@@ -614,18 +616,19 @@ final class AppViewModel {
             if !trimmed.isEmpty { fileMsg = trimmed }
         }
         let message = envMsg ?? defaultsMsg ?? fileMsg
-        print("[autopilot] env=\(envMsg ?? "nil") defaults=\(defaultsMsg ?? "nil") file=\(fileMsg ?? "nil") chosen=\(message ?? "nil")")
+        let autopilotLogger = Logger(subsystem: "com.agentsmith", category: "autopilot")
+        autopilotLogger.notice("env=\(envMsg ?? "nil", privacy: .public) defaults=\(defaultsMsg ?? "nil", privacy: .public) file=\(fileMsg ?? "nil", privacy: .public) chosen=\(message ?? "nil", privacy: .public)")
         guard let message, !message.isEmpty else { return }
         let delaySeconds: Double = {
             if let raw = env["AGENT_SMITH_AUTOPILOT_DELAY"], let parsed = Double(raw) { return parsed }
             let dv = defaults.double(forKey: "AGENT_SMITH_AUTOPILOT_DELAY")
             return dv > 0 ? dv : 10.0
         }()
-        print("[autopilot] scheduling fake user message in \(delaySeconds)s: \(message)")
+        autopilotLogger.notice("scheduling fake user message in \(delaySeconds, privacy: .public)s: \(message, privacy: .public)")
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
             guard let self else { return }
-            print("[autopilot] sending fake user message: \(message)")
+            autopilotLogger.notice("sending fake user message: \(message, privacy: .public)")
             self.inputText = message
             await self.sendMessage()
         }
@@ -960,7 +963,7 @@ final class AppViewModel {
     private func flushPersistence() async {
         await channelLogWriter.enqueue(allPersistedMessages)
         await tasksWriter.enqueue(tasks)
-        await sessionStateWriter.enqueue(SessionState(
+        let finalState = SessionState(
             agentAssignments: agentAssignments,
             agentPollIntervals: agentPollIntervals,
             agentMaxToolCalls: agentMaxToolCalls,
@@ -968,7 +971,9 @@ final class AppViewModel {
             toolsEnabled: toolsEnabled,
             autoRunNextTask: autoRunNextTask,
             autoRunInterruptedTasks: autoRunInterruptedTasks
-        ))
+        )
+        logger.notice("flushPersistence: session=\(self.session.name, privacy: .public) writing autoRunNextTask=\(finalState.autoRunNextTask, privacy: .public) autoRunInterruptedTasks=\(finalState.autoRunInterruptedTasks, privacy: .public)")
+        await sessionStateWriter.enqueue(finalState)
         await channelLogWriter.flush()
         await tasksWriter.flush()
         await sessionStateWriter.flush()
@@ -1005,7 +1010,7 @@ final class AppViewModel {
             do {
                 data = try Data(contentsOf: url)
             } catch {
-                print("[AgentSmith] Failed to read attachment \(url.lastPathComponent): \(error)")
+                logger.error("Failed to read attachment \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 continue
             }
             let mimeType = Self.mimeType(for: url)
@@ -1168,13 +1173,16 @@ final class AppViewModel {
         Task { await writer.enqueue(tasksToSave) }
     }
 
-    private func persistSessionStateAsync() {
+    private func persistSessionStateAsync(callerFile: String = #fileID, callerLine: Int = #line, callerFunction: String = #function) {
         // Suppress all writes while loadPersistedState is applying values from
         // disk. The serializer would also coalesce these into one final write,
         // but skipping the enqueues entirely avoids dirtying the writer's
         // pending slot with intermediate snapshots that we know aren't real
         // user intent.
-        guard !isApplyingPersistedState else { return }
+        guard !isApplyingPersistedState else {
+            logger.debug("persistSessionStateAsync SUPPRESSED (applyingPersistedState) caller=\(callerFunction, privacy: .public)@\(callerFile, privacy: .public):\(callerLine, privacy: .public)")
+            return
+        }
 
         let state = SessionState(
             agentAssignments: agentAssignments,
@@ -1185,6 +1193,7 @@ final class AppViewModel {
             autoRunNextTask: autoRunNextTask,
             autoRunInterruptedTasks: autoRunInterruptedTasks
         )
+        logger.notice("persistSessionStateAsync: session=\(self.session.name, privacy: .public) writing autoRunNextTask=\(state.autoRunNextTask, privacy: .public) autoRunInterruptedTasks=\(state.autoRunInterruptedTasks, privacy: .public) caller=\(callerFunction, privacy: .public)@\(callerFile, privacy: .public):\(callerLine, privacy: .public)")
         let writer = sessionStateWriter
         Task { await writer.enqueue(state) }
     }

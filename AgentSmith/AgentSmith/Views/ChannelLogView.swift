@@ -279,15 +279,23 @@ struct ChannelLogView: View, Equatable {
                         contentHeight: geometry.contentSize.height
                     )
                 } action: { old, new in
-                    isAtBottom = new.isNearBottom
-                    // Content grew but user didn't scroll -> keep auto-scroll on
-                    // Content same but user scrolled away -> disable auto-scroll
-                    if old.isNearBottom && !new.isNearBottom
-                        && new.contentHeight == old.contentHeight {
-                        autoScrollEnabled = false
-                    }
-                    if new.isNearBottom {
-                        autoScrollEnabled = true
+                    // Project rule: defer @State mutation out of scroll-geometry actions
+                    // via DispatchQueue.main.async. The action callback fires rapidly during
+                    // ScrollView animation/inertia; mutating @State synchronously triggers
+                    // SwiftUI's "OnScrollGeometryChange tried to update multiple times per
+                    // frame" warning when the resulting body re-evaluation re-attaches the
+                    // modifier mid-frame.
+                    DispatchQueue.main.async {
+                        isAtBottom = new.isNearBottom
+                        // Content grew but user didn't scroll -> keep auto-scroll on
+                        // Content same but user scrolled away -> disable auto-scroll
+                        if old.isNearBottom && !new.isNearBottom
+                            && new.contentHeight == old.contentHeight {
+                            autoScrollEnabled = false
+                        }
+                        if new.isNearBottom {
+                            autoScrollEnabled = true
+                        }
                     }
                 }
                 .onChange(of: messages.count) {
@@ -956,9 +964,16 @@ private struct MessageRow: View {
             return
         }
         if isDir.boolValue {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        } else {
+            // Folder: open it in Finder showing its contents.
             NSWorkspace.shared.open(url)
+        } else {
+            // File: present Quick Look preview rather than opening the default app.
+            // See MarkdownText.swift for rationale on the qlmanage shell-out vs.
+            // QLPreviewPanel — same trade-off, same one-line answer.
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/qlmanage")
+            task.arguments = ["-p", expanded]
+            try? task.run()
         }
     }
 

@@ -46,7 +46,7 @@ When all three agent roles have valid, assigned configurations on launch, skip t
 ### Copy button for channel messages ✅
 Text selection in the channel log is limited to one line at a time because each line is a separate SwiftUI `Text` view. Add a copy button (or context menu item) to each message row that copies the full message content to the clipboard, so users can easily grab multi-line output without fighting the selection model.
 
-**Implemented:** Copy button exists on hover. Known low-priority UX issue: the button disappears when the cursor moves toward it, making it difficult to click.
+**Implemented:** Copy button exists on hover. The earlier hover-disappearance issue (button vanishing when the cursor moved toward it) is fixed.
 
 ### Completed tasks must always include a final result
 When a task reaches `completed` status, its `result` field should contain a clear, meaningful summary of what was accomplished. Currently, completed tasks can end up with an empty or missing result — making it hard for the user (and Smith) to understand what was done without digging through the channel log. Enforce that `accept_work` requires a non-empty result, and ensure Brown's `task_complete` call always provides one.
@@ -114,6 +114,20 @@ Add a tool for both Smith and Brown to fetch full task details by ID, including 
 
 **Implemented:** `GetTaskDetailsTool` available to both Smith and Brown via their respective behavior tool lists.
 
+### Per-tool unit tests
+Today only `GhTool.firstForbiddenSequence` has direct test coverage (`GhToolArgsFilterTests`). All 36 tools under `AgentSmithKit/Tools/` are otherwise uncovered. Tools are testable by design — `AgentTool` is a protocol, `execute()` returns a `ToolExecutionResult` value, and `ToolContext` is a struct of injectable closures — but three friction points need to be solved before per-tool tests scale:
+
+1. **`ToolContext` has ~30 closure parameters.** Most have defaults, but `memoryStore`, `taskStore`, `channel`, `spawnBrown`, `terminateAgent`, `abort`, `agentRoleForID` are required, and three default to `fatalError(...)` (`setToolExecutionStatus`, `hasToolSucceeded`, `hasToolFailed`). Solution: a `TestToolContext.make(...)` factory that returns a sane default and lets each test override only what it touches.
+2. **`MemoryStore` requires a real `SemanticSearchEngine`** which loads MLX weights. That's why `MemoryStoreIntegrationTests` is `--skip`'d in `swift test`. Most tools never call `memoryStore` — they just hold a reference. Solution: a fast-path `MemoryStore` constructor (or no-op engine adapter) that skips MLX so the bulk of tool tests can run in microseconds.
+3. **Subprocess-running tools** (`BashTool`, `GhTool`, `RunAppleScriptTool`, `KillProcessTool`, `ListProcessesTool`) are best covered by extracting their pure logic (arg validation, output parsing) into testable helpers, the same template `GhToolArgsFilterTests` follows.
+
+**Implementation waves:**
+- **Wave 1 (no runtime deps):** `GlobTool`, `GrepTool`, `CurrentTimeTool`, `FileReadTool`, `FileWriteTool`, `FileEditTool`. Each takes a path + args and returns a string; tests use a per-test temp directory.
+- **Wave 2 (TaskStore-only):** `CreateTaskTool`, `ListTasksTool`, `GetTaskDetailsTool`, `AmendTaskTool`, `UpdateTaskTool`, `ManageTaskDispositionTool`, `TaskUpdateTool`, `TaskCompleteTool`, `TaskAcknowledgedTool`. `TaskStore` is a regular actor — easy to construct and inspect.
+- **Wave 3 (callback-driven):** `AbortTool`, `MessageUserTool`, `MessageBrownTool`, `ReplyToUserTool`, `ReviewWorkTool`, `TerminateAgentTool`, `RunTaskTool`, `ScheduleTaskActionTool`, `ScheduleWake`/`Cancel`/`Reschedule`/`List` tools. Each test asserts the right closure was invoked with the right args.
+- **Wave 4 (subprocess pure-logic only):** `BashTool` arg validation, `RunAppleScriptTool` serialization, `KillProcessTool` pid validation, `ListProcessesTool` output parsing. End-to-end subprocess execution stays out of the unit suite.
+- **Integration-only (excluded from `swift test`):** `SaveMemoryTool`, `SearchMemoryTool` — covered by the existing `MemoryStoreIntegrationTests` xcodebuild path.
+
 ### Web Search tool
 Given a query and optional `allowed_domains` and `blocked_domains` arrays, perform a web search. Only return results from `allowed_domains` (if non-empty) and exclude results from `blocked_domains` (if non-empty).
 
@@ -161,7 +175,7 @@ Add a setting (persisted in UserDefaults) that controls whether the system autom
 
 **Implemented:** `AppViewModel.autoRunNextTask` (defaults to `true`, persisted in UserDefaults). Passed to `OrchestrationRuntime` at init, which forwards it to `SmithBehavior.systemPrompt(autoAdvanceEnabled:)` — the auto-advance instructions in Steps 6, the Key Constraints table, and the `create_task` docs are all conditional on the setting. `ReviewWorkTool` also includes advance guidance in its tool result when enabled. UI toggle added in Settings → Account tab under a "Behavior" section. Takes effect on next start (system prompt is generated at agent creation time).
 
-**Known issue (deferred, minor):** `autoRunNextTask` sometimes flips back ON after the user explicitly turns it OFF. Repro is intermittent — possibly tied to settings reload, session switch, or post-task-completion side effects. Suspects already ruled out: the persistence-race fix in `7dcf20b` did not eliminate it. Next step when revisited: capture the exact event sequence (toggle off → observe re-enable) with a value-change watch on `AppViewModel.autoRunNextTask` to identify the offending writer. Skipped for now — workaround is to toggle it off again when noticed.
+**Known issue (under instrumentation):** `autoRunNextTask` sometimes flips back ON after the user explicitly turns it OFF. Repro is intermittent. The persistence-race fix in `7dcf20b` did not eliminate it. As of 2026-04-28, three log points are in place to capture the next occurrence: every change to the property (with stack snapshot, in `logAutoRunChange`), every load (the value coming off disk, in `loadPersistedState`), and every write enqueued (with caller file/line, in `persistSessionStateAsync`/`flushPersistence`). Next time the bug repros, correlate the loaded value vs. the most recently enqueued write to identify the offending writer. Workaround until then: toggle it off again when noticed.
 
 ### Skills — reusable prompt templates with arguments and embedded tool calls
 

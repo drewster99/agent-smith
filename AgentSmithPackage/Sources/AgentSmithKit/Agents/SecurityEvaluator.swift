@@ -2,7 +2,7 @@ import Foundation
 import SwiftLLMKit
 
 /// The outcome of a security evaluation of a tool request.
-public struct SecurityDisposition: Sendable {
+public struct SecurityDisposition: Sendable, Equatable {
     public let approved: Bool
     /// Explanation — required when denied, recommended for medium-risk warnings.
     public let message: String?
@@ -31,7 +31,7 @@ public enum ToolExecutionOutcome: String, Codable, Sendable {
 }
 
 /// Record of a single security evaluation for inspector display.
-public struct EvaluationRecord: Sendable, Identifiable {
+public struct EvaluationRecord: Sendable, Identifiable, Equatable {
     public let id = UUID()
     /// When the evaluation occurred.
     public let timestamp: Date
@@ -121,7 +121,15 @@ public actor SecurityEvaluator {
     /// where transient failures across parallel evaluations would race the counter.
     private var consecutiveEvaluationFailures = 0
     private static let maxConsecutiveFailures = 20
+    /// Cap on parse-failure retries within a single evaluation. Each unparseable verdict
+    /// costs one retry; LLM call errors also cost one retry. Independent of file-read
+    /// rounds so a chatty Jones reading 20 files doesn't burn this budget.
     private static let maxRetries = 5
+    /// Cap on file_read rounds within a single evaluation. Jones's prompt allows up to
+    /// 20 file_reads per round and the agent can issue several rounds; this caps the
+    /// loop so a model that keeps requesting reads without producing a verdict can't
+    /// run unbounded. Independent of `maxRetries`.
+    private static let maxFileReadRounds = 20
 
     /// Tool definition for file_read, presented to Jones's LLM.
     private static let fileReadToolDef: LLMToolDefinition = {
@@ -266,12 +274,15 @@ public actor SecurityEvaluator {
         let startTime = Date()
         var retryCount = 0
         var lastError: Error?
-        // Total iterations includes file read rounds + retries. Prevents unbounded loops
-        // if Jones keeps requesting file reads without producing a verdict.
-        var totalIterations = 0
-        let maxTotalIterations = 25
-        while retryCount < Self.maxRetries && totalIterations < maxTotalIterations {
-            totalIterations += 1
+        // File-read rounds and parse-failure retries are tracked separately so a Jones
+        // run that legitimately needs to read many files (the prompt allows up to 20)
+        // doesn't consume the budget that exists to recover from transient parse
+        // failures. Each loop iteration increments exactly one counter depending on
+        // whether the model returned tool_calls (file_read round) or text (verdict
+        // attempt — counted as a retry only on parse failure).
+        var fileReadRounds = 0
+        let maxFileReadRounds = Self.maxFileReadRounds
+        while retryCount < Self.maxRetries && fileReadRounds < maxFileReadRounds {
             let response: LLMResponse
             let callLatencyMs: Int
             do {
@@ -298,6 +309,7 @@ public actor SecurityEvaluator {
             var turnToolExecutionMs = 0
             var turnToolResultChars = 0
             if !response.toolCalls.isEmpty {
+                fileReadRounds += 1
                 // Append assistant message with the tool calls (and any accompanying text).
                 if let text = response.text, !text.isEmpty {
                     conversationMessages.append(LLMMessage(role: .assistant, content: .mixed(text: text, toolCalls: response.toolCalls)))
@@ -401,7 +413,7 @@ public actor SecurityEvaluator {
             )
         }
 
-        var fallbackMessage = "Security evaluation failed after \(totalIterations) iterations (\(retryCount) retries)"
+        var fallbackMessage = "Security evaluation failed after \(fileReadRounds) file-read rounds and \(retryCount) parse retries"
         if let desc = lastErrorDescription {
             fallbackMessage += "\nLast error: \(desc)"
         }

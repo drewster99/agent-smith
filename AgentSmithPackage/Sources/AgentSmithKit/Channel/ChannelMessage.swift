@@ -2,7 +2,7 @@ import Foundation
 import SwiftLLMKit
 
 /// Who a private channel message is addressed to.
-public enum MessageRecipient: Sendable {
+public enum MessageRecipient: Sendable, Equatable {
     case agent(AgentRole)
     case user
 
@@ -57,7 +57,7 @@ extension MessageRecipient: Codable {
 ///     `AgentRole` enum value rather than the current `MessageRecipient` envelope).
 /// Without these fallbacks, a single legacy entry in `channel_log.json` would fail the
 /// whole-array decode in `PersistenceManager.loadChannelLog()` and silently lose the log.
-public struct ChannelMessage: Identifiable, Codable, Sendable {
+public struct ChannelMessage: Identifiable, Codable, Sendable, Equatable {
     public var id: UUID
     public var timestamp: Date
     public var sender: Sender

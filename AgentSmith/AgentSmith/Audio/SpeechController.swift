@@ -1,6 +1,9 @@
 import AVFoundation
 import AppKit
 import AgentSmithKit
+import os
+
+nonisolated private let speechLogger = Logger(subsystem: "com.agentsmith", category: "Speech")
 
 /// A sound-effect + speech-enable pair for a single message category.
 struct SoundConfig {
@@ -337,7 +340,7 @@ final class SpeechController {
 
     private func debugLog(_ text: String) {
         #if DEBUG
-        print("[Speech] \(text)")
+        speechLogger.debug("\(text, privacy: .public)")
         #endif
     }
 

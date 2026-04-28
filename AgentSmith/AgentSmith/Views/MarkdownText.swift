@@ -35,9 +35,19 @@ struct MarkdownText: View, Equatable {
                 return .handled
             }
             if isDir.boolValue {
-                NSWorkspace.shared.activateFileViewerSelecting([url])
-            } else {
+                // Folder: open it in Finder showing its contents.
                 NSWorkspace.shared.open(url)
+            } else {
+                // File: present Quick Look preview rather than opening the default app.
+                // Shells out to `/usr/bin/qlmanage -p <path>` because spinning up
+                // `QLPreviewPanel` programmatically requires a long-lived data source
+                // and panel-controller wiring; qlmanage gives the user the same Quick
+                // Look window with one Process invocation. The qlmanage process stays
+                // alive until the QL window is dismissed; we don't wait on it.
+                let task = Process()
+                task.executableURL = URL(fileURLWithPath: "/usr/bin/qlmanage")
+                task.arguments = ["-p", path]
+                try? task.run()
             }
             return .handled
         })
@@ -308,40 +318,57 @@ struct MarkdownText: View, Equatable {
         return segments
     }
 
-    /// Builds a styled `Text` that renders inline code spans in a distinct color.
-    /// Falls back to standard `LocalizedStringKey` rendering when no backtick code is present.
+    /// Builds a styled `Text` from an `AttributedString` so that markdown links produced
+    /// by `linkify` become real clickable Link spans on macOS — `Text(LocalizedStringKey:)`
+    /// renders the styling (blue, underlined) but does NOT produce activatable Link
+    /// semantics on macOS, so right-click shows only "Lookup" and clicks fall through to
+    /// text selection. `AttributedString(markdown:)` produces a real `.link` attribute
+    /// that `Text(_:AttributedString)` renders as a proper clickable Link, surviving
+    /// `.textSelection(.enabled)`.
     private func styledInlineText(_ raw: String, font: Font) -> Text {
         let segments = parseInlineCode(raw)
+        var combined = AttributedString()
 
-        guard segments.contains(where: { $0.isCode }) else {
-            return Text(LocalizedStringKey(linkify(raw))).font(font)
-        }
-
-        var combined = Text("")
         for segment in segments {
             if segment.isCode {
-                let part = Text(segment.text)
-                    .font(font)
-                    .foregroundStyle(AppColors.inlineCode)
-                combined = Text("\(combined)\(part)")
+                var part = AttributedString(segment.text)
+                part.foregroundColor = AppColors.inlineCode
+                combined += part
             } else {
-                let part = Text(LocalizedStringKey(linkify(segment.text)))
-                    .font(font)
-                combined = Text("\(combined)\(part)")
+                let linkified = linkify(segment.text)
+                if let parsed = try? AttributedString(
+                    markdown: linkified,
+                    options: AttributedString.MarkdownParsingOptions(
+                        interpretedSyntax: .inlineOnlyPreservingWhitespace
+                    )
+                ) {
+                    combined += parsed
+                } else {
+                    combined += AttributedString(segment.text)
+                }
             }
         }
-        return combined
+        return Text(combined).font(font)
     }
 
     /// Runs all inline linkification passes in the order that avoids collisions:
-    /// path wrapping first (emits `file://` markdown links), then bare URL wrapping.
+    /// path wrapping first (emits `file://` markdown links), then bare URL wrapping,
+    /// then email wrapping (emits `mailto:` markdown links).
     private func linkify(_ text: String) -> String {
-        linkifyBareURLs(linkifyPaths(text))
+        linkifyEmails(linkifyBareURLs(linkifyPaths(text)))
     }
 
     /// Compiled once and reused across all MarkdownText instances.
     private static let bareURLRegex = try? NSRegularExpression(
         pattern: #"(?<![(\[])https?://[^\s)\]*]+"#
+    )
+
+    /// Matches plain email addresses not already inside markdown link syntax. Conservative:
+    /// requires standard local@domain.tld shape with at least one TLD-like suffix. Negative
+    /// lookbehind on `[`, `(`, `:` skips emails already wrapped as a markdown link or used
+    /// as a `mailto:` URL component.
+    private static let emailRegex = try? NSRegularExpression(
+        pattern: #"(?<![\[(:])[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#
     )
 
     /// Matches absolute POSIX paths starting with `/` or `~/`.
@@ -398,8 +425,8 @@ struct MarkdownText: View, Equatable {
         return result
     }
 
-    /// Wraps bare `https?://` URLs (not already in markdown link syntax) with `[url](url)`,
-    /// so that `Text(LocalizedStringKey(_:))` renders them as tappable links.
+    /// Wraps bare `https?://` URLs (not already in markdown link syntax) with `[url](url)`
+    /// so they parse as real markdown links via `AttributedString(markdown:)`.
     private func linkifyBareURLs(_ text: String) -> String {
         guard let regex = Self.bareURLRegex else { return text }
 
@@ -413,6 +440,30 @@ struct MarkdownText: View, Equatable {
             result += text[lastEnd..<range.lowerBound]
             let url = String(text[range])
             result += "[\(url)](\(url))"
+            lastEnd = range.upperBound
+        }
+        result += text[lastEnd...]
+        return result
+    }
+
+    /// Wraps plain email addresses with `[email](mailto:email)` so they render as clickable
+    /// `mailto:` links via the AttributedString markdown parser. Unlike `LocalizedStringKey`,
+    /// the AttributedString markdown parser does NOT auto-detect emails — explicit wrapping
+    /// is required to make them clickable.
+    private func linkifyEmails(_ text: String) -> String {
+        guard let regex = Self.emailRegex else { return text }
+
+        let fullRange = NSRange(location: 0, length: (text as NSString).length)
+        let matches = regex.matches(in: text, range: fullRange)
+        guard !matches.isEmpty else { return text }
+
+        var result = ""
+        var lastEnd = text.startIndex
+        for match in matches {
+            guard let range = Range(match.range, in: text) else { continue }
+            result += text[lastEnd..<range.lowerBound]
+            let email = String(text[range])
+            result += "[\(email)](mailto:\(email))"
             lastEnd = range.upperBound
         }
         result += text[lastEnd...]

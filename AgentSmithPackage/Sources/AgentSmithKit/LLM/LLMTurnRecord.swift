@@ -1,7 +1,7 @@
 import Foundation
 
 /// Records a single LLM request/response turn for per-turn inspection.
-public struct LLMTurnRecord: Identifiable, Sendable {
+public struct LLMTurnRecord: Identifiable, Sendable, Equatable {
     public let id: UUID
     public let timestamp: Date
     /// New messages added to conversationHistory since the previous turn.

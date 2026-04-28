@@ -6,7 +6,7 @@ import Foundation
 /// matching file paths only, or matching lines with file:line_number:content format.
 public struct GrepTool: AgentTool {
     public let name = "grep"
-    public let toolDescription = "Search file contents for lines matching a regex `pattern`. Returns matching file paths by default, or matching lines in file:line:content format. Supports glob-based file filtering. Use instead of grep or rg bash commands for content search."
+    public let toolDescription = "Search file contents for lines matching a regex `pattern`. `path` may be a directory (searched recursively) OR a single file. Returns matching file paths by default, or matching lines in file:line:content format. Supports glob-based file filtering when searching a directory. Use instead of grep or rg bash commands for content search."
 
     public func description(for role: AgentRole) -> String {
         switch role {
@@ -112,24 +112,32 @@ public struct GrepTool: AgentTool {
         let resolvedBase = baseURL.resolvingSymlinksInPath().path
 
         var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: resolvedBase, isDirectory: &isDir), isDir.boolValue else {
-            return .failure("Error: Directory does not exist: \(path)")
+        guard fm.fileExists(atPath: resolvedBase, isDirectory: &isDir) else {
+            return .failure("Error: Path does not exist: \(path)")
         }
 
-        guard let enumerator = fm.enumerator(
-            at: URL(fileURLWithPath: resolvedBase),
-            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return .failure("Error: Unable to enumerate directory: \(path)")
-        }
-
-        // Collect URLs synchronously to avoid async-context restrictions on NSDirectoryEnumerator.
-        var allURLs: [URL] = []
-        while let obj = enumerator.nextObject() {
-            if let fileURL = obj as? URL {
-                allURLs.append(fileURL)
+        // `path` may be a directory (recursive enumeration) or a single file (one-element list).
+        // Single-file searches still go through the same per-URL filter pipeline below so glob
+        // filtering and the size/binary skips behave identically in both modes.
+        let allURLs: [URL]
+        if isDir.boolValue {
+            guard let enumerator = fm.enumerator(
+                at: URL(fileURLWithPath: resolvedBase),
+                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                return .failure("Error: Unable to enumerate directory: \(path)")
             }
+            // Collect URLs synchronously to avoid async-context restrictions on NSDirectoryEnumerator.
+            var collected: [URL] = []
+            while let obj = enumerator.nextObject() {
+                if let fileURL = obj as? URL {
+                    collected.append(fileURL)
+                }
+            }
+            allURLs = collected
+        } else {
+            allURLs = [URL(fileURLWithPath: resolvedBase)]
         }
 
         var matchingFiles: [String] = []
@@ -162,8 +170,9 @@ public struct GrepTool: AgentTool {
 
             let resolvedFile = fileURL.resolvingSymlinksInPath().path
 
-            // Security: ensure resolved path stays under the base directory.
-            guard resolvedFile.hasPrefix(resolvedBase + "/") else {
+            // Security: ensure resolved path stays under (or equals) the base. The equality
+            // case covers single-file mode where `path` *is* the file being searched.
+            guard resolvedFile.hasPrefix(resolvedBase + "/") || resolvedFile == resolvedBase else {
                 continue
             }
 
