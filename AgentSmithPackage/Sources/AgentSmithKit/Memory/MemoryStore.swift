@@ -58,7 +58,7 @@ public struct SemanticSearchResults: Sendable {
 }
 
 /// Lightweight struct for attaching relevant memories to tasks.
-public struct RelevantMemory: Codable, Sendable {
+public struct RelevantMemory: Codable, Sendable, Equatable {
     public let content: String
     public let tags: [String]
     public let similarity: Double
@@ -71,7 +71,7 @@ public struct RelevantMemory: Codable, Sendable {
 }
 
 /// Lightweight struct for attaching relevant prior task summaries to tasks.
-public struct RelevantPriorTask: Codable, Sendable {
+public struct RelevantPriorTask: Codable, Sendable, Equatable {
     public let taskID: UUID
     public let title: String
     public let summary: String

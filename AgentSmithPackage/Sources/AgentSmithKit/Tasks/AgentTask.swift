@@ -1,7 +1,7 @@
 import Foundation
 
 /// A unit of work managed by the orchestration system.
-public struct AgentTask: Identifiable, Codable, Sendable {
+public struct AgentTask: Identifiable, Codable, Sendable, Equatable {
     public var id: UUID
     public var title: String
     public var description: String
@@ -42,7 +42,7 @@ public struct AgentTask: Identifiable, Codable, Sendable {
     public var lastEditedAt: Date?
 
     /// A single progress update recorded on a task.
-    public struct TaskUpdate: Codable, Sendable {
+    public struct TaskUpdate: Codable, Sendable, Equatable {
         public var date: Date
         public var message: String
 

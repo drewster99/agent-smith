@@ -16,10 +16,23 @@ final class AppViewModel {
     let shared: SharedAppState
 
     var messages: [ChannelMessage] = []
-    var tasks: [AgentTask] = []
+    var tasks: [AgentTask] = [] {
+        didSet { rebucketTasks() }
+    }
+    /// Pre-bucketed view of `tasks` for the sidebar. Maintained by `rebucketTasks()`
+    /// so the sidebar's body never re-runs three filters per render.
+    private(set) var activeTaskList: [AgentTask] = []
+    private(set) var archivedTaskList: [AgentTask] = []
+    private(set) var recentlyDeletedTaskList: [AgentTask] = []
     /// Active scheduled wakes (timers) for this session. Refreshed via runtime callbacks
     /// and on demand from the View → Timers window.
-    var activeTimers: [ScheduledWake] = []
+    var activeTimers: [ScheduledWake] = [] {
+        didSet { rebuildPendingWakesByTask() }
+    }
+    /// Pending (`wakeAt > now`) wakes grouped by task ID, in ascending fire order.
+    /// Maintained by `rebuildPendingWakesByTask()` so each task row only depends on its
+    /// own slice instead of the whole `activeTimers` array.
+    private(set) var pendingWakesByTaskID: [UUID: [ScheduledWake]] = [:]
     /// Append-only timer history rows displayed in the Timers history pane. Newest first.
     var timerHistory: [TimerEvent] = []
     /// Whether the user has restored the persisted history into the transcript.
@@ -32,6 +45,13 @@ final class AppViewModel {
     }
     /// Set when a task action (archive, delete) is blocked; drives the error alert.
     var taskActionError: String? = nil
+
+    /// Bool projection of `taskActionError` so `.alert(isPresented:)` can bind to it
+    /// without re-creating a closure-based `Binding` on every body re-render.
+    var hasTaskActionError: Bool {
+        get { taskActionError != nil }
+        set { if !newValue { taskActionError = nil } }
+    }
     /// Set to true after `loadPersistedState()` finishes for this session.
     var hasLoadedPersistedState = false
     /// Whether Smith automatically runs the next pending task after completing one.
@@ -61,6 +81,41 @@ final class AppViewModel {
     private func logAutoRunChange(name: String, old: Bool, new: Bool) {
         let stack = Thread.callStackSymbols.dropFirst().prefix(8).joined(separator: "\n  ")
         logger.notice("\(name, privacy: .public) \(old, privacy: .public) -> \(new, privacy: .public) (session=\(self.session.name, privacy: .public))\n  \(stack, privacy: .public)")
+    }
+
+    /// Splits `tasks` into the three sidebar buckets in a single pass. Called from
+    /// the `tasks` didSet so the sidebar's body never re-runs three filters per render.
+    private func rebucketTasks() {
+        var active: [AgentTask] = []
+        var archived: [AgentTask] = []
+        var deleted: [AgentTask] = []
+        active.reserveCapacity(tasks.count)
+        for task in tasks {
+            switch task.disposition {
+            case .active: active.append(task)
+            case .archived: archived.append(task)
+            case .recentlyDeleted: deleted.append(task)
+            }
+        }
+        activeTaskList = active
+        archivedTaskList = archived
+        recentlyDeletedTaskList = deleted
+    }
+
+    /// Builds `pendingWakesByTaskID` from `activeTimers`, dropping wakes whose fire time
+    /// has already passed and sorting each task's wakes ascending. Each task row only
+    /// reads its own slice, so an unrelated timer fire/cancel doesn't re-render every row.
+    private func rebuildPendingWakesByTask() {
+        let now = Date()
+        var grouped: [UUID: [ScheduledWake]] = [:]
+        for wake in activeTimers where wake.wakeAt > now {
+            guard let taskID = wake.taskID else { continue }
+            grouped[taskID, default: []].append(wake)
+        }
+        for key in grouped.keys {
+            grouped[key]?.sort { $0.wakeAt < $1.wakeAt }
+        }
+        pendingWakesByTaskID = grouped
     }
     var isRunning = false
     var isAborted = false

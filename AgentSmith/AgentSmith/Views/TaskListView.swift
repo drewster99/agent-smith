@@ -12,108 +12,90 @@ private func copyTaskIDToPasteboard(_ id: UUID) {
 
 /// Sidebar task list with active tasks, an optional archived section, and a recently-deleted section.
 struct TaskListView: View {
-    let viewModel: AppViewModel
+    @Bindable var viewModel: AppViewModel
 
     @State private var showArchived = false
     @State private var showDeleted = false
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        let activeTasks = viewModel.tasks.filter { $0.disposition == .active }
-        let archivedTasks = viewModel.tasks.filter { $0.disposition == .archived }
-        let deletedTasks = viewModel.tasks.filter { $0.disposition == .recentlyDeleted }
-        let errorBinding = Binding(
-            get: { viewModel.taskActionError != nil },
-            set: { if !$0 { viewModel.taskActionError = nil } }
-        )
+        let activeTasks = viewModel.activeTaskList
+        let archivedTasks = viewModel.archivedTaskList
+        let deletedTasks = viewModel.recentlyDeletedTaskList
 
         Group {
-        if activeTasks.isEmpty && archivedTasks.isEmpty && deletedTasks.isEmpty {
-            ContentUnavailableView(
-                "No Tasks",
-                systemImage: "checklist",
-                description: Text("Tasks will appear here when Smith creates them.")
-            )
-        } else {
-            VStack(alignment: .leading, spacing: 0) {
-                // Active task rows
-                ForEach(activeTasks) { task in
-                    Button {
-                        openWindow(value: TaskDetailTarget(sessionID: viewModel.session.id, taskID: task.id))
-                    } label: {
-                        ActiveTaskRow(task: task, viewModel: viewModel)
-                    }
-                    .buttonStyle(.plain)
-                    Divider()
-                }
-
-                // Bucket toggles
-                if !archivedTasks.isEmpty || !deletedTasks.isEmpty {
-                    HStack(spacing: 16) {
-                        if !archivedTasks.isEmpty {
-                            Button(action: { showArchived.toggle() }, label: {
-                                Label(
-                                    "Archived (\(archivedTasks.count))",
-                                    systemImage: showArchived ? "archivebox.fill" : "archivebox"
-                                )
-                                .font(.caption)
-                                .foregroundStyle(showArchived ? .primary : .secondary)
-                            })
-                            .buttonStyle(.plain)
-                        }
-
-                        if !deletedTasks.isEmpty {
-                            Button(action: { showDeleted.toggle() }, label: {
-                                Label(
-                                    "Deleted (\(deletedTasks.count))",
-                                    systemImage: showDeleted ? "trash.fill" : "trash"
-                                )
-                                .font(.caption)
-                                .foregroundStyle(showDeleted ? .red : .secondary)
-                            })
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                }
-
-                // Archived section
-                if showArchived && !archivedTasks.isEmpty {
-                    TaskSectionHeader(title: "Archived")
-                    ForEach(archivedTasks) { task in
-                        Button {
-                            openWindow(value: TaskDetailTarget(sessionID: viewModel.session.id, taskID: task.id))
-                        } label: {
-                            ArchivedTaskRow(task: task, viewModel: viewModel)
-                        }
-                        .buttonStyle(.plain)
+            if activeTasks.isEmpty && archivedTasks.isEmpty && deletedTasks.isEmpty {
+                ContentUnavailableView(
+                    "No Tasks",
+                    systemImage: "checklist",
+                    description: Text("Tasks will appear here when Smith creates them.")
+                )
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(activeTasks) { task in
+                        TaskRowButton(task: task, style: .active, viewModel: viewModel)
                         Divider()
                     }
-                }
 
-                // Recently deleted section
-                if showDeleted && !deletedTasks.isEmpty {
-                    TaskSectionHeader(title: "Recently Deleted")
-                    ForEach(deletedTasks) { task in
-                        Button {
-                            openWindow(value: TaskDetailTarget(sessionID: viewModel.session.id, taskID: task.id))
-                        } label: {
-                            DeletedTaskRow(task: task, viewModel: viewModel)
+                    if !archivedTasks.isEmpty || !deletedTasks.isEmpty {
+                        bucketToggles(archivedCount: archivedTasks.count, deletedCount: deletedTasks.count)
+                    }
+
+                    if showArchived && !archivedTasks.isEmpty {
+                        TaskSectionHeader(title: "Archived")
+                        ForEach(archivedTasks) { task in
+                            TaskRowButton(task: task, style: .archived, viewModel: viewModel)
+                            Divider()
                         }
-                        .buttonStyle(.plain)
-                        Divider()
+                    }
+
+                    if showDeleted && !deletedTasks.isEmpty {
+                        TaskSectionHeader(title: "Recently Deleted")
+                        ForEach(deletedTasks) { task in
+                            TaskRowButton(task: task, style: .recentlyDeleted, viewModel: viewModel)
+                            Divider()
+                        }
                     }
                 }
             }
         }
-        } // end Group
         .alert(
             "Cannot Complete Action",
-            isPresented: errorBinding,
+            isPresented: $viewModel.hasTaskActionError,
             actions: { Button("OK") { viewModel.taskActionError = nil } },
             message: { Text(viewModel.taskActionError ?? "") }
         )
+    }
+
+    @ViewBuilder
+    private func bucketToggles(archivedCount: Int, deletedCount: Int) -> some View {
+        HStack(spacing: 16) {
+            if archivedCount > 0 {
+                Button(action: { showArchived.toggle() }, label: {
+                    Label(
+                        "Archived (\(archivedCount))",
+                        systemImage: showArchived ? "archivebox.fill" : "archivebox"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(showArchived ? .primary : .secondary)
+                })
+                .buttonStyle(.plain)
+            }
+
+            if deletedCount > 0 {
+                Button(action: { showDeleted.toggle() }, label: {
+                    Label(
+                        "Deleted (\(deletedCount))",
+                        systemImage: showDeleted ? "trash.fill" : "trash"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(showDeleted ? .red : .secondary)
+                })
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 }
 
@@ -133,7 +115,7 @@ private struct TaskSectionHeader: View {
     }
 }
 
-// MARK: - Timestamp helper
+// MARK: - Timestamp helpers
 
 private func taskTimestamp(_ date: Date) -> String {
     let calendar = Calendar.current
@@ -168,199 +150,115 @@ func formatScheduledTime(_ date: Date) -> String {
     return "\(day) \(time)"
 }
 
-// MARK: - Active task row
+// MARK: - Unified task row
 
-private struct ActiveTaskRow: View {
-    let task: AgentTask
-    let viewModel: AppViewModel
-
-    @State private var rotation: Double = 0
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: TaskStatusBadge.icon(for: task.status))
-                .foregroundStyle(TaskStatusBadge.color(for: task.status))
-                .imageScale(.medium)
-                .frame(width: 18)
-                .padding(.top, 2)
-                .rotationEffect(task.status == .running ? .degrees(rotation) : .zero)
-                .task(id: task.status) {
-                    guard task.status == .running else {
-                        rotation = 0
-                        return
-                    }
-                    while !Task.isCancelled {
-                        withAnimation(.linear(duration: 3)) {
-                            rotation += 360
-                        }
-                        try? await Task.sleep(for: .seconds(3))
-                    }
-                }
-
-            VStack(alignment: .leading, spacing: 3) {
-                // Title row — spans full width; running tasks get inline controls on the right.
-                HStack(spacing: 6) {
-                    Text(task.title)
-                        .font(AppFonts.taskTitle)
-                        .lineLimit(2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    if task.status == .running {
-                        HStack(spacing: 6) {
-                            Button(action: { Task { await viewModel.pauseTask(id: task.id) } }, label: {
-                                Image(systemName: "pause.fill")
-                                    .imageScale(.small)
-                                    .foregroundStyle(.secondary)
-                            })
-                            .buttonStyle(.plain)
-                            .help("Pause")
-
-                            Button(action: { Task { await viewModel.stopTask(id: task.id) } }, label: {
-                                Image(systemName: "stop.fill")
-                                    .imageScale(.small)
-                                    .foregroundStyle(.secondary)
-                            })
-                            .buttonStyle(.plain)
-                            .help("Stop")
-                        }
-                    }
-                }
-
-                // Description + status badge + timestamp on one line.
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(task.description)
-                        .font(AppFonts.taskDescription)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-
-                    Spacer(minLength: 0)
-
-                    if task.status != .running {
-                        HStack(spacing: 4) {
-                            Text(task.status.rawValue.capitalized)
-                                .font(.caption)
-                                .fixedSize(horizontal: true, vertical: false)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Capsule().fill(TaskStatusBadge.color(for: task.status).opacity(0.2)))
-                                .foregroundStyle(TaskStatusBadge.color(for: task.status))
-
-                            ScheduledRunsIndicator(task: task, viewModel: viewModel)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .contentShape(Rectangle())
-        .contextMenu {
-            Button(action: { copyTaskIDToPasteboard(task.id) }, label: {
-                Label("Copy Task ID", systemImage: "doc.on.doc")
-            })
-            Divider()
-            switch task.status {
-            case .completed:
-                Button(action: { Task { await viewModel.runTaskAgain(task) } }, label: {
-                    Label("Run Again", systemImage: "arrow.clockwise")
-                })
-                Button(action: { Task { await viewModel.archiveTask(id: task.id) } }, label: {
-                    Label("Archive", systemImage: "archivebox")
-                })
-                Divider()
-                Button(role: .destructive, action: { Task { await viewModel.deleteTask(id: task.id) } }, label: {
-                    Label("Delete", systemImage: "trash")
-                })
-
-            case .failed:
-                Button(action: { Task { await viewModel.retryTask(task) } }, label: {
-                    Label("Retry", systemImage: "arrow.clockwise")
-                })
-                Button(action: { Task { await viewModel.archiveTask(id: task.id) } }, label: {
-                    Label("Archive", systemImage: "archivebox")
-                })
-                Divider()
-                Button(role: .destructive, action: { Task { await viewModel.deleteTask(id: task.id) } }, label: {
-                    Label("Delete", systemImage: "trash")
-                })
-
-            case .running:
-                Button(action: { Task { await viewModel.pauseTask(id: task.id) } }, label: {
-                    Label("Pause", systemImage: "pause.fill")
-                })
-                Button(action: { Task { await viewModel.stopTask(id: task.id) } }, label: {
-                    Label("Stop", systemImage: "stop.fill")
-                })
-                Divider()
-                Button(action: { Task { await viewModel.archiveTask(id: task.id) } }, label: {
-                    Label("Archive", systemImage: "archivebox")
-                })
-                Button(role: .destructive, action: { Task { await viewModel.deleteTask(id: task.id) } }, label: {
-                    Label("Delete", systemImage: "trash")
-                })
-
-            case .awaitingReview:
-                EmptyView()
-
-            case .pending, .paused, .interrupted, .scheduled:
-                Button(action: { Task { await viewModel.archiveTask(id: task.id) } }, label: {
-                    Label("Archive", systemImage: "archivebox")
-                })
-                Divider()
-                Button(role: .destructive, action: { Task { await viewModel.deleteTask(id: task.id) } }, label: {
-                    Label("Delete", systemImage: "trash")
-                })
-            }
-        }
-    }
+/// Visual variant for `TaskRow`. Drives icon opacity, foreground styling, line limits,
+/// and whether the row shows running controls or a strikethrough title.
+private enum TaskRowStyle {
+    case active
+    case archived
+    case recentlyDeleted
 }
 
-// MARK: - Archived task row
-
-private struct ArchivedTaskRow: View {
+/// Wraps a `TaskRow` in the click-to-open Button + the role-appropriate context menu.
+/// Kept separate from `TaskRow` so the row body itself is purely presentational and
+/// can be Equatable-shortcut on its inputs.
+private struct TaskRowButton: View {
     let task: AgentTask
+    let style: TaskRowStyle
     let viewModel: AppViewModel
 
+    @Environment(\.openWindow) private var openWindow
+
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: TaskStatusBadge.icon(for: task.status))
-                .foregroundStyle(TaskStatusBadge.color(for: task.status).opacity(0.5))
-                .imageScale(.medium)
-                .frame(width: 18)
-                .padding(.top, 2)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(task.title)
-                    .font(AppFonts.taskTitle)
-                    .lineLimit(2)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(task.description)
-                        .font(AppFonts.taskDescription)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-
-                    Spacer(minLength: 0)
-
-                    Text(taskTimestamp(task.updatedAt))
-                        .font(.caption2)
-                        .foregroundStyle(.quaternary)
-                        .fixedSize()
-                }
-            }
+        Button {
+            AgentSmithApp.showOrOpenTaskDetail(
+                target: TaskDetailTarget(sessionID: viewModel.session.id, taskID: task.id),
+                openWindow: openWindow
+            )
+        } label: {
+            TaskRow(task: task, style: style, viewModel: viewModel)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .contentShape(Rectangle())
-        .contextMenu {
-            Button(action: { copyTaskIDToPasteboard(task.id) }, label: {
-                Label("Copy Task ID", systemImage: "doc.on.doc")
-            })
-            Divider()
+        .buttonStyle(.plain)
+        .contextMenu { contextMenu(task: task, style: style, viewModel: viewModel) }
+    }
+
+    @ViewBuilder
+    private func contextMenu(task: AgentTask, style: TaskRowStyle, viewModel: AppViewModel) -> some View {
+        Button(action: { copyTaskIDToPasteboard(task.id) }, label: {
+            Label("Copy Task ID", systemImage: "doc.on.doc")
+        })
+        Divider()
+        switch style {
+        case .active:
+            activeMenu(task: task, viewModel: viewModel)
+        case .archived:
             Button(action: { Task { await viewModel.unarchiveTask(id: task.id) } }, label: {
                 Label("Unarchive", systemImage: "arrow.uturn.backward")
+            })
+            Divider()
+            Button(role: .destructive, action: { Task { await viewModel.deleteTask(id: task.id) } }, label: {
+                Label("Delete", systemImage: "trash")
+            })
+        case .recentlyDeleted:
+            Button(action: { Task { await viewModel.undeleteTask(id: task.id) } }, label: {
+                Label("Undelete", systemImage: "arrow.uturn.backward")
+            })
+            Divider()
+            Button(role: .destructive, action: { Task { await viewModel.permanentlyDeleteTask(id: task.id) } }, label: {
+                Label("Delete Permanently", systemImage: "trash.fill")
+            })
+        }
+    }
+
+    @ViewBuilder
+    private func activeMenu(task: AgentTask, viewModel: AppViewModel) -> some View {
+        switch task.status {
+        case .completed:
+            Button(action: { Task { await viewModel.runTaskAgain(task) } }, label: {
+                Label("Run Again", systemImage: "arrow.clockwise")
+            })
+            Button(action: { Task { await viewModel.archiveTask(id: task.id) } }, label: {
+                Label("Archive", systemImage: "archivebox")
+            })
+            Divider()
+            Button(role: .destructive, action: { Task { await viewModel.deleteTask(id: task.id) } }, label: {
+                Label("Delete", systemImage: "trash")
+            })
+
+        case .failed:
+            Button(action: { Task { await viewModel.retryTask(task) } }, label: {
+                Label("Retry", systemImage: "arrow.clockwise")
+            })
+            Button(action: { Task { await viewModel.archiveTask(id: task.id) } }, label: {
+                Label("Archive", systemImage: "archivebox")
+            })
+            Divider()
+            Button(role: .destructive, action: { Task { await viewModel.deleteTask(id: task.id) } }, label: {
+                Label("Delete", systemImage: "trash")
+            })
+
+        case .running:
+            Button(action: { Task { await viewModel.pauseTask(id: task.id) } }, label: {
+                Label("Pause", systemImage: "pause.fill")
+            })
+            Button(action: { Task { await viewModel.stopTask(id: task.id) } }, label: {
+                Label("Stop", systemImage: "stop.fill")
+            })
+            Divider()
+            Button(action: { Task { await viewModel.archiveTask(id: task.id) } }, label: {
+                Label("Archive", systemImage: "archivebox")
+            })
+            Button(role: .destructive, action: { Task { await viewModel.deleteTask(id: task.id) } }, label: {
+                Label("Delete", systemImage: "trash")
+            })
+
+        case .awaitingReview:
+            EmptyView()
+
+        case .pending, .paused, .interrupted, .scheduled:
+            Button(action: { Task { await viewModel.archiveTask(id: task.id) } }, label: {
+                Label("Archive", systemImage: "archivebox")
             })
             Divider()
             Button(role: .destructive, action: { Task { await viewModel.deleteTask(id: task.id) } }, label: {
@@ -370,50 +268,164 @@ private struct ArchivedTaskRow: View {
     }
 }
 
-// MARK: - Recently deleted task row
-
-private struct DeletedTaskRow: View {
+/// Single row layout shared by all three buckets. The `style` argument drives the small
+/// presentational deltas (icon opacity, line limits, strikethrough, etc.) so we don't
+/// duplicate the layout three times. With `AgentTask: Equatable`, SwiftUI's per-input
+/// diff at the ForEach boundary skips unchanged rows when only one task in the array
+/// mutates.
+private struct TaskRow: View {
     let task: AgentTask
+    let style: TaskRowStyle
     let viewModel: AppViewModel
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: TaskStatusBadge.icon(for: task.status))
-                .foregroundStyle(AppColors.dimSecondary35)
-                .imageScale(.medium)
-                .frame(width: 18)
+        HStack(alignment: .top, spacing: 8) {
+            statusIcon()
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(task.title)
-                    .font(AppFonts.taskTitle)
-                    .lineLimit(1)
-                    .foregroundStyle(.tertiary)
-                    .strikethrough(true, color: .secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                titleRow()
 
-                Text(task.description)
-                    .font(AppFonts.taskDescription)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                if style != .recentlyDeleted {
+                    secondLine()
+                } else {
+                    descriptionText()
+                        .lineLimit(1)
+                }
             }
 
-            Spacer()
+            if style == .recentlyDeleted {
+                Spacer()
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .contentShape(Rectangle())
-        .contextMenu {
-            Button(action: { copyTaskIDToPasteboard(task.id) }, label: {
-                Label("Copy Task ID", systemImage: "doc.on.doc")
-            })
-            Divider()
-            Button(action: { Task { await viewModel.undeleteTask(id: task.id) } }, label: {
-                Label("Undelete", systemImage: "arrow.uturn.backward")
-            })
-            Divider()
-            Button(role: .destructive, action: { Task { await viewModel.permanentlyDeleteTask(id: task.id) } }, label: {
-                Label("Delete Permanently", systemImage: "trash.fill")
-            })
+    }
+
+    // MARK: Pieces
+
+    @ViewBuilder
+    private func statusIcon() -> some View {
+        Image(systemName: TaskStatusBadge.icon(for: task.status))
+            .foregroundStyle(iconForeground)
+            .imageScale(.medium)
+            .frame(width: 18)
+            .padding(.top, style == .recentlyDeleted ? 0 : 2)
+            .symbolEffect(
+                .rotate,
+                options: .repeat(.continuous),
+                isActive: style == .active && task.status == .running
+            )
+    }
+
+    private var iconForeground: AnyShapeStyle {
+        switch style {
+        case .active:
+            return AnyShapeStyle(TaskStatusBadge.color(for: task.status))
+        case .archived:
+            return AnyShapeStyle(TaskStatusBadge.color(for: task.status).opacity(0.5))
+        case .recentlyDeleted:
+            return AnyShapeStyle(AppColors.dimSecondary35)
         }
+    }
+
+    @ViewBuilder
+    private func titleRow() -> some View {
+        HStack(spacing: 6) {
+            titleText()
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if style == .active && task.status == .running {
+                runningInlineControls()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func titleText() -> some View {
+        switch style {
+        case .active:
+            Text(task.title)
+                .font(AppFonts.taskTitle)
+                .lineLimit(2)
+        case .archived:
+            Text(task.title)
+                .font(AppFonts.taskTitle)
+                .lineLimit(2)
+                .foregroundStyle(.secondary)
+        case .recentlyDeleted:
+            Text(task.title)
+                .font(AppFonts.taskTitle)
+                .lineLimit(1)
+                .foregroundStyle(.tertiary)
+                .strikethrough(true, color: .secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func runningInlineControls() -> some View {
+        HStack(spacing: 6) {
+            Button(action: { Task { await viewModel.pauseTask(id: task.id) } }, label: {
+                Image(systemName: "pause.fill")
+                    .imageScale(.small)
+                    .foregroundStyle(.secondary)
+            })
+            .buttonStyle(.plain)
+            .help("Pause")
+
+            Button(action: { Task { await viewModel.stopTask(id: task.id) } }, label: {
+                Image(systemName: "stop.fill")
+                    .imageScale(.small)
+                    .foregroundStyle(.secondary)
+            })
+            .buttonStyle(.plain)
+            .help("Stop")
+        }
+    }
+
+    @ViewBuilder
+    private func secondLine() -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            descriptionText()
+                .lineLimit(style == .active ? 2 : 1)
+
+            Spacer(minLength: 0)
+
+            switch style {
+            case .active:
+                if task.status != .running {
+                    HStack(spacing: 4) {
+                        statusCapsule()
+                        ScheduledRunsIndicator(task: task, viewModel: viewModel)
+                    }
+                }
+            case .archived:
+                Text(taskTimestamp(task.updatedAt))
+                    .font(.caption2)
+                    .foregroundStyle(.quaternary)
+                    .fixedSize()
+            case .recentlyDeleted:
+                EmptyView()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func descriptionText() -> some View {
+        Text(task.description)
+            .font(AppFonts.taskDescription)
+            .foregroundStyle(style == .active ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
+    }
+
+    @ViewBuilder
+    private func statusCapsule() -> some View {
+        Text(task.status.rawValue.capitalized)
+            .font(.caption)
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(TaskStatusBadge.color(for: task.status).opacity(0.2)))
+            .foregroundStyle(TaskStatusBadge.color(for: task.status))
     }
 }
 
@@ -431,10 +443,7 @@ private struct ScheduledRunsIndicator: View {
     @State private var showingPopover = false
 
     var body: some View {
-        let now = Date()
-        let pendingWakes = viewModel.activeTimers
-            .filter { $0.taskID == task.id && $0.wakeAt > now }
-            .sorted { $0.wakeAt < $1.wakeAt }
+        let pendingWakes = viewModel.pendingWakesByTaskID[task.id] ?? []
 
         if let nextWake = pendingWakes.first {
             Button(action: { showingPopover.toggle() }, label: {
@@ -523,7 +532,12 @@ private struct ScheduledRunsPopoverRow: View {
                 Text(formatScheduledTime(wake.wakeAt))
                     .font(.callout)
                 HStack(spacing: 8) {
-                    Text(relativeCountdown(to: wake.wakeAt))
+                    // TimelineView keeps the relative countdown ("in 2 min") fresh while
+                    // the popover is open, so it doesn't go stale at the moment it was
+                    // first shown. 30s cadence is precise enough for minute/hour buckets.
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        Text(Self.relativeCountdown(to: wake.wakeAt, now: context.date))
+                    }
                     if let recurrence = wake.recurrence {
                         Text("·")
                         Text(recurrence.displayDescription)
@@ -547,8 +561,8 @@ private struct ScheduledRunsPopoverRow: View {
         .padding(.vertical, 8)
     }
 
-    private func relativeCountdown(to date: Date) -> String {
-        let interval = date.timeIntervalSinceNow
+    private static func relativeCountdown(to date: Date, now: Date) -> String {
+        let interval = date.timeIntervalSince(now)
         if interval < 60 { return "in <1 min" }
         if interval < 3600 { return "in \(Int(interval / 60)) min" }
         if interval < 86400 { return String(format: "in %.1f h", interval / 3600) }

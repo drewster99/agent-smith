@@ -118,6 +118,7 @@ struct AgentSmithApp: App {
         WindowGroup("Task Detail", for: TaskDetailTarget.self) { $target in
             if let target, let vm = sessionManager.viewModel(for: target.sessionID) {
                 TaskDetailWindow(taskID: target.taskID, viewModel: vm)
+                    .background(TaskDetailWindowTagger(target: target))
             } else {
                 ContentUnavailableView(
                     "Task Not Found",
@@ -176,6 +177,73 @@ struct AgentSmithApp: App {
 
     static func windowIdentifier(for sessionID: UUID) -> String {
         "agent-smith-session-\(sessionID.uuidString)"
+    }
+
+    /// Stable identifier for a task detail window. Stamped onto the NSWindow by
+    /// `TaskDetailWindowTagger` so `showOrOpenTaskDetail` can find and front it
+    /// even when SwiftUI's `openWindow(value:)` would otherwise spawn a new one
+    /// or fail to raise a buried existing one.
+    static func taskDetailWindowIdentifier(for target: TaskDetailTarget) -> String {
+        "agent-smith-task-detail-\(target.sessionID.uuidString)-\(target.taskID.uuidString)"
+    }
+
+    /// Brings an existing task detail window for `target` to the front, or opens a
+    /// new one if none exists. Mirrors `showOrOpenSession` for task detail windows.
+    /// Handles minimized (Dock) and hidden windows so a buried detail window always
+    /// surfaces when the user clicks its sidebar row.
+    @MainActor
+    static func showOrOpenTaskDetail(
+        target: TaskDetailTarget,
+        openWindow: OpenWindowAction
+    ) {
+        let id = taskDetailWindowIdentifier(for: target)
+        for window in NSApp.windows where window.identifier?.rawValue == id {
+            NSApp.activate(ignoringOtherApps: true)
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        openWindow(value: target)
+    }
+}
+
+/// Stamps the hosting NSWindow with a stable identifier derived from the task detail
+/// target. Lets `AgentSmithApp.showOrOpenTaskDetail` find an existing window for the
+/// same target via `NSApp.windows` and front it instead of opening a duplicate.
+/// Mirrors the `WindowKeyObserver` pattern: the identifier is set in
+/// `viewDidMoveToWindow` once the host window is actually attached, rather than
+/// guessing in `updateNSView` when `view.window` may not yet be wired up.
+private struct TaskDetailWindowTagger: NSViewRepresentable {
+    let target: TaskDetailTarget
+
+    func makeNSView(context: Context) -> NSView {
+        let view = TaggerView()
+        view.target = target
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard let view = nsView as? TaggerView else { return }
+        view.target = target
+        view.applyIdentifierIfNeeded()
+    }
+
+    @MainActor
+    private final class TaggerView: NSView {
+        var target: TaskDetailTarget?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            applyIdentifierIfNeeded()
+        }
+
+        func applyIdentifierIfNeeded() {
+            guard let window, let target else { return }
+            let id = AgentSmithApp.taskDetailWindowIdentifier(for: target)
+            if window.identifier?.rawValue != id {
+                window.identifier = NSUserInterfaceItemIdentifier(id)
+            }
+        }
     }
 }
 
