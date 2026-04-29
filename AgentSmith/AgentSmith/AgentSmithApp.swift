@@ -1,6 +1,9 @@
 import SwiftUI
 import AppKit
 import AgentSmithKit
+import os
+
+nonisolated private let stopLogger = Logger(subsystem: "com.agentsmith", category: "Stop")
 
 @main
 struct AgentSmithApp: App {
@@ -67,7 +70,12 @@ struct AgentSmithApp: App {
             }
             CommandGroup(after: .appInfo) {
                 Button("Emergency Stop") {
-                    Task { await sessionManager.stopAll() }
+                    stopLogger.notice("UI.menu EmergencyStop clicked → dispatching sessionManager.stopAll")
+                    Task {
+                        stopLogger.notice("UI.menu EmergencyStop Task body running")
+                        await sessionManager.stopAll()
+                        stopLogger.notice("UI.menu EmergencyStop Task body returned")
+                    }
                 }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
                 .disabled(!sessionManager.isAnyRunning)

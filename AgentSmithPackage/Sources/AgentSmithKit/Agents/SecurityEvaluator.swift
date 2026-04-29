@@ -10,13 +10,19 @@ public struct SecurityDisposition: Sendable, Equatable {
     public let isWarning: Bool
     /// True when this approval was automatic (identical retry of a WARN'd request).
     public let isAutoApproval: Bool
+    /// True when the evaluation was cancelled mid-flight (user stop/abort/escape). The
+    /// tool was not actually deemed unsafe — the surrounding agent was just torn down
+    /// before Jones could finish. Inspector rendering treats this as a neutral
+    /// "CANCELLED" label rather than red UNSAFE.
+    public let isCancelled: Bool
 
     /// Creates a security disposition with the given approval state and optional metadata.
-    public init(approved: Bool, message: String? = nil, isWarning: Bool = false, isAutoApproval: Bool = false) {
+    public init(approved: Bool, message: String? = nil, isWarning: Bool = false, isAutoApproval: Bool = false, isCancelled: Bool = false) {
         self.approved = approved
         self.message = message
         self.isWarning = isWarning
         self.isAutoApproval = isAutoApproval
+        self.isCancelled = isCancelled
     }
 }
 
@@ -295,7 +301,7 @@ public actor SecurityEvaluator {
                 callLatencyMs = Int(Date().timeIntervalSince(callStart) * 1000)
             } catch {
                 if Task.isCancelled {
-                    let disposition = SecurityDisposition(approved: false, message: "Evaluation cancelled")
+                    let disposition = SecurityDisposition(approved: false, message: "Evaluation cancelled", isCancelled: true)
                     recordEvaluation(toolName: toolName, toolParams: toolParams, taskTitle: taskTitle, prompt: evalPrompt, response: "(cancelled)", disposition: disposition, startTime: startTime)
                     return disposition
                 }

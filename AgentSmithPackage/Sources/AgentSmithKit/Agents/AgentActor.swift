@@ -470,25 +470,42 @@ public actor AgentActor {
     /// can't block `stopAll` indefinitely; the pair of this + a cancel-aware
     /// `ProcessRunner` means clean unwinds usually take milliseconds.
     public func stop() async {
+        let role = configuration.role.rawValue
+        let agentID = id.uuidString.prefix(8)
+        let stopStart = Date()
+        Self.stopLogger.notice("AgentActor.stop entry role=\(role, privacy: .public) agent=\(agentID, privacy: .public)")
         isRunning = false
         consecutiveEmptyResponses = 0
-        guard let task = runTask else { return }
+        guard let task = runTask else {
+            Self.stopLogger.notice("AgentActor.stop no runTask — early return role=\(role, privacy: .public) agent=\(agentID, privacy: .public)")
+            return
+        }
         task.cancel()
+        Self.stopLogger.notice("AgentActor.stop task.cancel called role=\(role, privacy: .public) agent=\(agentID, privacy: .public)")
 
         // Race the run loop's exit against a grace timeout. Whichever finishes
         // first wins; the other is cancelled. The `runTask.value` branch runs
         // on the cooperative thread pool, not on this actor, so actor reentrancy
         // lets the run loop continue processing the cancellation while stop()
         // is suspended here.
-        await withTaskGroup(of: Void.self) { group in
+        let cleanExit = await withTaskGroup(of: Bool.self) { group in
             group.addTask {
                 _ = await task.value
+                return true
             }
             group.addTask {
                 try? await Task.sleep(for: .seconds(5))
+                return false
             }
-            _ = await group.next()
+            let result = await group.next() ?? false
             group.cancelAll()
+            return result
+        }
+        let elapsedMs = Int(Date().timeIntervalSince(stopStart) * 1000)
+        if cleanExit {
+            Self.stopLogger.notice("AgentActor.stop runTask exited role=\(role, privacy: .public) agent=\(agentID, privacy: .public) elapsedMs=\(elapsedMs, privacy: .public)")
+        } else {
+            Self.stopLogger.warning("AgentActor.stop 5s timeout fired — runTask did not exit role=\(role, privacy: .public) agent=\(agentID, privacy: .public) elapsedMs=\(elapsedMs, privacy: .public)")
         }
         runTask = nil
 
@@ -756,6 +773,10 @@ public actor AgentActor {
                     throw handleResponseError
                 }
             } catch {
+                let cancelled = Task.isCancelled
+                let role = configuration.role.rawValue
+                let agentID = id.uuidString.prefix(8)
+                Self.stopLogger.notice("AgentActor.runLoop catch role=\(role, privacy: .public) agent=\(agentID, privacy: .public) isRunning=\(self.isRunning, privacy: .public) isCancelled=\(cancelled, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 guard isRunning else { break }
 
                 // Context overflow: the API rejected the request because messages + completion
@@ -2684,6 +2705,7 @@ public actor AgentActor {
     /// Logs HTTP 400 errors that were NOT classified as context overflow, so we can
     /// detect patterns that may need specific handling in the future.
     private static let agentLogger = Logger(subsystem: "com.agentsmith", category: "AgentActor")
+    private static let stopLogger = Logger(subsystem: "com.agentsmith", category: "Stop")
 
     private static func logUnhandled400(_ error: Error) {
         guard let providerError = error as? LLMProviderError,

@@ -1,6 +1,9 @@
 import SwiftUI
 import AppKit
 import AgentSmithKit
+import os
+
+nonisolated private let stopLogger = Logger(subsystem: "com.agentsmith", category: "Stop")
 
 /// Writes the task's UUID string to the system pasteboard so the user can paste it into
 /// a tool call, log search, or external note. Used by every task-row context menu.
@@ -236,10 +239,26 @@ struct TaskRowButton: View {
             })
 
         case .running:
-            Button(action: { Task { await viewModel.pauseTask(id: task.id) } }, label: {
+            Button(action: {
+                let slug = task.id.uuidString.prefix(8)
+                stopLogger.notice("UI.taskCard contextMenu Pause clicked task=\(slug, privacy: .public)")
+                Task {
+                    stopLogger.notice("UI.taskCard contextMenu Pause Task body running task=\(slug, privacy: .public)")
+                    await viewModel.pauseTask(id: task.id)
+                    stopLogger.notice("UI.taskCard contextMenu Pause Task body returned task=\(slug, privacy: .public)")
+                }
+            }, label: {
                 Label("Pause", systemImage: "pause.fill")
             })
-            Button(action: { Task { await viewModel.stopTask(id: task.id) } }, label: {
+            Button(action: {
+                let slug = task.id.uuidString.prefix(8)
+                stopLogger.notice("UI.taskCard contextMenu Stop clicked task=\(slug, privacy: .public)")
+                Task {
+                    stopLogger.notice("UI.taskCard contextMenu Stop Task body running task=\(slug, privacy: .public)")
+                    await viewModel.stopTask(id: task.id)
+                    stopLogger.notice("UI.taskCard contextMenu Stop Task body returned task=\(slug, privacy: .public)")
+                }
+            }, label: {
                 Label("Stop", systemImage: "stop.fill")
             })
             Divider()
@@ -362,7 +381,15 @@ private struct TaskRow: View {
     @ViewBuilder
     private func runningInlineControls() -> some View {
         HStack(spacing: 6) {
-            Button(action: { Task { await viewModel.pauseTask(id: task.id) } }, label: {
+            Button(action: {
+                let slug = task.id.uuidString.prefix(8)
+                stopLogger.notice("UI.taskCard inline Pause clicked task=\(slug, privacy: .public)")
+                Task {
+                    stopLogger.notice("UI.taskCard inline Pause Task body running task=\(slug, privacy: .public)")
+                    await viewModel.pauseTask(id: task.id)
+                    stopLogger.notice("UI.taskCard inline Pause Task body returned task=\(slug, privacy: .public)")
+                }
+            }, label: {
                 Image(systemName: "pause.fill")
                     .imageScale(.small)
                     .foregroundStyle(.secondary)
@@ -370,7 +397,15 @@ private struct TaskRow: View {
             .buttonStyle(.plain)
             .help("Pause")
 
-            Button(action: { Task { await viewModel.stopTask(id: task.id) } }, label: {
+            Button(action: {
+                let slug = task.id.uuidString.prefix(8)
+                stopLogger.notice("UI.taskCard inline Stop clicked task=\(slug, privacy: .public)")
+                Task {
+                    stopLogger.notice("UI.taskCard inline Stop Task body running task=\(slug, privacy: .public)")
+                    await viewModel.stopTask(id: task.id)
+                    stopLogger.notice("UI.taskCard inline Stop Task body returned task=\(slug, privacy: .public)")
+                }
+            }, label: {
                 Image(systemName: "stop.fill")
                     .imageScale(.small)
                     .foregroundStyle(.secondary)

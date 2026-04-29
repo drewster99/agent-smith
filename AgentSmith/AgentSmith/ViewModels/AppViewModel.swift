@@ -166,6 +166,7 @@ final class AppViewModel {
     }
 
     private let logger = Logger(subsystem: "com.agentsmith", category: "AppViewModel")
+    private let stopLogger = Logger(subsystem: "com.agentsmith", category: "Stop")
     private var runtime: OrchestrationRuntime?
     /// Kept alive independently of `runtime` so task operations work even when agents aren't running.
     private var taskStore: TaskStore?
@@ -935,13 +936,25 @@ final class AppViewModel {
     }
 
     func pauseTask(id: UUID) async {
+        let slug = id.uuidString.prefix(8)
+        let entry = Date()
+        stopLogger.notice("VM.pauseTask entry task=\(slug, privacy: .public)")
         await runtime?.terminateTaskAgents(taskID: id)
+        let afterTerm = Date()
+        stopLogger.notice("VM.pauseTask after terminateTaskAgents task=\(slug, privacy: .public) elapsedMs=\(Int(afterTerm.timeIntervalSince(entry) * 1000), privacy: .public)")
         await taskStore?.pause(id: id)
+        stopLogger.notice("VM.pauseTask exit task=\(slug, privacy: .public) totalMs=\(Int(Date().timeIntervalSince(entry) * 1000), privacy: .public)")
     }
 
     func stopTask(id: UUID) async {
+        let slug = id.uuidString.prefix(8)
+        let entry = Date()
+        stopLogger.notice("VM.stopTask entry task=\(slug, privacy: .public)")
         await runtime?.terminateTaskAgents(taskID: id)
+        let afterTerm = Date()
+        stopLogger.notice("VM.stopTask after terminateTaskAgents task=\(slug, privacy: .public) elapsedMs=\(Int(afterTerm.timeIntervalSince(entry) * 1000), privacy: .public)")
         await taskStore?.stop(id: id)
+        stopLogger.notice("VM.stopTask exit task=\(slug, privacy: .public) totalMs=\(Int(Date().timeIntervalSince(entry) * 1000), privacy: .public)")
     }
 
     func retryTask(_ task: AgentTask) async {
@@ -973,7 +986,12 @@ final class AppViewModel {
     }
 
     func stopCurrentTask() async {
-        guard let runningTask = tasks.first(where: { $0.status == .running }) else { return }
+        stopLogger.notice("VM.stopCurrentTask entry")
+        guard let runningTask = tasks.first(where: { $0.status == .running }) else {
+            stopLogger.notice("VM.stopCurrentTask no running task — early return")
+            return
+        }
+        stopLogger.notice("VM.stopCurrentTask found running task=\(runningTask.id.uuidString.prefix(8), privacy: .public)")
         await stopTask(id: runningTask.id)
     }
 
@@ -984,8 +1002,14 @@ final class AppViewModel {
     /// Any in-progress utterance from this session's agents will finish naturally; no new
     /// utterances get queued after this point because the runtime has stopped.
     func stopAll() async {
-        guard let runtime else { return }
+        let entry = Date()
+        stopLogger.notice("VM.stopAll entry session=\(self.session.name, privacy: .public)")
+        guard let runtime else {
+            stopLogger.notice("VM.stopAll no runtime — early return session=\(self.session.name, privacy: .public)")
+            return
+        }
         await runtime.stopAll()
+        stopLogger.notice("VM.stopAll runtime.stopAll returned session=\(self.session.name, privacy: .public) elapsedMs=\(Int(Date().timeIntervalSince(entry) * 1000), privacy: .public)")
         isRunning = false
         processingRoles.removeAll()
         agentToolNames.removeAll()

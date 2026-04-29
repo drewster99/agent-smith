@@ -1,6 +1,9 @@
 import Foundation
 import SemanticSearch
 import Synchronization
+import os
+
+private let stopLogger = Logger(subsystem: "com.agentsmith", category: "Stop")
 
 /// Thread-safe set for tracking files read during an agent session.
 /// Used by FileEditTool to verify a file was read before editing.
@@ -1023,6 +1026,8 @@ public actor OrchestrationRuntime {
     /// updates because nothing re-wires them. Default false matches the prior
     /// "stopAll for good" semantics that AppViewModel.stopAll relies on.
     public func stopAll(preserveObserverCallbacks: Bool = false) async {
+        let entryStart = Date()
+        stopLogger.notice("Runtime.stopAll entry agents=\(self.agents.count, privacy: .public) preserveCallbacks=\(preserveObserverCallbacks, privacy: .public)")
         await powerManager?.shutdown()
         powerManager = nil
 
@@ -1032,11 +1037,14 @@ public actor OrchestrationRuntime {
         // Save Brown's context summary to its task before stopping agents
         await saveBrownContextToTask()
 
+        let parallelStart = Date()
         await withTaskGroup(of: Void.self) { group in
             for (_, agent) in agents {
                 group.addTask { await agent.stop() }
             }
         }
+        let parallelMs = Int(Date().timeIntervalSince(parallelStart) * 1000)
+        stopLogger.notice("Runtime.stopAll all agent.stop() returned elapsedMs=\(parallelMs, privacy: .public)")
 
         for (_, subIDs) in agentSubscriptions {
             for subID in subIDs {
@@ -1086,6 +1094,8 @@ public actor OrchestrationRuntime {
                 "restartChromeKind": .string("agents_stopped")
             ]
         ))
+        let totalMs = Int(Date().timeIntervalSince(entryStart) * 1000)
+        stopLogger.notice("Runtime.stopAll exit elapsedMs=\(totalMs, privacy: .public)")
     }
 
     /// Drops every observer callback the app layer has wired up. Called by
@@ -1266,7 +1276,13 @@ public actor OrchestrationRuntime {
 
     /// Terminates a specific agent. If it's a Brown, also cleans up its SecurityEvaluator.
     public func terminateAgent(id: UUID, callerID: UUID? = nil) async -> Bool {
-        guard let agent = agents[id] else { return false }
+        let agentSlug = id.uuidString.prefix(8)
+        guard let agent = agents[id] else {
+            stopLogger.notice("Runtime.terminateAgent agent not found id=\(agentSlug, privacy: .public) — early return")
+            return false
+        }
+        let role = agentRoles[id]?.rawValue ?? "unknown"
+        stopLogger.notice("Runtime.terminateAgent entry id=\(agentSlug, privacy: .public) role=\(role, privacy: .public)")
 
         // Archive the agent's state before termination so the inspector can still display it.
         if let role = agentRoles[id] {
@@ -1279,7 +1295,10 @@ public actor OrchestrationRuntime {
             archivedEvaluationRecords[id] = records
         }
 
+        let stopStart = Date()
         await agent.stop()
+        let elapsedMs = Int(Date().timeIntervalSince(stopStart) * 1000)
+        stopLogger.notice("Runtime.terminateAgent agent.stop returned id=\(agentSlug, privacy: .public) role=\(role, privacy: .public) elapsedMs=\(elapsedMs, privacy: .public)")
         agents.removeValue(forKey: id)
         agentRoles.removeValue(forKey: id)
         await unsubscribeAgent(id: id)
@@ -1327,10 +1346,19 @@ public actor OrchestrationRuntime {
     /// Terminates all agents assigned to a task. Used when the user stops or pauses a task
     /// from the UI — the task status alone doesn't stop Brown's LLM loop.
     public func terminateTaskAgents(taskID: UUID) async {
-        guard let task = await taskStore.task(id: taskID) else { return }
+        let taskSlug = taskID.uuidString.prefix(8)
+        let entryStart = Date()
+        stopLogger.notice("Runtime.terminateTaskAgents entry task=\(taskSlug, privacy: .public)")
+        guard let task = await taskStore.task(id: taskID) else {
+            stopLogger.notice("Runtime.terminateTaskAgents no task found task=\(taskSlug, privacy: .public)")
+            return
+        }
+        stopLogger.notice("Runtime.terminateTaskAgents task=\(taskSlug, privacy: .public) assignees=\(task.assigneeIDs.count, privacy: .public)")
         for agentID in task.assigneeIDs {
             _ = await terminateAgent(id: agentID)
         }
+        let elapsedMs = Int(Date().timeIntervalSince(entryStart) * 1000)
+        stopLogger.notice("Runtime.terminateTaskAgents exit task=\(taskSlug, privacy: .public) elapsedMs=\(elapsedMs, privacy: .public)")
     }
 
     /// Summarizes a completed or failed task and saves the embedding to the memory store.

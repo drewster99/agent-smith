@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 import os
 
 nonisolated private let dropLogger = Logger(subsystem: "com.agentsmith", category: "Drop")
+nonisolated private let stopLogger = Logger(subsystem: "com.agentsmith", category: "Stop")
 
 /// Primary app view: sidebar with tasks, detail with channel log and input.
 struct MainView: View {
@@ -132,8 +133,16 @@ struct MainView: View {
             }
             // Lightbox handles its own dismissal via its own onKeyPress(.escape).
             guard selectedImageAttachment == nil else { return event }
-            guard viewModel.isRunning else { return event }
-            Task { await viewModel.stopCurrentTask() }
+            guard viewModel.isRunning else {
+                stopLogger.notice("UI.Escape pressed but viewModel.isRunning=false — ignored")
+                return event
+            }
+            stopLogger.notice("UI.Escape pressed → dispatching stopCurrentTask")
+            Task {
+                stopLogger.notice("UI.Escape Task body running → calling stopCurrentTask")
+                await viewModel.stopCurrentTask()
+                stopLogger.notice("UI.Escape Task body returned from stopCurrentTask")
+            }
             return nil
         }
     }

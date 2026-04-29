@@ -710,7 +710,9 @@ struct EvaluationRecordRow: View {
     @State private var expanded = false
 
     private var dispositionLabel: String {
-        if record.disposition.approved && record.disposition.isAutoApproval {
+        if record.disposition.isCancelled {
+            return "CANCELLED"
+        } else if record.disposition.approved && record.disposition.isAutoApproval {
             return "AUTO"
         } else if record.disposition.approved {
             return "SAFE"
@@ -722,6 +724,7 @@ struct EvaluationRecordRow: View {
     }
 
     private var dispositionColor: Color {
+        if record.disposition.isCancelled { return .secondary }
         if record.disposition.approved { return .green }
         if record.disposition.isWarning { return .orange }
         return .red

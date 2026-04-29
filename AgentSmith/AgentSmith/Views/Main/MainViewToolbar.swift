@@ -1,4 +1,7 @@
 import SwiftUI
+import os
+
+private let stopLogger = Logger(subsystem: "com.agentsmith", category: "Stop")
 
 /// Primary-action toolbar for `MainView`. Renders the start/stop/reset run-control,
 /// global mute, memory browser, clear-log, and inspector toggle. Pulled out of the
@@ -13,11 +16,19 @@ struct MainViewToolbar: ToolbarContent {
     var body: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             if viewModel.isRunning {
+                // Cmd+Shift+K is bound on the "Emergency Stop" menu item in
+                // AgentSmithApp's CommandGroup; binding it here too caused a SwiftUI
+                // shortcut collision where neither responded. The toolbar button still
+                // works on click — the shortcut routes through the menu.
                 Button("Stop All", systemImage: "stop.circle.fill", role: .destructive) {
-                    Task { await viewModel.stopAll() }
+                    stopLogger.notice("UI.toolbar StopAll button clicked → dispatching stopAll")
+                    Task {
+                        stopLogger.notice("UI.toolbar StopAll Task body running")
+                        await viewModel.stopAll()
+                        stopLogger.notice("UI.toolbar StopAll Task body returned")
+                    }
                 }
                 .foregroundStyle(.red)
-                .keyboardShortcut("k", modifiers: [.command, .shift])
             } else if viewModel.isAborted {
                 Button("Reset & Restart", systemImage: "arrow.clockwise.circle.fill",
                        action: onResetAndRestart)
