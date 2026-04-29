@@ -38,6 +38,36 @@ enum AppColors {
     /// Drop-target overlay tint when files are dragged over MainView.
     static let dropTargetTint = Color.blue.opacity(0.08)
 
+    // MARK: - Affordances / inline action text
+
+    /// "(show more)" / "(show less)" / "Restore full history" inline buttons.
+    static let disclosureToggle = Color.blue
+
+    // MARK: - Security-review dispositions
+
+    static let securityApproved = Color.green
+    static let securityWarning = Color.orange
+    static let securityDenied = Color.orange
+    static let securityAbort = Color.red
+
+    // MARK: - Tool-row inline accents
+
+    /// Filename portion of an inline tool path (`ToolPathText`).
+    static let toolPathFilename = Color.cyan
+    /// Resolved destination of a symlink shown next to the source path.
+    static let symlinkDestination = Color.purple.opacity(0.8)
+
+    // MARK: - Inspector / LLM turn rendering
+
+    /// "Outgoing" arrow + label color in the per-turn inspector.
+    static let inspectorOutgoing = Color.blue
+    /// "Response" arrow + label color in the per-turn inspector.
+    static let inspectorResponse = Color.green
+    /// Reasoning / thinking text color in the per-turn inspector.
+    static let inspectorReasoning = Color.purple
+    /// Tool-call arg label color in the per-turn inspector.
+    static let inspectorToolCallArg = Color.orange
+
     // MARK: - Diff view
 
     static let diffAddedBackground = Color.green.opacity(0.12)
@@ -70,14 +100,9 @@ enum AppColors {
     static let summarySectionBackground = Color.purple.opacity(0.06)
     static let cyanBadgeForeground = Color.cyan
     static let cyanBadgeBackground = Color.cyan.opacity(0.15)
-    static let cyanBadgeBorder = Color.cyan.opacity(0.40)
     static let toolChipForeground = Color.blue
     static let toolChipBackground = Color.blue.opacity(0.12)
     static let toolChipBorder = Color.blue.opacity(0.40)
-
-    // MARK: - Drop shadow
-
-    static let dropShadow = Color.black.opacity(0.15)
 
     /// Returns the color for a given channel message sender.
     static func color(for sender: ChannelMessage.Sender) -> Color {

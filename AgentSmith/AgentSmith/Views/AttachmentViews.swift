@@ -189,7 +189,7 @@ struct ToolPathText: View {
                 .lineLimit(1)
             Text(filename)
                 .font(AppFonts.channelBody.bold())
-                .foregroundStyle(.cyan)
+                .foregroundStyle(AppColors.toolPathFilename)
                 .lineLimit(1)
         }
     }
@@ -224,7 +224,7 @@ struct FileWritePathView: View {
                 Button(action: { openInFinder(path: dest) }, label: {
                     Text(dest)
                         .font(AppFonts.channelBody)
-                        .foregroundStyle(.purple.opacity(0.8))
+                        .foregroundStyle(AppColors.symlinkDestination)
                 })
                 .buttonStyle(.plain)
                 .accessibilityLabel("Reveal symlink destination \(dest) in Finder")

@@ -80,7 +80,7 @@ struct DiffView: View {
                         if needsTruncation {
                             Text(isExpanded ? "(show less)" : "(show more)")
                                 .font(.caption)
-                                .foregroundStyle(.blue)
+                                .foregroundStyle(AppColors.disclosureToggle)
                         }
                         Spacer()
                     }

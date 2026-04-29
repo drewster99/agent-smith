@@ -161,6 +161,13 @@ struct ChannelLogView: View, Equatable {
     /// Closures and Bindings are excluded — they can't be meaningfully compared, and
     /// the Binding manages its own invalidation internally. `displayPrefs` is included so
     /// toggling a setting at runtime invalidates the cached body.
+    ///
+    /// CORRECTNESS INVARIANT: assumes `messages` is append-only. Count + last.id is
+    /// sufficient to detect "something changed" only because we never mutate existing
+    /// elements in place. If this ever changes (e.g. updating an already-appended
+    /// tool_request's metadata when its output arrives, instead of treating output as a
+    /// separate appended row), this comparator must be expanded to detect those edits —
+    /// otherwise the channel log will silently fail to redraw on streaming updates.
     nonisolated static func == (lhs: ChannelLogView, rhs: ChannelLogView) -> Bool {
         lhs.messages.count == rhs.messages.count
         && lhs.messages.last?.id == rhs.messages.last?.id
@@ -173,6 +180,13 @@ struct ChannelLogView: View, Equatable {
         var isNearBottom: Bool
         var contentHeight: CGFloat
     }
+
+    // The four lookups below are computed properties that scan the entire `messages`
+    // array. Because `==` above shortcuts body re-evaluation unless count or last.id
+    // changes, in practice these run *once per appended message* — not once per row.
+    // Cumulative cost over a session is O(N²) in message count, which is acceptable
+    // for the typical N (hundreds). Push toward incremental maintenance on
+    // `AppViewModel.messages.append` only if profiling identifies this as hot.
 
     /// Set of requestIDs that have a corresponding `tool_request` message.
     /// Pre-computed once per body evaluation to avoid O(N) scans per row.
@@ -362,8 +376,10 @@ struct ChannelLogView: View, Equatable {
                     message: message,
                     securityReviewMessage: message.stringMetadata("requestID").flatMap { reviewLookup[$0] },
                     toolOutputMessage: message.stringMetadata("requestID").flatMap { outputLookup[$0] },
+                    displayPrefs: displayPrefs,
                     selectedImageAttachment: $selectedImageAttachment
                 )
+                .equatable()
             }
         case .timerActivity:
             // Suppress the "scheduled HH:MM — run_task: …" row when paired with a Task
@@ -377,8 +393,10 @@ struct ChannelLogView: View, Equatable {
                     message: message,
                     securityReviewMessage: message.stringMetadata("requestID").flatMap { reviewLookup[$0] },
                     toolOutputMessage: message.stringMetadata("requestID").flatMap { outputLookup[$0] },
+                    displayPrefs: displayPrefs,
                     selectedImageAttachment: $selectedImageAttachment
                 )
+                .equatable()
             }
         case .taskAcknowledged:
             TaskAcknowledgedBanner(
@@ -477,24 +495,76 @@ struct ChannelLogView: View, Equatable {
                 message: message,
                 securityReviewMessage: message.stringMetadata("requestID").flatMap { reviewLookup[$0] },
                 toolOutputMessage: message.stringMetadata("requestID").flatMap { outputLookup[$0] },
+                displayPrefs: displayPrefs,
                 selectedImageAttachment: $selectedImageAttachment
             )
+            .equatable()
         }
     }
 }
 
-private struct MessageRow: View {
+private struct MessageRow: View, Equatable {
+    /// (old_string, new_string) extracted from a `file_edit` tool call's params.
+    /// Wrapped in a struct so it's `Equatable` for `@State` storage.
+    fileprivate struct FileEditStrings: Equatable {
+        let oldString: String
+        let newString: String
+    }
+
     let message: ChannelMessage
     /// Pre-looked-up security review for this message's requestID (nil if none).
     let securityReviewMessage: ChannelMessage?
     /// Pre-looked-up tool output for this message's requestID (nil if none).
     let toolOutputMessage: ChannelMessage?
+    /// Display preferences. Passed in as a `let` rather than read via `@Environment` so
+    /// that it participates in `==` below — `EquatableView`'s cache shortcut would
+    /// otherwise prevent body re-evaluation when only the env-injected prefs change,
+    /// stranding the previous timestamp-visibility decision in the cached output.
+    let displayPrefs: TimestampPreferences
     @Binding var selectedImageAttachment: Attachment?
-
-    @Environment(\.timestampPreferences) private var displayPrefs
 
     @State private var isExpanded = false
     @State private var isHovering = false
+
+    /// Pre-decoded fields cached on the row so that `body` doesn't re-parse JSON or
+    /// re-split the message content on every re-evaluation. Populated by the
+    /// `.onChange(of: message, initial: true)` modifier on `body`; before that fires
+    /// the body falls back to a synchronous compute via the `effective*` properties
+    /// below, which avoids a one-frame flicker on first appearance (visible in the
+    /// summarizer-truncation, tool-path, and inline-diff branches).
+    @State private var cachedToolFilePath: String? = nil
+    @State private var cachedDiffLines: [DiffLine]? = nil
+    @State private var cachedFileEditStrings: FileEditStrings? = nil
+    @State private var cachedSplitLines: [String] = []
+    /// Set true once `.onChange(initial: true)` has populated the four caches above.
+    /// Until then, the `effective*` properties recompute synchronously inside body so
+    /// the first render shows the correct decoration / truncation state.
+    @State private var cacheValid: Bool = false
+
+    private var effectiveToolFilePath: String? {
+        cacheValid ? cachedToolFilePath : Self.extractToolFilePath(from: message)
+    }
+    private var effectiveDiffLines: [DiffLine]? {
+        cacheValid ? cachedDiffLines : Self.extractPrecomputedDiffLines(from: message)
+    }
+    private var effectiveFileEditStrings: FileEditStrings? {
+        cacheValid ? cachedFileEditStrings : Self.extractFileEditStrings(from: message)
+    }
+    private var effectiveSplitLines: [String] {
+        cacheValid ? cachedSplitLines : message.content.components(separatedBy: "\n")
+    }
+
+    /// Skips body re-evaluation when the row's source data is unchanged. Without this,
+    /// every existing row re-evaluates whenever `ChannelLogView` re-runs (i.e. on every
+    /// appended message), which fans out the per-row JSON decoding / line-splitting
+    /// work above into an O(N²) wall. `displayPrefs` is included so runtime toggles of
+    /// timestamp visibility cascade to existing rows — see comment on the field.
+    nonisolated static func == (lhs: MessageRow, rhs: MessageRow) -> Bool {
+        lhs.message == rhs.message
+        && lhs.securityReviewMessage == rhs.securityReviewMessage
+        && lhs.toolOutputMessage == rhs.toolOutputMessage
+        && lhs.displayPrefs == rhs.displayPrefs
+    }
 
     /// Image tier for this message's attachments — user messages get small, others get medium.
     private var attachmentTier: ImageCache.Tier {
@@ -635,10 +705,10 @@ private struct MessageRow: View {
         guard let review = securityReviewMessage,
               case .string(let d) = review.metadata?["securityDisposition"] else { return .secondary }
         switch d {
-        case "autoApproved": return .green
-        case "warning": return .orange
-        case "denied": return .orange
-        case "abort": return .red
+        case "autoApproved": return AppColors.securityApproved
+        case "warning": return AppColors.securityWarning
+        case "denied": return AppColors.securityDenied
+        case "abort": return AppColors.securityAbort
         default: return .secondary
         }
     }
@@ -766,6 +836,18 @@ private struct MessageRow: View {
             }
         }
         .onHover { isHovering = $0 }
+        .onChange(of: message, initial: true) { _, new in
+            // Refresh derived caches when the underlying message changes (and once at
+            // first appearance via initial: true). Re-assigning a @State value to one
+            // that compares equal is a SwiftUI no-op, so unchanged messages cost
+            // nothing here. Setting `cacheValid` last lets the `effective*` fallbacks
+            // serve the first synchronous render before this closure runs.
+            cachedToolFilePath = Self.extractToolFilePath(from: new)
+            cachedDiffLines = Self.extractPrecomputedDiffLines(from: new)
+            cachedFileEditStrings = Self.extractFileEditStrings(from: new)
+            cachedSplitLines = new.content.components(separatedBy: "\n")
+            cacheValid = true
+        }
     }
 
     /// Maximum characters to show for the tool call description before truncating.
@@ -791,9 +873,14 @@ private struct MessageRow: View {
 
     /// Extracts the primary file path from the tool call's params metadata, if any.
     /// Returns nil for tools that don't have path arguments or if params can't be parsed.
-    private var toolFilePath: String? {
+    /// Cached into `cachedToolFilePath` via `.onChange(of: message, initial: true)`
+    /// so JSON decoding doesn't run on every body re-evaluation.
+    private static func extractToolFilePath(from message: ChannelMessage) -> String? {
         guard let paramsJSON = message.stringMetadata("params"),
               let data = paramsJSON.data(using: .utf8),
+              // try? — params metadata is user-supplied JSON that can legitimately be
+              // missing or malformed; nil here means "no path to extract" and the row
+              // falls through to plain-text rendering.
               let dict = try? JSONDecoder().decode([String: AnyCodable].self, from: data) else {
             return nil
         }
@@ -851,7 +938,7 @@ private struct MessageRow: View {
                 if let badge = parallelBadge {
                     Text("⚡\(badge)")
                         .font(.caption2.bold())
-                        .foregroundStyle(.cyan)
+                        .foregroundStyle(AppColors.cyanBadgeForeground)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
                         .background(AppColors.cyanBadgeBackground)
@@ -860,11 +947,11 @@ private struct MessageRow: View {
                 if isExpanded {
                     Text("(show less)")
                         .font(.caption)
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(AppColors.disclosureToggle)
                 } else if toolOutputHasMore {
                     Text("(show more)")
                         .font(.caption)
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(AppColors.disclosureToggle)
                 }
                 if let indicator = dispositionIndicator {
                     if let tooltip = dispositionTooltipText {
@@ -889,7 +976,7 @@ private struct MessageRow: View {
         // stashed into `fileWriteDiff` metadata at post time. Storing only
         // the diff lines (not the raw old+new file contents) keeps
         // channel_log.json bounded regardless of file size.
-        if let diffLines = precomputedDiffLines {
+        if let diffLines = effectiveDiffLines {
             DiffView(lines: diffLines)
         }
 
@@ -988,7 +1075,7 @@ private struct MessageRow: View {
                 let displayText = isExpanded ? message.content : toolCallDisplayText
                 let toolName = message.stringMetadata("tool") ?? displayText.prefix(while: { $0 != ":" }).description
                 ToolNameChip(name: toolName)
-                if let path = toolFilePath {
+                if let path = effectiveToolFilePath {
                     Button(action: { openFileOrFallback(path: path) }, label: {
                         ToolPathText(path: path)
                     })
@@ -1011,7 +1098,7 @@ private struct MessageRow: View {
                 if let badge = parallelBadge {
                     Text("⚡\(badge)")
                         .font(.caption2.bold())
-                        .foregroundStyle(.cyan)
+                        .foregroundStyle(AppColors.cyanBadgeForeground)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
                         .background(AppColors.cyanBadgeBackground)
@@ -1020,11 +1107,11 @@ private struct MessageRow: View {
                 if isExpanded {
                     Text("(show less)")
                         .font(.caption)
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(AppColors.disclosureToggle)
                 } else if toolOutputHasMore {
                     Text("(show more)")
                         .font(.caption)
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(AppColors.disclosureToggle)
                 }
                 if let indicator = dispositionIndicator {
                     if let tooltip = dispositionTooltipText {
@@ -1051,8 +1138,8 @@ private struct MessageRow: View {
         // tool output is still shown below.
         if message.stringMetadata("tool") == "file_edit",
            !fileEditFailed,
-           let (oldString, newString) = Self.fileEditStrings(from: message) {
-            DiffView(oldContent: oldString, newContent: newString)
+           let strings = effectiveFileEditStrings {
+            DiffView(oldContent: strings.oldString, newContent: strings.newString)
         }
 
         // Tool output: suppressed when collapsed unless first line begins with "error".
@@ -1083,9 +1170,12 @@ private struct MessageRow: View {
     }
 
     /// Extracts (old_string, new_string) from a `file_edit` tool_request's params metadata.
-    private static func fileEditStrings(from message: ChannelMessage) -> (String, String)? {
+    /// Cached into `cachedFileEditStrings` via `.onChange(of: message, initial: true)`.
+    private static func extractFileEditStrings(from message: ChannelMessage) -> FileEditStrings? {
         guard let paramsJSON = message.stringMetadata("params"),
               let data = paramsJSON.data(using: .utf8),
+              // try? — params metadata can legitimately be missing or malformed; nil
+              // here means "no diff to show" and the row falls through gracefully.
               let dict = try? JSONDecoder().decode([String: AnyCodable].self, from: data) else {
             return nil
         }
@@ -1093,14 +1183,15 @@ private struct MessageRow: View {
               case .string(let newString) = dict["new_string"] else {
             return nil
         }
-        return (oldString, newString)
+        return FileEditStrings(oldString: oldString, newString: newString)
     }
 
     /// Decodes the precomputed diff that `AgentActor` stashed into
     /// `fileWriteDiff` metadata at tool_request post time. Returns nil if no
     /// diff was stored (large file, read failure) or if the metadata can't be
     /// parsed — in both cases the UI falls through to "no diff shown".
-    private var precomputedDiffLines: [DiffLine]? {
+    /// Cached into `cachedDiffLines` via `.onChange(of: message, initial: true)`.
+    private static func extractPrecomputedDiffLines(from message: ChannelMessage) -> [DiffLine]? {
         guard let json = message.stringMetadata("fileWriteDiff"),
               let data = json.data(using: .utf8) else {
             return nil
@@ -1138,11 +1229,11 @@ private struct MessageRow: View {
             return .secondary
         }
         switch disposition {
-        case "approved": return .green
-        case "autoApproved": return .green
-        case "warning": return .orange
-        case "denied": return .orange
-        case "abort": return .red
+        case "approved": return AppColors.securityApproved
+        case "autoApproved": return AppColors.securityApproved
+        case "warning": return AppColors.securityWarning
+        case "denied": return AppColors.securityDenied
+        case "abort": return AppColors.securityAbort
         default: return .secondary
         }
     }
@@ -1151,9 +1242,12 @@ private struct MessageRow: View {
 
     /// Renders a message body with a default line limit and inline "(show more)".
     /// Summarizer messages indent from the 2nd line onwards.
+    /// Reads `effectiveSplitLines` (cached via `.onChange(of: message, initial: true)`,
+    /// with synchronous fallback) rather than re-splitting `message.content` on every
+    /// body re-evaluation.
     @ViewBuilder
     private func collapsibleMessageBody(maxLines: Int) -> some View {
-        let lines = message.content.components(separatedBy: "\n")
+        let lines = effectiveSplitLines
         let needsTruncation = lines.count > maxLines
 
         if isExpanded || !needsTruncation {
@@ -1173,7 +1267,7 @@ private struct MessageRow: View {
                 Button(action: { isExpanded = false }, label: {
                     Text("(show less)")
                         .font(.caption)
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(AppColors.disclosureToggle)
                         .padding(.leading, isSummarizerMessage ? 12 : 0)
                 })
                 .buttonStyle(.plain)
@@ -1192,7 +1286,7 @@ private struct MessageRow: View {
                             .lineLimit(1)
                         Text(" (show more)")
                             .font(.caption)
-                            .foregroundStyle(.blue)
+                            .foregroundStyle(AppColors.disclosureToggle)
                     }
                     .padding(.leading, isSummarizerMessage && maxLines > 1 ? 12 : 0)
                 }

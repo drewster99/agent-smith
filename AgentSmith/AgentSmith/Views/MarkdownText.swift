@@ -336,6 +336,10 @@ struct MarkdownText: View, Equatable {
                 combined += part
             } else {
                 let linkified = linkify(segment.text)
+                // try? — AttributedString(markdown:) returns nil for malformed inline
+                // markdown (unbalanced `*`, stray brackets, etc.). The else branch
+                // falls through to plain text, which is the desired graceful behavior
+                // for user/agent-supplied content.
                 if let parsed = try? AttributedString(
                     markdown: linkified,
                     options: AttributedString.MarkdownParsingOptions(
@@ -359,6 +363,8 @@ struct MarkdownText: View, Equatable {
     }
 
     /// Compiled once and reused across all MarkdownText instances.
+    /// try? — pattern is a compile-time literal; init only fails for malformed
+    /// patterns, which would be caught at first run during development.
     private static let bareURLRegex = try? NSRegularExpression(
         pattern: #"(?<![(\[])https?://[^\s)\]*]+"#
     )
@@ -367,6 +373,7 @@ struct MarkdownText: View, Equatable {
     /// requires standard local@domain.tld shape with at least one TLD-like suffix. Negative
     /// lookbehind on `[`, `(`, `:` skips emails already wrapped as a markdown link or used
     /// as a `mailto:` URL component.
+    /// try? — same rationale as `bareURLRegex`: literal pattern, compile-time correct.
     private static let emailRegex = try? NSRegularExpression(
         pattern: #"(?<![\[(:])[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#
     )
@@ -375,6 +382,7 @@ struct MarkdownText: View, Equatable {
     /// Negative lookbehind excludes: existing markdown link syntax (`[` / `(`),
     /// URL scheme tails (`:` / `/`), and word-adjacent slashes like `a/b` which
     /// aren't filesystem paths.
+    /// try? — same rationale as `bareURLRegex`: literal pattern, compile-time correct.
     private static let pathRegex = try? NSRegularExpression(
         pattern: #"(?<![\w/:\[(])(?:~/|/)[A-Za-z0-9._/~\-]+"#
     )

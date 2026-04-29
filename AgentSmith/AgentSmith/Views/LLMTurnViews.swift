@@ -25,7 +25,7 @@ struct LLMTurnDisclosureRow: View {
             VStack(alignment: .leading, spacing: 8) {
                 // --- Outgoing ---
                 if !turn.inputDelta.isEmpty {
-                    turnSectionHeader("Outgoing", icon: "arrow.up.circle.fill", color: .blue)
+                    turnSectionHeader("Outgoing", icon: "arrow.up.circle.fill", color: AppColors.inspectorOutgoing)
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(turn.inputDelta.indices, id: \.self) { i in
                             ContextMessageRow(message: turn.inputDelta[i])
@@ -37,7 +37,7 @@ struct LLMTurnDisclosureRow: View {
                 turnSectionHeader(
                     "Response",
                     icon: "arrow.down.circle.fill",
-                    color: .green,
+                    color: AppColors.inspectorResponse,
                     trailing: turn.latencyMs > 0 ? formatLatency(turn.latencyMs) : nil
                 )
 
@@ -45,7 +45,7 @@ struct LLMTurnDisclosureRow: View {
                 if let reasoning = turn.response.reasoning, !reasoning.isEmpty {
                     Text(reasoning)
                         .font(AppFonts.inspectorBody)
-                        .foregroundStyle(.purple)
+                        .foregroundStyle(AppColors.inspectorReasoning)
                         .italic()
                         .padding(.leading, 4)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -77,7 +77,7 @@ struct LLMTurnDisclosureRow: View {
                             .font(AppFonts.inspectorBody)
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(AppColors.disclosureToggle)
                     .padding(.top, 2)
                 }
             }
@@ -135,13 +135,13 @@ struct LLMTurnDisclosureRow: View {
         let color: Color
         if !r.toolCalls.isEmpty, let text = r.text, !text.isEmpty {
             label = "text+\(r.toolCalls.count) calls"
-            color = .orange
+            color = AppColors.inspectorToolCallArg
         } else if !r.toolCalls.isEmpty {
             label = "\(r.toolCalls.count) call\(r.toolCalls.count == 1 ? "" : "s")"
-            color = .orange
+            color = AppColors.inspectorToolCallArg
         } else {
             label = "text"
-            color = .green
+            color = AppColors.inspectorResponse
         }
         return Text(label)
             .font(AppFonts.microMonoBadge)
@@ -175,7 +175,7 @@ struct LLMTurnDisclosureRow: View {
             HStack(spacing: 4) {
                 Image(systemName: "terminal")
                     .font(AppFonts.metaIcon)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(AppColors.inspectorToolCallArg)
                 Text(call.name)
                     .font(AppFonts.inspectorBody.weight(.semibold))
                     .foregroundStyle(.primary)
@@ -231,9 +231,9 @@ struct FullContextSheet: View {
             // Legend
             HStack(spacing: 16) {
                 legendItem("S", color: .secondary, label: "System prompt")
-                legendItem("U", color: .blue, label: "User / orchestrator input")
-                legendItem("A", color: .green, label: "Assistant (LLM response)")
-                legendItem("T", color: .orange, label: "Tool result")
+                legendItem("U", color: AppColors.inspectorOutgoing, label: "User / orchestrator input")
+                legendItem("A", color: AppColors.inspectorResponse, label: "Assistant (LLM response)")
+                legendItem("T", color: AppColors.inspectorToolCallArg, label: "Tool result")
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
@@ -258,7 +258,7 @@ struct FullContextSheet: View {
 
                         Text("Response")
                             .font(.caption.bold())
-                            .foregroundStyle(.green)
+                            .foregroundStyle(AppColors.inspectorResponse)
 
                         ContextMessageRow(
                             message: responseMessage,
@@ -308,7 +308,7 @@ struct FullContextSheet: View {
             if let thinking = turn.thinkingBudget, thinking > 0 {
                 Text("thinking \(thinking)")
                     .font(.caption)
-                    .foregroundStyle(.purple)
+                    .foregroundStyle(AppColors.inspectorReasoning)
             }
             if turn.latencyMs > 0 {
                 Text(formatLatency(turn.latencyMs))
