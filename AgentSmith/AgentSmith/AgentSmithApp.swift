@@ -289,6 +289,15 @@ struct SessionScene: View {
                 }
             }
         }
+        .overlay {
+            if shared.launchSplashVisible {
+                LaunchSplashView(onFinished: {
+                    withAnimation(.easeIn(duration: 0.2)) {
+                        shared.launchSplashVisible = false
+                    }
+                })
+            }
+        }
         .task { await bootstrapIfNeeded() }
         .background(WindowKeyObserver(sessionID: resolvedID, shared: shared))
         .onChange(of: shared.renameSessionRequestID) { _, newValue in

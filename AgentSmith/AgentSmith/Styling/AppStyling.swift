@@ -75,6 +75,18 @@ enum AppColors {
     static let diffAddedForeground = Color.green
     static let diffRemovedForeground = Color.red
 
+    // MARK: - Launch splash
+
+    /// Backdrop fill behind the launch splash logo. A near-black tone that
+    /// matches the dark vignette of the logo art so the image edges blend in.
+    static let splashBackground = Color(red: 0.06, green: 0.08, blue: 0.10)
+    /// Soft cyan-tinted glow surrounding the launch logo.
+    static let splashLogoGlow = Color(red: 0.30, green: 0.85, blue: 0.80).opacity(0.35)
+    /// Drop shadow under the launch logo.
+    static let splashLogoShadow = Color.black.opacity(0.55)
+    /// Subtle inner stroke around the rounded launch logo.
+    static let splashLogoStroke = Color.white.opacity(0.08)
+
     // MARK: - Markdown view
 
     static let codeBlockBackground = Color.secondary.opacity(0.10)

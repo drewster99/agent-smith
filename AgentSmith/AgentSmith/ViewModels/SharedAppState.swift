@@ -138,6 +138,10 @@ final class SharedAppState {
     var renameSessionRequestID: UUID?
     /// Set to true after `loadPersistedState()` finishes.
     var hasLoadedPersistedState = false
+    /// Whether the launch splash should currently render. Starts true at process start and
+    /// is flipped to false once the first window's splash animation completes. Multiple
+    /// windows opening at launch share this flag so they dismiss together.
+    var launchSplashVisible: Bool = true
     /// Tracks the in-flight `loadPersistedState()` call so concurrent windows that all
     /// trigger bootstrap on first appear share a single run rather than double-executing
     /// the migrations and model refresh.
