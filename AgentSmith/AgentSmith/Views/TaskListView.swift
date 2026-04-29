@@ -33,8 +33,7 @@ struct TaskListView: View {
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(activeTasks) { task in
-                        TaskRowButton(task: task, style: .active, viewModel: viewModel)
-                        Divider()
+                        TaskListRow(task: task, style: .active, viewModel: viewModel)
                     }
 
                     if !archivedTasks.isEmpty || !deletedTasks.isEmpty {
@@ -44,16 +43,14 @@ struct TaskListView: View {
                     if showArchived && !archivedTasks.isEmpty {
                         TaskSectionHeader(title: "Archived")
                         ForEach(archivedTasks) { task in
-                            TaskRowButton(task: task, style: .archived, viewModel: viewModel)
-                            Divider()
+                            TaskListRow(task: task, style: .archived, viewModel: viewModel)
                         }
                     }
 
                     if showDeleted && !deletedTasks.isEmpty {
                         TaskSectionHeader(title: "Recently Deleted")
                         ForEach(deletedTasks) { task in
-                            TaskRowButton(task: task, style: .recentlyDeleted, viewModel: viewModel)
-                            Divider()
+                            TaskListRow(task: task, style: .recentlyDeleted, viewModel: viewModel)
                         }
                     }
                 }
@@ -154,7 +151,7 @@ func formatScheduledTime(_ date: Date) -> String {
 
 /// Visual variant for `TaskRow`. Drives icon opacity, foreground styling, line limits,
 /// and whether the row shows running controls or a strikethrough title.
-private enum TaskRowStyle {
+enum TaskRowStyle {
     case active
     case archived
     case recentlyDeleted
@@ -163,7 +160,7 @@ private enum TaskRowStyle {
 /// Wraps a `TaskRow` in the click-to-open Button + the role-appropriate context menu.
 /// Kept separate from `TaskRow` so the row body itself is purely presentational and
 /// can be Equatable-shortcut on its inputs.
-private struct TaskRowButton: View {
+struct TaskRowButton: View {
     let task: AgentTask
     let style: TaskRowStyle
     let viewModel: AppViewModel
@@ -504,10 +501,9 @@ private struct ScheduledRunsPopover: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(wakes, id: \.id) { wake in
-                        ScheduledRunsPopoverRow(wake: wake, onCancel: {
+                        ScheduledRunsPopoverItem(wake: wake, onCancel: {
                             Task { await viewModel.cancelTimer(id: wake.id) }
                         })
-                        Divider()
                     }
                 }
             }
@@ -516,7 +512,7 @@ private struct ScheduledRunsPopover: View {
     }
 }
 
-private struct ScheduledRunsPopoverRow: View {
+struct ScheduledRunsPopoverRow: View {
     let wake: ScheduledWake
     let onCancel: () -> Void
 

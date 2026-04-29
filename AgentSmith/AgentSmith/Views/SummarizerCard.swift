@@ -59,99 +59,20 @@ struct SummarizerCard: View {
         let errorCount = stats.errorCount
 
         return VStack(alignment: .leading, spacing: 0) {
-            // Header — matches AgentCard header style
-            HStack(spacing: 8) {
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
-                }, label: {
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(hasActivity ? Self.roleColor : AppColors.inactiveDot)
-                            .frame(width: 8, height: 8)
-
-                        Text("Summarizer")
-                            .font(.headline)
-                            .foregroundStyle(hasActivity ? Self.roleColor : .secondary)
-
-                        Spacer()
-
-                        if isProcessing {
-                            HStack(spacing: 4) {
-                                ProgressView()
-                                    .controlSize(.mini)
-                                Text("Summarizing")
-                                    .font(AppFonts.inspectorLabel)
-                                    .foregroundStyle(.secondary)
-                            }
-                        } else if hasActivity {
-                            Text("Idle")
-                                .font(AppFonts.inspectorLabel)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("Not active")
-                                .font(AppFonts.inspectorLabel)
-                                .foregroundStyle(.tertiary)
-                        }
-
-                        Image(systemName: "chevron.right")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .rotationEffect(.degrees(expanded ? 90 : 0))
-                    }
-                    .contentShape(Rectangle())
-                })
-                .buttonStyle(.plain)
-
-                Image(systemName: "speaker.slash")
-                    .font(.caption)
-                    .foregroundStyle(AppColors.dimSecondary30)
-                    .help("Speech configuration coming soon")
-
-                Button(action: { showingConfig = true }, label: {
-                    Image(systemName: "gearshape")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                })
-                .buttonStyle(.plain)
-                .padding(.leading, 4)
-                .help("Configure summarizer")
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            SummarizerCardHeader(
+                hasActivity: hasActivity,
+                isProcessing: isProcessing,
+                roleColor: Self.roleColor,
+                expanded: $expanded,
+                onShowConfig: { showingConfig = true }
+            )
 
             if expanded {
-                VStack(alignment: .leading, spacing: 10) {
-                    // Stats row
-                    if hasActivity {
-                        InspectorSection(title: "Activity") {
-                            HStack(spacing: 12) {
-                                Label("\(summaryCount) summarized", systemImage: "checkmark.circle.fill")
-                                    .font(AppFonts.inspectorBody)
-                                    .foregroundStyle(.green)
-                                if errorCount > 0 {
-                                    Label("\(errorCount) failed", systemImage: "xmark.circle.fill")
-                                        .font(AppFonts.inspectorBody)
-                                        .foregroundStyle(.red)
-                                }
-                            }
-                        }
-                    }
-
-                    // Recent summaries
-                    if hasActivity {
-                        InspectorSection(title: "Recent (\(summarizerMessages.count))") {
-                            ForEach(Array(summarizerMessages.suffix(8).reversed()), id: \.id) { msg in
-                                SummarizerActivityRow(message: msg)
-                            }
-                        }
-                    } else {
-                        Text("No summarization activity yet.")
-                            .font(AppFonts.inspectorBody)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 10)
+                SummarizerCardExpandedSections(
+                    summarizerMessages: summarizerMessages,
+                    summaryCount: summaryCount,
+                    errorCount: errorCount
+                )
             }
 
             Divider()

@@ -374,6 +374,7 @@ public enum SmithBehavior {
         26. Using `save_memory` to save a step-by-step list of how to do something that will likely be needed again: +1500
         27. Using `save_memory` to save something highly similar or identical to an existing memory: -500
         28. Using `save_memory` to save something irrelevant or unlikely to be needed again; -300
+        28a. Failing to call `save_memory` after a completed task whose work surfaced a procedural recipe ("How to ...") or other memory-worthy fact (user identifier, preference, gotcha) that future agents would need to rediscover: -1000
         29. Creating a task before FULLY understanding the user's intent: -1000
         30. Responding to the user based on task results of a recently completed task, when the task gives you all needed information: +800
         31. Re-opening a recently completed task to answer the user's follow-up questions or to perform additional work that is mostly related to the existing task: +1000

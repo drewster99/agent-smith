@@ -2,7 +2,7 @@ import SwiftUI
 import AgentSmithKit
 
 /// Shared timestamp formatter used by all banner and message row structs in this file.
-private let sharedTimestampFormatter: DateFormatter = {
+let sharedTimestampFormatter: DateFormatter = {
     let f = DateFormatter()
     f.dateFormat = "HH:mm:ss.SS"
     return f
@@ -248,18 +248,10 @@ struct ChannelLogView: View, Equatable {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
                         if persistedHistoryCount > 0 && !hasRestoredHistory {
-                            Button(action: onRestoreHistory) {
-                                Text("Restore full history (\(persistedHistoryCount) messages)")
-                                    .font(.caption)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 4)
-                                    .background(.quaternary)
-                                    .clipShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                            .padding(.bottom, 4)
+                            ChannelLogRestoreHistoryButton(
+                                persistedHistoryCount: persistedHistoryCount,
+                                onRestoreHistory: onRestoreHistory
+                            )
                         }
 
                         let requestIDs = toolRequestIDs
@@ -320,24 +312,12 @@ struct ChannelLogView: View, Equatable {
                 }
 
                 if !isAtBottom {
-                    Button {
+                    ChannelLogScrollToBottomButton(onTap: {
                         guard let lastID = messages.last?.id else { return }
                         withAnimation(.easeOut(duration: 0.2)) {
                             proxy.scrollTo(lastID, anchor: .bottom)
                         }
-                    } label: {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.title2)
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(8)
-                    .background(.ultraThinMaterial)
-                    .clipShape(Circle())
-                    .shadow(radius: 2)
-                    .padding(.bottom, 8)
-                    .transition(.opacity.combined(with: .scale))
+                    })
                 }
             }
         }
@@ -744,34 +724,16 @@ private struct MessageRow: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // Sender header: name, timestamp, and private indicator if applicable
-            HStack(spacing: 6) {
-                Text(message.sender.displayName)
-                    .font(AppFonts.channelSender)
-                    .foregroundStyle(senderColor)
-
-                if message.isPrivate && !hidesPrivateRecipientAnnotation {
-                    Image(systemName: "lock.fill")
-                        .font(AppFonts.metaIcon)
-                        .foregroundStyle(.secondary)
-                    Text("\u{2192} \(message.recipient?.displayName ?? "private")")
-                        .font(AppFonts.channelTimestamp)
-                        .foregroundStyle(recipientColor)
-                }
-
-                if shouldShowTimestamp {
-                    Text(sharedTimestampFormatter.string(from: message.timestamp))
-                        .font(AppFonts.channelTimestamp)
-                        .foregroundStyle(.secondary)
-                }
-
-                if isToolRequest, displayPrefs.elapsedTimeOnToolCalls,
-                   let elapsed = toolCallElapsedSeconds {
-                    Text(formatToolCallElapsed(elapsed))
-                        .font(AppFonts.channelTimestamp)
-                        .foregroundStyle(.tertiary)
-                }
-            }
+            MessageRowSenderHeader(
+                message: message,
+                senderColor: senderColor,
+                recipientColor: recipientColor,
+                hidesPrivateRecipientAnnotation: hidesPrivateRecipientAnnotation,
+                shouldShowTimestamp: shouldShowTimestamp,
+                isToolRequest: isToolRequest,
+                displayPrefs: displayPrefs,
+                toolCallElapsedSeconds: toolCallElapsedSeconds
+            )
 
             if isToolRequest {
                 toolRequestBody()
@@ -819,21 +781,7 @@ private struct MessageRow: View, Equatable {
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .contentShape(Rectangle())
         .overlay(alignment: .topTrailing) {
-            if isHovering {
-                Button(action: {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(message.content, forType: .string)
-                }) {
-                    Image(systemName: "doc.on.doc")
-                        .font(AppFonts.metaIconSmall)
-                        .foregroundStyle(.secondary)
-                        .padding(4)
-                        .background(.ultraThinMaterial)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                }
-                .buttonStyle(.plain)
-                .padding(4)
-            }
+            MessageRowCopyOverlay(isHovering: isHovering, messageContent: message.content)
         }
         .onHover { isHovering = $0 }
         .onChange(of: message, initial: true) { _, new in
@@ -842,11 +790,18 @@ private struct MessageRow: View, Equatable {
             // that compares equal is a SwiftUI no-op, so unchanged messages cost
             // nothing here. Setting `cacheValid` last lets the `effective*` fallbacks
             // serve the first synchronous render before this closure runs.
-            cachedToolFilePath = Self.extractToolFilePath(from: new)
-            cachedDiffLines = Self.extractPrecomputedDiffLines(from: new)
-            cachedFileEditStrings = Self.extractFileEditStrings(from: new)
-            cachedSplitLines = new.content.components(separatedBy: "\n")
-            cacheValid = true
+            //
+            // Project rule: defer @State mutations out of .onChange / lifecycle
+            // closures via DispatchQueue.main.async so they can't race the active
+            // render pass. The cache-miss render is already handled by the
+            // `effective*` fallbacks above.
+            DispatchQueue.main.async {
+                cachedToolFilePath = Self.extractToolFilePath(from: new)
+                cachedDiffLines = Self.extractPrecomputedDiffLines(from: new)
+                cachedFileEditStrings = Self.extractFileEditStrings(from: new)
+                cachedSplitLines = new.content.components(separatedBy: "\n")
+                cacheValid = true
+            }
         }
     }
 

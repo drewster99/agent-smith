@@ -124,12 +124,7 @@ struct TaskDetailWindow: View {
                     sectionHeader("Updates", copyText: Self.formattedUpdates(task.updates))
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(Array(task.updates.enumerated()), id: \.offset) { _, update in
-                            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                Text(update.date.formatted(date: .omitted, time: .standard))
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(.tertiary)
-                                MarkdownText(content: update.message, baseFont: .callout)
-                            }
+                            TaskUpdateRow(update: update)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -166,13 +161,7 @@ struct TaskDetailWindow: View {
                             .foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 4) {
                             ForEach(Array(memories.enumerated()), id: \.offset) { _, memory in
-                                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                    Text(String(format: "%.0f%%", memory.similarity * 100))
-                                        .font(.caption.monospaced())
-                                        .foregroundStyle(.tertiary)
-                                    MarkdownText(content: memory.content, baseFont: .callout)
-                                        .textSelection(.enabled)
-                                }
+                                TaskRelevantMemoryRow(memory: memory)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -184,18 +173,7 @@ struct TaskDetailWindow: View {
                             .foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(Array(priorTasks.enumerated()), id: \.offset) { _, prior in
-                                VStack(alignment: .leading, spacing: 2) {
-                                    HStack(spacing: 8) {
-                                        Text(prior.title)
-                                            .font(.callout.bold())
-                                        Text(String(format: "%.0f%%", prior.similarity * 100))
-                                            .font(.caption.monospaced())
-                                            .foregroundStyle(.tertiary)
-                                    }
-                                    MarkdownText(content: prior.summary, baseFont: .callout)
-                                        .foregroundStyle(.secondary)
-                                        .textSelection(.enabled)
-                                }
+                                TaskRelevantPriorTaskRow(priorTask: prior)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)

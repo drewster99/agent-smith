@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import SwiftLLMKit
 import AgentSmithKit
@@ -17,131 +18,27 @@ struct MainView: View {
     /// The attachment currently shown in the full-screen image viewer.
     @State private var selectedImageAttachment: Attachment?
     @FocusState private var isLightboxFocused: Bool
+    /// Window-level keyDown monitor that catches Escape regardless of which subview holds
+    /// keyboard focus. Required because SwiftUI's `.onKeyPress(.escape)` only fires when
+    /// the focus chain reaches the modifier — TextEditor, sidebar buttons, and lingering
+    /// `@FocusState` references can all swallow Escape before it bubbles up.
+    @State private var escapeKeyMonitor: Any?
 
     private var shared: SharedAppState { viewModel.shared }
 
     var body: some View {
         NavigationSplitView {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Tasks")
-                    .font(AppFonts.sectionHeader)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 12)
-                    .padding(.bottom, 8)
-
-                Toggle("Auto-run next task", isOn: $viewModel.autoRunNextTask)
-                    .font(.caption)
-                    .padding(.horizontal, 12)
-
-                Toggle("Auto-run interrupted tasks", isOn: $viewModel.autoRunInterruptedTasks)
-                    .font(.caption)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 6)
-
-                ScrollView {
-                    TaskListView(viewModel: viewModel)
-                }
-            }
-            .navigationSplitViewColumnWidth(min: 250, ideal: 300)
+            MainViewSidebar(viewModel: viewModel)
         } detail: {
-            VStack(spacing: 0) {
-                if viewModel.isAborted {
-                    AbortBanner(
-                        reason: viewModel.abortReason,
-                        onReset: {
-                            viewModel.resetAbort()
-                            if viewModel.allAgentConfigsValid {
-                                Task { await viewModel.start() }
-                            } else {
-                                showValidationSheet = true
-                            }
-                        }
-                    )
-                }
-
-                if let reviewTask = viewModel.taskAwaitingReview {
-                    ReviewBanner(taskTitle: reviewTask.title)
-                }
-
-                ChannelLogView(
-                    messages: viewModel.messages,
-                    persistedHistoryCount: viewModel.persistedHistoryCount,
-                    hasRestoredHistory: viewModel.hasRestoredHistory,
-                    onRestoreHistory: { viewModel.restoreHistory() },
-                    displayPrefs: TimestampPreferences(
-                        taskBanners: shared.showTimestampsOnTaskBanners,
-                        toolCalls: shared.showTimestampsOnToolCalls,
-                        messaging: shared.showTimestampsOnMessaging,
-                        systemMessages: shared.showTimestampsOnSystemMessages,
-                        elapsedTimeOnToolCalls: shared.showElapsedTimeOnToolCalls,
-                        showRestartChrome: shared.showRestartChrome
-                    ),
-                    selectedImageAttachment: $selectedImageAttachment
-                )
-                .equatable()
-
-                Divider()
-
-                UserInputView(
-                    text: $viewModel.inputText,
-                    pendingAttachments: viewModel.pendingAttachments,
-                    isRunning: viewModel.isRunning,
-                    onSend: {
-                        Task { await viewModel.sendMessage() }
-                    },
-                    onAttach: { urls in
-                        viewModel.addAttachments(from: urls)
-                    },
-                    onRemoveAttachment: { id in
-                        viewModel.removePendingAttachment(id: id)
-                    },
-                    onHistoryUp: {
-                        viewModel.navigateHistory(.up)
-                    },
-                    onHistoryDown: {
-                        viewModel.navigateHistory(.down)
-                    },
-                    onPaste: {
-                        viewModel.pasteFromClipboard()
-                    }
-                )
-            }
-            .onDrop(of: [.fileURL, .image], isTargeted: $isDropTargeted) { providers in
-                handleDrop(providers)
-            }
-            .overlay {
-                if isDropTargeted {
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(.blue, lineWidth: 3)
-                        .background(AppColors.dropTargetTint)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .allowsHitTesting(false)
-                }
-            }
-            .overlay {
-                if let attachment = selectedImageAttachment {
-                    ImageLightbox(attachment: attachment, onDismiss: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            selectedImageAttachment = nil
-                        }
-                    })
-                    .focusable()
-                    .focusEffectDisabled()
-                    .focused($isLightboxFocused)
-                    .onAppear { isLightboxFocused = true }
-                    .onKeyPress(.escape) {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            selectedImageAttachment = nil
-                        }
-                        return .handled
-                    }
-                }
-            }
-        }
-        .onKeyPress(.escape) {
-            guard viewModel.isRunning else { return .ignored }
-            Task { await viewModel.stopCurrentTask() }
-            return .handled
+            MainViewDetailColumn(
+                viewModel: viewModel,
+                shared: shared,
+                isDropTargeted: $isDropTargeted,
+                selectedImageAttachment: $selectedImageAttachment,
+                isLightboxFocused: $isLightboxFocused,
+                onAbortReset: handleAbortReset,
+                onDrop: handleDrop
+            )
         }
         .onKeyPress(characters: .init(charactersIn: "l"), phases: .down) { keyPress in
             guard keyPress.modifiers == .control else { return .ignored }
@@ -152,60 +49,13 @@ struct MainView: View {
             InspectorView(viewModel: viewModel)
         }
         .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                if viewModel.isRunning {
-                    Button("Stop All", systemImage: "stop.circle.fill", role: .destructive) {
-                        Task { await viewModel.stopAll() }
-                    }
-                    .foregroundStyle(.red)
-                    .keyboardShortcut("k", modifiers: [.command, .shift])
-                } else if viewModel.isAborted {
-                    Button("Reset & Restart", systemImage: "arrow.clockwise.circle.fill") {
-                        viewModel.resetAbort()
-                        if viewModel.allAgentConfigsValid {
-                            Task { await viewModel.start() }
-                        } else {
-                            showValidationSheet = true
-                        }
-                    }
-                    .foregroundStyle(.orange)
-                } else {
-                    Button("Start", systemImage: "play.circle.fill") {
-                        if viewModel.allAgentConfigsValid {
-                            Task { await viewModel.start() }
-                        } else {
-                            showValidationSheet = true
-                        }
-                    }
-                    .foregroundStyle(.green)
-                }
-
-                if shared.speechController.isGloballyEnabled {
-                    Button("Mute All", systemImage: "speaker.wave.2.fill") {
-                        shared.speechController.setGloballyEnabled(false)
-                    }
-                } else {
-                    Button("Unmute All", systemImage: "speaker.slash.fill") {
-                        shared.speechController.setGloballyEnabled(true)
-                    }
-                    .foregroundStyle(.secondary)
-                }
-
-                Button("Memory Browser", systemImage: "brain") {
-                    openWindow(id: "memory-browser")
-                }
-
-                Button("Clear Log", systemImage: "trash") {
-                    viewModel.clearLog()
-                }
-                .disabled(viewModel.messages.isEmpty)
-
-                Button(viewModel.showInspector ? "Hide Inspector" : "Show Inspector",
-                       systemImage: "sidebar.right") {
-                    viewModel.showInspector.toggle()
-                }
-                .keyboardShortcut("i", modifiers: [.command, .option])
-            }
+            MainViewToolbar(
+                viewModel: viewModel,
+                shared: shared,
+                onStart: handleStart,
+                onResetAndRestart: handleAbortReset,
+                onOpenMemoryBrowser: { openWindow(id: "memory-browser") }
+            )
         }
         .navigationTitle(viewModel.session.name)
         .onChange(of: viewModel.hasLoadedPersistedState) { _, loaded in
@@ -229,6 +79,13 @@ struct MainView: View {
                 Task { await viewModel.start() }
             }
         }
+        .onAppear {
+            // Project rule: defer @State mutations out of lifecycle closures.
+            DispatchQueue.main.async { installEscapeMonitor() }
+        }
+        .onDisappear {
+            DispatchQueue.main.async { removeEscapeMonitor() }
+        }
         .sheet(isPresented: $showWelcomeSheet, onDismiss: {
             if !viewModel.allAgentConfigsValid {
                 showValidationSheet = true
@@ -250,6 +107,59 @@ struct MainView: View {
                 }
             )
         }
+    }
+
+    /// Installs a window-local keyDown monitor for Escape so it stops the running task
+    /// even when SwiftUI's focus chain has moved into a TextEditor or sidebar button. Each
+    /// MainView (one per session/window) installs its own monitor and gates on
+    /// `shared.focusedSessionID` so only the frontmost session reacts.
+    private func installEscapeMonitor() {
+        guard escapeKeyMonitor == nil else { return }
+        escapeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // 53 = Escape. Plain Escape only — leave Cmd/Opt/Shift/Ctrl+Esc alone.
+            // Narrow the mask to the four real modifier keys; ignoring caps-lock/function/
+            // numericPad bits so a Caps-Lock-on user still gets Escape-stops-task.
+            let realModifiers: NSEvent.ModifierFlags = [.shift, .control, .option, .command]
+            guard event.keyCode == 53,
+                  event.modifierFlags.intersection(realModifiers).isEmpty else {
+                return event
+            }
+            // Only the frontmost window's MainView acts. Other sessions' monitors fire
+            // for the same keystroke; they bail here.
+            guard event.window?.isKeyWindow == true,
+                  shared.focusedSessionID == viewModel.session.id else {
+                return event
+            }
+            // Lightbox handles its own dismissal via its own onKeyPress(.escape).
+            guard selectedImageAttachment == nil else { return event }
+            guard viewModel.isRunning else { return event }
+            Task { await viewModel.stopCurrentTask() }
+            return nil
+        }
+    }
+
+    private func removeEscapeMonitor() {
+        if let monitor = escapeKeyMonitor {
+            NSEvent.removeMonitor(monitor)
+            escapeKeyMonitor = nil
+        }
+    }
+
+    /// Starts the runtime if all agent configs are valid; otherwise routes to the
+    /// configuration validation sheet. Wired into the AbortBanner reset, the toolbar's
+    /// Reset & Restart, and the toolbar's Start button.
+    private func handleStart() {
+        if viewModel.allAgentConfigsValid {
+            Task { await viewModel.start() }
+        } else {
+            showValidationSheet = true
+        }
+    }
+
+    /// Clears the abort flag and restarts (or surfaces validation if needed).
+    private func handleAbortReset() {
+        viewModel.resetAbort()
+        handleStart()
     }
 
     /// Processes dropped items from a drag-and-drop operation.
@@ -310,7 +220,7 @@ struct MainView: View {
 }
 
 /// Banner displayed when an agent triggers an emergency abort.
-private struct AbortBanner: View {
+struct AbortBanner: View {
     let reason: String
     let onReset: () -> Void
 
@@ -354,7 +264,7 @@ private struct AbortBanner: View {
 }
 
 /// Small banner shown when a task is awaiting Smith's review.
-private struct ReviewBanner: View {
+struct ReviewBanner: View {
     let taskTitle: String
 
     var body: some View {

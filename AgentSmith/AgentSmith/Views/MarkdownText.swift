@@ -190,23 +190,13 @@ struct MarkdownText: View, Equatable {
     private func tableView(rows: [[String]], columnCount: Int) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(rows.enumerated()), id: \.offset) { rowIdx, row in
-                HStack(spacing: 0) {
-                    ForEach(0..<columnCount, id: \.self) { colIdx in
-                        let cell = colIdx < row.count ? row[colIdx] : ""
-                        Group {
-                            if rowIdx == 0 {
-                                styledInlineText(cell, font: baseFont.weight(.semibold))
-                            } else {
-                                styledInlineText(cell, font: baseFont)
-                            }
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(rowIdx == 0 ? AppColors.tableHeaderBackground : Color.clear)
-                    }
+                let isHeader = rowIdx == 0
+                let cellFont = isHeader ? baseFont.weight(.semibold) : baseFont
+                let renderedCells: [Text] = (0..<columnCount).map { colIdx in
+                    let cell = colIdx < row.count ? row[colIdx] : ""
+                    return styledInlineText(cell, font: cellFont)
                 }
-                Divider()
+                MarkdownTableRow(renderedCells: renderedCells, isHeader: isHeader)
             }
         }
         .overlay(

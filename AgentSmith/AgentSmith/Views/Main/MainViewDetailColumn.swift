@@ -1,0 +1,108 @@
+import SwiftUI
+import UniformTypeIdentifiers
+import AgentSmithKit
+
+/// Right-hand detail column of `MainView`: abort/review banners, channel log, divider,
+/// user input. Drop-target tinting and the image lightbox are layered as overlays.
+struct MainViewDetailColumn: View {
+    @Bindable var viewModel: AppViewModel
+    let shared: SharedAppState
+    @Binding var isDropTargeted: Bool
+    @Binding var selectedImageAttachment: Attachment?
+    @FocusState.Binding var isLightboxFocused: Bool
+    let onAbortReset: () -> Void
+    let onDrop: ([NSItemProvider]) -> Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if viewModel.isAborted {
+                AbortBanner(
+                    reason: viewModel.abortReason,
+                    onReset: onAbortReset
+                )
+            }
+
+            if let reviewTask = viewModel.taskAwaitingReview {
+                ReviewBanner(taskTitle: reviewTask.title)
+            }
+
+            ChannelLogView(
+                messages: viewModel.messages,
+                persistedHistoryCount: viewModel.persistedHistoryCount,
+                hasRestoredHistory: viewModel.hasRestoredHistory,
+                onRestoreHistory: { viewModel.restoreHistory() },
+                displayPrefs: TimestampPreferences(
+                    taskBanners: shared.showTimestampsOnTaskBanners,
+                    toolCalls: shared.showTimestampsOnToolCalls,
+                    messaging: shared.showTimestampsOnMessaging,
+                    systemMessages: shared.showTimestampsOnSystemMessages,
+                    elapsedTimeOnToolCalls: shared.showElapsedTimeOnToolCalls,
+                    showRestartChrome: shared.showRestartChrome
+                ),
+                selectedImageAttachment: $selectedImageAttachment
+            )
+            .equatable()
+
+            Divider()
+
+            UserInputView(
+                text: $viewModel.inputText,
+                pendingAttachments: viewModel.pendingAttachments,
+                isRunning: viewModel.isRunning,
+                onSend: {
+                    Task { await viewModel.sendMessage() }
+                },
+                onAttach: { urls in
+                    viewModel.addAttachments(from: urls)
+                },
+                onRemoveAttachment: { id in
+                    viewModel.removePendingAttachment(id: id)
+                },
+                onHistoryUp: {
+                    viewModel.navigateHistory(.up)
+                },
+                onHistoryDown: {
+                    viewModel.navigateHistory(.down)
+                },
+                onPaste: {
+                    viewModel.pasteFromClipboard()
+                }
+            )
+        }
+        .onDrop(of: [.fileURL, .image], isTargeted: $isDropTargeted, perform: onDrop)
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(.blue, lineWidth: 3)
+                    .background(AppColors.dropTargetTint)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .allowsHitTesting(false)
+            }
+        }
+        .overlay {
+            if let attachment = selectedImageAttachment {
+                ImageLightbox(attachment: attachment, onDismiss: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        selectedImageAttachment = nil
+                    }
+                })
+                .focusable()
+                .focusEffectDisabled()
+                .focused($isLightboxFocused)
+                .onAppear {
+                    // Project rule: defer @FocusState mutations out of lifecycle closures.
+                    DispatchQueue.main.async { isLightboxFocused = true }
+                }
+                .onDisappear {
+                    DispatchQueue.main.async { isLightboxFocused = false }
+                }
+                .onKeyPress(.escape) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        selectedImageAttachment = nil
+                    }
+                    return .handled
+                }
+            }
+        }
+    }
+}

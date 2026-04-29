@@ -118,7 +118,8 @@ struct SpendingDashboardView: View {
             await loadRecords()
         }
         .onChange(of: selectedRange) {
-            recomputeDerivedState()
+            // Project rule: defer @State mutations out of .onChange.
+            DispatchQueue.main.async { recomputeDerivedState() }
         }
         .overlay {
             if isLoading {
@@ -406,13 +407,7 @@ struct SpendingDashboardView: View {
             Text(formatter.string(from: date))
                 .font(.caption.weight(.semibold))
             ForEach(items.sorted(by: { $0.cost > $1.cost })) { item in
-                HStack(spacing: 4) {
-                    Text(item.provider)
-                        .font(.caption2)
-                    Spacer(minLength: 8)
-                    Text(formatCost(item.cost))
-                        .font(.caption2.monospacedDigit())
-                }
+                SpendingChartTooltipRow(provider: item.provider, costFormatted: formatCost(item.cost))
             }
             if items.count > 1 {
                 Divider()
@@ -482,19 +477,11 @@ struct SpendingDashboardView: View {
                     .prefix(8)
 
                 ForEach(Array(byModel), id: \.key) { model, modelSummary in
-                    HStack(spacing: 0) {
-                        Text(model)
-                            .font(.caption)
-                            .lineLimit(1)
-                        Spacer(minLength: 8)
-                        Text(formatCost(modelSummary.totalCostUSD))
-                            .font(.caption.monospacedDigit())
-                            .frame(width: 70, alignment: .trailing)
-                        Text("\(modelSummary.callCount) calls")
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: 70, alignment: .trailing)
-                    }
+                    SpendingByModelRow(
+                        modelName: model,
+                        costFormatted: formatCost(modelSummary.totalCostUSD),
+                        callCount: modelSummary.callCount
+                    )
                 }
             }
 
@@ -510,15 +497,7 @@ struct SpendingDashboardView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(Array(toolCounts), id: \.key) { tool, count in
-                        HStack(spacing: 0) {
-                            Text(tool)
-                                .font(.caption)
-                                .lineLimit(1)
-                            Spacer(minLength: 8)
-                            Text("\(count)")
-                                .font(.caption.monospacedDigit())
-                                .frame(width: 50, alignment: .trailing)
-                        }
+                        SpendingToolCountRow(toolName: tool, count: count)
                     }
                 }
             }

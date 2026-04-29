@@ -266,29 +266,15 @@ struct TaskCostDetailSheet: View {
             Divider()
 
             ForEach(Array(displayedTurns.enumerated()), id: \.element.id) { index, record in
-                let turnCost = computeTurnCost(record)
-                HStack(spacing: 0) {
-                    Text("\(startOffset + index + 1)")
-                        .frame(width: 30, alignment: .trailing)
-                    Text(record.agentRole.displayName)
-                        .foregroundStyle(AppColors.color(for: .agent(record.agentRole)))
-                        .frame(width: 60, alignment: .leading)
-                        .padding(.leading, 8)
-                    Text(formatTokenCount(record.inputTokens))
-                        .frame(width: 60, alignment: .trailing)
-                    Text(formatTokenCount(record.outputTokens))
-                        .frame(width: 60, alignment: .trailing)
-                    Text(formatCost(turnCost))
-                        .frame(width: 60, alignment: .trailing)
-                    Text(formatLatency(record.latencyMs))
-                        .frame(width: 60, alignment: .trailing)
-                    Text((record.toolCallNames ?? []).joined(separator: ", "))
-                        .lineLimit(1)
-                        .frame(width: 150, alignment: .leading)
-                        .padding(.leading, 8)
-                }
-                .font(.caption2.monospacedDigit())
-                .padding(.vertical, 1)
+                TaskCostTurnRow(
+                    displayNumber: startOffset + index + 1,
+                    agentRole: record.agentRole,
+                    inputTokensFormatted: formatTokenCount(record.inputTokens),
+                    outputTokensFormatted: formatTokenCount(record.outputTokens),
+                    costFormatted: formatCost(computeTurnCost(record)),
+                    latencyFormatted: formatLatency(record.latencyMs),
+                    toolNames: (record.toolCallNames ?? []).joined(separator: ", ")
+                )
             }
         }
     }

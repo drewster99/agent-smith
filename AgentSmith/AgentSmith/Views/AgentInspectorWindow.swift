@@ -26,6 +26,11 @@ struct AgentInspectorWindow: View {
     private var contextMessages: [LLMMessage] { viewModel.inspectorStore.contextMessages(for: role) }
     private var llmTurns: [LLMTurnRecord] { viewModel.inspectorStore.turnsByRole[role] ?? [] }
 
+    /// True when the agent has activity history but no live tools — i.e. terminated.
+    private var isTerminated: Bool {
+        availableTools.isEmpty && !contextMessages.isEmpty
+    }
+
     var body: some View {
         // Single-pass message bucketing per body. Without this, roleMessages /
         // recentMessages / recentToolUses each re-filtered viewModel.messages.
@@ -38,133 +43,42 @@ struct AgentInspectorWindow: View {
         let recentToolUses = Array(roleMessages.filter { $0.metadata?["tool"] != nil }.suffix(5).reversed())
 
         return VStack(spacing: 0) {
-            // Header
-            HStack(alignment: .center) {
-                Circle()
-                    .fill(hasActivity ? roleColor : AppColors.inactiveDot)
-                    .frame(width: 10, height: 10)
-                Text(inspectorDisplayName)
-                    .font(.title2.bold())
-                    .foregroundStyle(roleColor)
-
-                Spacer()
-
-                if isProcessing {
-                    HStack(spacing: 4) {
-                        ProgressView()
-                            .controlSize(.mini)
-                        Text(role == .jones ? "Evaluating" : "Thinking")
-                            .font(.headline)
-                            .foregroundStyle(.secondary)
-                        if let start = processingStartDate {
-                            ThinkingElapsedTime(since: start, font: .headline)
-                        }
-                    }
-                } else if hasActivity {
-                    if role != .jones && availableTools.isEmpty && !contextMessages.isEmpty {
-                        Text("Terminated")
-                            .font(.headline)
-                            .foregroundStyle(.orange)
-                    } else {
-                        Text("Idle")
-                            .font(.headline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-            }
-            .padding(16)
+            AgentInspectorWindowHeader(
+                role: role,
+                displayName: inspectorDisplayName,
+                roleColor: roleColor,
+                hasActivity: hasActivity,
+                isProcessing: isProcessing,
+                isTerminated: role != .jones && isTerminated,
+                processingStartDate: processingStartDate,
+                onDone: { dismiss() }
+            )
 
             Divider()
 
-            // Content
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    if !availableTools.isEmpty {
-                        InspectorSection(title: "Available Tools") {
-                            AvailableToolsGrid(toolNames: availableTools)
-                        }
-                    }
-
-                    if !recentToolUses.isEmpty {
-                        InspectorSection(title: "Recent Tool Calls") {
-                            ForEach(recentToolUses) { msg in
-                                InspectorToolRow(message: msg)
-                            }
-                        }
-                    }
-
-                    if !recentMessages.isEmpty {
-                        InspectorSection(title: "Recent Messages") {
-                            ForEach(recentMessages) { msg in
-                                InspectorMessageRow(message: msg)
-                            }
-                        }
-                    }
-
-                    if !contextMessages.isEmpty {
-                        InspectorSection(title: "Context (\(contextMessages.count) entries)") {
-                            ScrollView(.vertical) {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    ForEach(contextMessages.indices, id: \.self) { i in
-                                        ContextMessageRow(message: contextMessages[i])
-                                    }
-                                }
-                            }
-                            .frame(maxHeight: 400)
-                        }
-                    }
-
-                    if !llmTurns.isEmpty {
-                        InspectorSection(title: "LLM Turns (\(llmTurns.count))") {
-                            VStack(alignment: .leading, spacing: 2) {
-                                ForEach(Array(llmTurns.enumerated()), id: \.element.id) { i, turn in
-                                    LLMTurnDisclosureRow(
-                                        turn: turn,
-                                        turnNumber: i + 1,
-                                        isExpanded: Binding(
-                                            get: { expandedTurnIDs.contains(turn.id) },
-                                            set: { expand in
-                                                if expand { expandedTurnIDs.insert(turn.id) }
-                                                else { expandedTurnIDs.remove(turn.id) }
-                                            }
-                                        )
-                                    )
-                                }
-                            }
-                        }
-                        .onAppear {
-                            if let last = llmTurns.last { expandedTurnIDs.insert(last.id) }
-                        }
-                        .onChange(of: llmTurns.count) {
-                            // Project rule: defer @State mutation out of .onChange.
-                            if let last = llmTurns.last {
-                                DispatchQueue.main.async { self.expandedTurnIDs.insert(last.id) }
-                            }
-                        }
-                    }
-
-                    // Direct message input
-                    InspectorSection(title: "Direct Message") {
-                        DirectMessageInputRow(
-                            placeholder: "Message \(role.displayName) privately…",
-                            onSend: { text in
-                                Task { await viewModel.sendDirectMessage(to: role, text: text) }
-                            }
-                        )
-                    }
+            AgentInspectorWindowSections(
+                role: role,
+                availableTools: availableTools,
+                recentToolUses: recentToolUses,
+                recentMessages: recentMessages,
+                contextMessages: contextMessages,
+                llmTurns: llmTurns,
+                expandedTurnIDs: $expandedTurnIDs,
+                onSendDirectMessage: { [viewModel] text in
+                    Task { await viewModel.sendDirectMessage(to: role, text: text) }
                 }
-                .padding(16)
-            }
+            )
         }
         .frame(minWidth: 600, idealWidth: 800, minHeight: 500, idealHeight: 700)
-        .onAppear { if isProcessing { processingStartDate = Date() } }
+        .onAppear {
+            // Project rule: defer @State mutations out of lifecycle closures.
+            if isProcessing {
+                DispatchQueue.main.async { processingStartDate = Date() }
+            }
+        }
         .onChange(of: isProcessing) { _, newValue in
-            // Project rule: defer @State mutation out of .onChange.
             DispatchQueue.main.async {
-                self.processingStartDate = newValue ? Date() : nil
+                processingStartDate = newValue ? Date() : nil
             }
         }
     }

@@ -60,74 +60,7 @@ struct MemoryEditorView: View {
         .task {
             await shared.refreshMemories()
         }
-        .onChange(of: searchText) {
-            searchTask?.cancel()
-            let query = searchText.trimmingCharacters(in: .whitespaces)
-            if query.isEmpty {
-                // Project rule: defer @State mutations out of .onChange so they don't
-                // race the @Observable change that fired this closure.
-                DispatchQueue.main.async {
-                    self.memorySimilarities.removeAll()
-                    self.taskSummarySimilarities.removeAll()
-                    self.isSearching = false
-                    self.searchErrorMessage = nil
-                    self.searchStats = nil
-                }
-                return
-            }
-            DispatchQueue.main.async {
-                self.isSearching = true
-                self.searchErrorMessage = nil
-            }
-            // Note: `searchTask = Task { … }` is intentionally synchronous here, not wrapped
-            // in DispatchQueue.main.async. The cancel-then-replace pattern at the top of
-            // this closure (`searchTask?.cancel()`) relies on the assignment landing before
-            // the next keystroke's onChange runs; deferring would let two tasks race past
-            // their cancellation guards on rapid typing.
-            searchTask = Task {
-                try? await Task.sleep(for: .milliseconds(300))
-                guard !Task.isCancelled else { return }
-
-                // Snapshot the corpus shape BEFORE the search so the stats reflect what
-                // was actually searched (the corpus could change between snapshot and
-                // display, e.g. if a memory is saved during the await).
-                let memDocs = shared.storedMemories.count
-                let memVectors = shared.storedMemories.reduce(0) { $0 + ($1.embedding.isEmpty ? 0 : 1) }
-                let taskDocs = shared.storedTaskSummaries.count
-                let taskVectors = shared.storedTaskSummaries.reduce(0) { $0 + ($1.embedding.isEmpty ? 0 : 1) }
-
-                let started = Date()
-                do {
-                    let memResults = try await shared.searchMemories(query: query)
-                    let taskResults = try await shared.searchTaskSummaries(query: query)
-                    let elapsed = Date().timeIntervalSince(started)
-                    guard !Task.isCancelled else { return }
-
-                    var memScores: [UUID: Double] = [:]
-                    for r in memResults { memScores[r.memory.id] = r.similarity }
-                    memorySimilarities = memScores
-
-                    var taskScores: [UUID: Double] = [:]
-                    for r in taskResults { taskScores[r.summary.id] = r.similarity }
-                    taskSummarySimilarities = taskScores
-                    searchErrorMessage = nil
-                    searchStats = SearchStats(
-                        memoryDocCount: memDocs,
-                        memoryVectorCount: memVectors,
-                        taskDocCount: taskDocs,
-                        taskVectorCount: taskVectors,
-                        elapsedSeconds: elapsed
-                    )
-                } catch {
-                    guard !Task.isCancelled else { return }
-                    memorySimilarities.removeAll()
-                    taskSummarySimilarities.removeAll()
-                    searchErrorMessage = error.localizedDescription
-                    searchStats = nil
-                }
-                isSearching = false
-            }
-        }
+        .onChange(of: searchText) { handleSearchTextChanged() }
         .onDisappear {
             searchTask?.cancel()
         }
@@ -158,6 +91,82 @@ struct MemoryEditorView: View {
             }
         } message: {
             Text("This cannot be undone.")
+        }
+    }
+
+    // MARK: - Search debounce
+
+    /// Cancels any in-flight search task, snapshots corpus stats, and kicks off a fresh
+    /// debounced search after 300ms. Empty queries clear all similarity scores instead.
+    /// Extracted from the `.onChange(of: searchText)` body so the view's `body` stays
+    /// readable; the synchronous-assignment ordering of `searchTask` is preserved (see
+    /// the inline note below).
+    private func handleSearchTextChanged() {
+        searchTask?.cancel()
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        if query.isEmpty {
+            // Project rule: defer @State mutations out of .onChange so they don't
+            // race the @Observable change that fired this closure.
+            DispatchQueue.main.async {
+                self.memorySimilarities.removeAll()
+                self.taskSummarySimilarities.removeAll()
+                self.isSearching = false
+                self.searchErrorMessage = nil
+                self.searchStats = nil
+            }
+            return
+        }
+        DispatchQueue.main.async {
+            self.isSearching = true
+            self.searchErrorMessage = nil
+        }
+        // Note: `searchTask = Task { … }` is intentionally synchronous here, not wrapped
+        // in DispatchQueue.main.async. The cancel-then-replace pattern at the top of
+        // this method (`searchTask?.cancel()`) relies on the assignment landing before
+        // the next keystroke's onChange runs; deferring would let two tasks race past
+        // their cancellation guards on rapid typing.
+        searchTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+
+            // Snapshot the corpus shape BEFORE the search so the stats reflect what
+            // was actually searched (the corpus could change between snapshot and
+            // display, e.g. if a memory is saved during the await).
+            let memDocs = shared.storedMemories.count
+            let memVectors = shared.storedMemories.reduce(0) { $0 + ($1.embedding.isEmpty ? 0 : 1) }
+            let taskDocs = shared.storedTaskSummaries.count
+            let taskVectors = shared.storedTaskSummaries.reduce(0) { $0 + ($1.embedding.isEmpty ? 0 : 1) }
+
+            let started = Date()
+            do {
+                let memResults = try await shared.searchMemories(query: query)
+                let taskResults = try await shared.searchTaskSummaries(query: query)
+                let elapsed = Date().timeIntervalSince(started)
+                guard !Task.isCancelled else { return }
+
+                var memScores: [UUID: Double] = [:]
+                for r in memResults { memScores[r.memory.id] = r.similarity }
+                memorySimilarities = memScores
+
+                var taskScores: [UUID: Double] = [:]
+                for r in taskResults { taskScores[r.summary.id] = r.similarity }
+                taskSummarySimilarities = taskScores
+                searchErrorMessage = nil
+                searchStats = SearchStats(
+                    memoryDocCount: memDocs,
+                    memoryVectorCount: memVectors,
+                    taskDocCount: taskDocs,
+                    taskVectorCount: taskVectors,
+                    elapsedSeconds: elapsed
+                )
+            } catch {
+                guard !Task.isCancelled else { return }
+                memorySimilarities.removeAll()
+                taskSummarySimilarities.removeAll()
+                searchErrorMessage = error.localizedDescription
+                searchStats = nil
+            }
+            isSearching = false
         }
     }
 
@@ -633,46 +642,11 @@ struct MemoryEditorView: View {
             ScrollView {
                 VStack(spacing: 0) {
                     ForEach(Array(filtered.enumerated()), id: \.element.id) { index, summary in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(summary.title)
-                                    .font(.body.bold())
-                                Spacer()
-                                if let score = taskSummarySimilarities[summary.id] {
-                                    Text(String(format: "%.0f%%", score * 100))
-                                        .font(.caption.bold().monospaced())
-                                        .foregroundStyle(similarityColor(score))
-                                }
-                                Text(summary.status.rawValue)
-                                    .font(.caption2)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1)
-                                    .background(statusColor(summary.status).opacity(0.15))
-                                    .foregroundStyle(statusColor(summary.status))
-                                    .clipShape(RoundedRectangle(cornerRadius: 3))
-                            }
-
-                            MarkdownText(content: summary.summary, baseFont: .callout)
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-
-                            // ID on the lower left (matching the Task Details window),
-                            // creation date of the actual task on the lower right.
-                            HStack(spacing: 8) {
-                                Text("ID: \(summary.id.uuidString)")
-                                    .font(.caption2.monospaced())
-                                    .foregroundStyle(.tertiary)
-                                    .textSelection(.enabled)
-                                Spacer()
-                                Text("Created \(formatDateTime(summary.taskCreatedAt))")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(index.isMultiple(of: 2) ? Color.clear : AppColors.subtleRowBackgroundDim)
+                        MemoryTaskSummaryRow(
+                            summary: summary,
+                            similarityScore: taskSummarySimilarities[summary.id],
+                            isAlternateRow: !index.isMultiple(of: 2)
+                        )
                     }
                 }
             }

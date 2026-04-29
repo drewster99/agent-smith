@@ -363,43 +363,9 @@ private struct AgentCard: View {
         return min(100, (inputTokens * 100) / config.maxContextTokens)
     }
 
-    @State private var showingModelStats = false
-
-    private func modelInfoLine(config: ModelConfiguration) -> some View {
-        let contextLabel = Self.formatTokenCount(config.maxContextTokens)
-        return HStack(spacing: 6) {
-            Button(action: { showingModelStats = true }, label: {
-                Text(config.modelID)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            })
-            .buttonStyle(.plain)
-            .popover(isPresented: $showingModelStats, arrowEdge: .bottom) {
-                ModelStatsPopover(turns: llmTurns, modelID: config.modelID, role: role)
-            }
-            Spacer()
-            if let pct = contextPercent, let tokens = lastInputTokens {
-                Text("\(Self.formatTokenCount(tokens)) / \(contextLabel) (\(pct)%)")
-            } else {
-                Text("\(contextLabel) ctx")
-            }
-        }
-        .font(AppFonts.inspectorLabel)
-        .foregroundStyle(.tertiary)
-    }
-
-    /// Formats a token count as a compact label (e.g. 128000 → "128K", 1048576 → "1.0M").
-    private static func formatTokenCount(_ count: Int) -> String {
-        if count >= 1_000_000 {
-            let value = Double(count) / 1_000_000.0
-            let formatted = String(format: "%.1f", value)
-            // Drop trailing ".0" for clean round numbers.
-            let label = formatted.hasSuffix(".0") ? String(formatted.dropLast(2)) : formatted
-            return "\(label)M"
-        } else if count >= 1_000 {
-            return "\(count / 1_000)K"
-        }
-        return "\(count)"
+    /// Whether the agent has been terminated — has activity history but no live tools.
+    private var isTerminated: Bool {
+        availableTools.isEmpty && !contextMessages.isEmpty
     }
 
     var body: some View {
@@ -424,32 +390,13 @@ private struct AgentCard: View {
 
                         Spacer()
 
-                        if isProcessing {
-                            HStack(spacing: 4) {
-                                ProgressView()
-                                    .controlSize(.mini)
-                                Text(role == .jones ? "Evaluating" : "Thinking")
-                                    .font(AppFonts.inspectorLabel)
-                                    .foregroundStyle(.secondary)
-                                if let start = processingStartDate {
-                                    ThinkingElapsedTime(since: start, font: AppFonts.inspectorLabel)
-                                }
-                            }
-                        } else if hasActivity {
-                            if role != .jones && availableTools.isEmpty && !contextMessages.isEmpty {
-                                Text("Terminated")
-                                    .font(AppFonts.inspectorLabel)
-                                    .foregroundStyle(.orange)
-                            } else {
-                                Text("Idle")
-                                    .font(AppFonts.inspectorLabel)
-                                    .foregroundStyle(.secondary)
-                            }
-                        } else {
-                            Text("Not active")
-                                .font(AppFonts.inspectorLabel)
-                                .foregroundStyle(.tertiary)
-                        }
+                        AgentCardStatusBadge(
+                            isProcessing: isProcessing,
+                            hasActivity: hasActivity,
+                            isJones: role == .jones,
+                            isTerminated: role != .jones && isTerminated,
+                            processingStartDate: processingStartDate
+                        )
 
                         if opensInWindow {
                             Image(systemName: "arrow.up.forward.square")
@@ -489,101 +436,24 @@ private struct AgentCard: View {
 
             // Model info subtitle — aligned with agent name text (past the dot)
             if let config = modelConfig {
-                modelInfoLine(config: config)
+                AgentCardModelInfoLine(modelConfig: config, llmTurns: llmTurns, role: role)
                     .padding(.leading, 28) // 12 (container) + 8 (dot) + 8 (spacing)
                     .padding(.trailing, 12)
                     .padding(.bottom, 6)
             }
 
             if expanded && !opensInWindow {
-                VStack(alignment: .leading, spacing: 10) {
-                    if !availableTools.isEmpty {
-                        InspectorSection(title: "Available Tools") {
-                            AvailableToolsGrid(toolNames: availableTools)
-                        }
-                    }
-
-                    // For Jones, evaluations ARE the primary work product — surface them
-                    // above Recent Tool Calls (which for Jones is just file_read calls
-                    // made for evaluation context, not the user-facing decisions).
-                    if role == .jones && !evaluationRecords.isEmpty {
-                        InspectorSection(title: "Security Evaluations (\(evaluationRecords.count))") {
-                            ForEach(Array(evaluationRecords.suffix(10).reversed())) { record in
-                                EvaluationRecordRow(record: record)
-                            }
-                        }
-                    }
-
-                    if !recentToolUses.isEmpty {
-                        InspectorSection(title: "Recent Tool Calls") {
-                            ForEach(recentToolUses) { msg in
-                                InspectorToolRow(message: msg)
-                            }
-                        }
-                    }
-
-                    if !recentMessages.isEmpty {
-                        InspectorSection(title: "Recent Messages") {
-                            ForEach(recentMessages) { msg in
-                                InspectorMessageRow(message: msg)
-                            }
-                        }
-                    }
-
-                    if !contextMessages.isEmpty {
-                        InspectorSection(title: "Context (\(contextMessages.count) entries)") {
-                            ScrollView(.vertical) {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    ForEach(contextMessages.indices, id: \.self) { i in
-                                        ContextMessageRow(message: contextMessages[i])
-                                    }
-                                }
-                            }
-                            .frame(maxHeight: 300)
-                        }
-                    }
-
-                    if !llmTurns.isEmpty {
-                        InspectorSection(title: "LLM Turns (\(llmTurns.count))") {
-                            VStack(alignment: .leading, spacing: 2) {
-                                ForEach(Array(llmTurns.enumerated()), id: \.element.id) { i, turn in
-                                    LLMTurnDisclosureRow(
-                                        turn: turn,
-                                        turnNumber: i + 1,
-                                        isExpanded: Binding(
-                                            get: { expandedTurnIDs.contains(turn.id) },
-                                            set: { expand in
-                                                if expand { expandedTurnIDs.insert(turn.id) }
-                                                else { expandedTurnIDs.remove(turn.id) }
-                                            }
-                                        )
-                                    )
-                                }
-                            }
-                        }
-                        .onAppear {
-                            if let last = llmTurns.last { expandedTurnIDs.insert(last.id) }
-                        }
-                        .onChange(of: llmTurns.count) {
-                            // Project rule: defer @State mutation out of .onChange.
-                            if let last = llmTurns.last {
-                                DispatchQueue.main.async { self.expandedTurnIDs.insert(last.id) }
-                            }
-                        }
-                    }
-
-                    // Direct message input — hidden for Jones since its filter drops all private messages
-                    if role != .jones {
-                        InspectorSection(title: "Direct Message") {
-                            DirectMessageInputRow(
-                                placeholder: "Message \(role.displayName) privately…",
-                                onSend: onSendDirectMessage
-                            )
-                        }
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 10)
+                AgentCardExpandedSections(
+                    role: role,
+                    availableTools: availableTools,
+                    evaluationRecords: evaluationRecords,
+                    recentToolUses: recentToolUses,
+                    recentMessages: recentMessages,
+                    contextMessages: contextMessages,
+                    llmTurns: llmTurns,
+                    expandedTurnIDs: $expandedTurnIDs,
+                    onSendDirectMessage: onSendDirectMessage
+                )
             }
 
             Divider()
@@ -604,11 +474,15 @@ private struct AgentCard: View {
                 }
             )
         }
-        .onAppear { if isProcessing { processingStartDate = Date() } }
+        .onAppear {
+            // Project rule: defer @State mutations out of lifecycle closures.
+            if isProcessing {
+                DispatchQueue.main.async { processingStartDate = Date() }
+            }
+        }
         .onChange(of: isProcessing) { _, newValue in
-            // Project rule: defer @State mutation out of .onChange.
             DispatchQueue.main.async {
-                self.processingStartDate = newValue ? Date() : nil
+                processingStartDate = newValue ? Date() : nil
             }
         }
     }
@@ -758,7 +632,10 @@ struct ContextMessageRow: View {
         })
         .buttonStyle(.plain)
         .onAppear {
-            if initiallyExpanded { expanded = true }
+            // Project rule: defer @State mutations out of lifecycle closures.
+            if initiallyExpanded {
+                DispatchQueue.main.async { expanded = true }
+            }
         }
     }
 
@@ -828,7 +705,7 @@ struct ContextMessageRow: View {
 }
 
 /// A row showing a single security evaluation result from SecurityEvaluator.
-private struct EvaluationRecordRow: View {
+struct EvaluationRecordRow: View {
     let record: EvaluationRecord
     @State private var expanded = false
 
@@ -1001,118 +878,36 @@ struct AgentConfigSheet: View {
 
                     Divider()
 
-                    // Speech
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Speech")
-                            .font(AppFonts.inspectorLabel.weight(.bold))
-                            .foregroundStyle(.secondary)
-
-                        VoicePickerRow(
-                            voiceIdentifier: Binding(
-                                get: { speechController.agentVoiceIdentifier[role] ?? "" },
-                                set: { speechController.setVoice($0, for: role) }
-                            ),
-                            availableVoices: availableVoices,
-                            onTest: { speechController.previewSpeech(for: role) }
-                        )
-
-                        ForEach(AgentSoundCategory.allCases.filter(\.supportsSpeech), id: \.self) { category in
-                            Toggle(
-                                "Speak \(category.displayName.lowercased())",
-                                isOn: Binding(
-                                    get: { speechController.soundConfig(for: role, category: category).speakEnabled },
-                                    set: { speechController.setSpeakEnabled($0, for: role, category: category) }
-                                )
-                            )
-                            .font(AppFonts.inspectorBody)
-                        }
-                    }
+                    AgentConfigSpeechSection(
+                        role: role,
+                        speechController: speechController,
+                        availableVoices: availableVoices
+                    )
 
                     Divider()
 
-                    // Sounds
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Sounds")
-                            .font(AppFonts.inspectorLabel.weight(.bold))
-                            .foregroundStyle(.secondary)
-
-                        ForEach(AgentSoundCategory.allCases, id: \.self) { category in
-                            SoundPickerRow(
-                                label: category.displayName,
-                                soundName: Binding(
-                                    get: { speechController.soundConfig(for: role, category: category).soundName },
-                                    set: { speechController.setSoundName($0, for: role, category: category) }
-                                ),
-                                onPreview: { speechController.previewSound(named: $0) }
-                            )
-                        }
-                    }
+                    AgentConfigSoundsSection(role: role, speechController: speechController)
 
                     Divider()
 
-                    // Responsiveness
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Responsiveness")
-                            .font(AppFonts.inspectorLabel.weight(.bold))
-                            .foregroundStyle(.secondary)
-
-                        HStack(spacing: 12) {
-                            Text("Max Tool Calls / Response")
-                                .font(AppFonts.inspectorBody)
-                                .foregroundStyle(.secondary)
-                            Stepper(
-                                "\(draftMaxToolCalls)",
-                                value: $draftMaxToolCalls,
-                                in: 1...500,
-                                step: 1
-                            )
-                            .labelsHidden()
-                            Text("\(draftMaxToolCalls)")
-                                .font(AppFonts.inspectorBody)
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                        }
-
-                        HStack(spacing: 12) {
-                            Text("Poll Interval")
-                                .font(AppFonts.inspectorBody)
-                                .foregroundStyle(.secondary)
-                            Stepper(
-                                "\(Int(draftPollInterval))s",
-                                value: $draftPollInterval,
-                                in: 1...300,
-                                step: 1
-                            )
-                            .labelsHidden()
-                            Text("\(Int(draftPollInterval)) seconds")
-                                .font(AppFonts.inspectorBody)
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                        }
-                    }
+                    AgentConfigResponsivenessSection(
+                        draftMaxToolCalls: $draftMaxToolCalls,
+                        draftPollInterval: $draftPollInterval
+                    )
 
                     Divider()
 
-                    // LLM System Prompt
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("LLM System Prompt")
-                            .font(AppFonts.inspectorLabel.weight(.bold))
-                            .foregroundStyle(.secondary)
-                        TextEditor(text: $draftPrompt)
-                            .font(AppFonts.inspectorBody)
-                            .frame(maxWidth: .infinity, minHeight: 200)
-                            .scrollContentBackground(.hidden)
-                            .background(AppColors.subtleRowBackground)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
+                    AgentConfigSystemPromptSection(draftPrompt: $draftPrompt)
                 }
                 .padding(20)
             }
         }
         .frame(minWidth: 560, idealWidth: 720, minHeight: 540, idealHeight: 720)
         .onAppear {
-            availableVoices = AVSpeechSynthesisVoice.speechVoices()
+            // Project rule: defer @State mutation out of lifecycle closures.
+            let voices = AVSpeechSynthesisVoice.speechVoices()
                 .sorted { $0.name < $1.name }
+            DispatchQueue.main.async { availableVoices = voices }
         }
     }
 }

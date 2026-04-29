@@ -28,84 +28,26 @@ struct UserInputView: View {
             }
 
             HStack(spacing: 8) {
-                VStack(spacing: 6) {
-                    Button {
-                        showingFilePicker = true
-                    } label: {
-                        Image(systemName: "paperclip")
-                            .imageScale(.large)
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(!isRunning)
+                UserInputAttachButtonsColumn(
+                    isEnabled: isRunning,
+                    onAttach: { showingFilePicker = true },
+                    onExpand: { showingExpandedEditor = true }
+                )
 
-                    Button {
-                        showingExpandedEditor = true
-                    } label: {
-                        Image(systemName: "square.and.pencil")
-                            .imageScale(.large)
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(!isRunning)
-                    .help("Open expanded editor")
-                }
+                UserInputTextField(
+                    text: $text,
+                    isRunning: isRunning,
+                    hasContent: hasContent,
+                    onSend: onSend,
+                    onHistoryUp: onHistoryUp,
+                    onHistoryDown: onHistoryDown,
+                    onPaste: onPaste
+                )
 
-                ZStack(alignment: .topLeading) {
-                    // Placeholder text when empty
-                    if text.isEmpty {
-                        Text(isRunning ? "Message Agent Smith..." : "Press Start to begin messaging...")
-                            .font(AppFonts.inputField)
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .allowsHitTesting(false)
-                    }
-
-                    TextEditor(text: $text)
-                        .font(AppFonts.inputField)
-                        .scrollContentBackground(.hidden)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .frame(height: lineHeight * 5 + verticalPadding)
-                }
-                .background(AppColors.secondaryBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .onKeyPress(.return, phases: .down) { keyPress in
-                    // Shift+Enter or Option+Enter: insert newline (let through)
-                    if keyPress.modifiers.contains(.shift) || keyPress.modifiers.contains(.option) {
-                        return .ignored
-                    }
-                    // Plain Enter: send message
-                    if isRunning && hasContent {
-                        onSend()
-                    }
-                    return .handled
-                }
-                .onKeyPress(.upArrow) {
-                    // Only use history navigation when text is empty or single-line
-                    guard text.isEmpty || !text.contains("\n") else { return .ignored }
-                    return onHistoryUp() ? .handled : .ignored
-                }
-                .onKeyPress(.downArrow) {
-                    guard text.isEmpty || !text.contains("\n") else { return .ignored }
-                    return onHistoryDown() ? .handled : .ignored
-                }
-                .onKeyPress(characters: .init(charactersIn: "v"), phases: .down, action: { keyPress in
-                    guard keyPress.modifiers == .command else { return .ignored }
-                    // Only intercept if the clipboard has non-text content (images/files).
-                    // Let normal text paste through to the TextEditor.
-                    let pasteboard = NSPasteboard.general
-                    let hasFiles = pasteboard.canReadObject(forClasses: [NSURL.self], options: [
-                        .urlReadingFileURLsOnly: true
-                    ])
-                    let hasImage = pasteboard.data(forType: .tiff) != nil
-                    guard hasFiles || hasImage else { return .ignored }
-                    return onPaste() ? .handled : .ignored
-                })
-
-                Button(action: onSend) {
+                Button(action: onSend, label: {
                     Image(systemName: "paperplane.fill")
                         .imageScale(.large)
-                }
+                })
                 .buttonStyle(.borderedProminent)
                 .disabled(!hasContent || !isRunning)
                 .opacity(hasContent && isRunning ? 1.0 : 0.4)
@@ -126,11 +68,6 @@ struct UserInputView: View {
             ExpandedEditorSheet(text: $text)
         }
     }
-
-    /// Approximate line height for the input font, used to size the TextEditor.
-    private let lineHeight: CGFloat = 18
-    /// Vertical padding inside the TextEditor (top + bottom).
-    private let verticalPadding: CGFloat = 12
 
     private var hasContent: Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingAttachments.isEmpty
@@ -250,6 +187,9 @@ private struct ExpandedEditorSheet: View {
                 .padding(8)
         }
         .frame(minWidth: 600, minHeight: 400)
-        .onAppear { draft = text }
+        .onAppear {
+            // Project rule: defer @State mutation out of lifecycle closures.
+            DispatchQueue.main.async { draft = text }
+        }
     }
 }

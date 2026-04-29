@@ -9,9 +9,19 @@ public struct SaveMemoryTool: AgentTool {
     public let name = "save_memory"
     public let toolDescription = """
         Save a piece of information to long-term memory for future retrieval. \
-        Use this when you discover something useful that would help with future tasks — \
-        a pattern, a gotcha, a configuration detail, a user preference, a lesson learned. \
-        Quality over quantity: only save genuinely useful insights, not routine observations. \
+        Saved memories are surfaced automatically by semantic search on future tasks, \
+        so future agents avoid redoing the discovery you just did. \
+        PRIMARY use case — procedural recipes you had to figure out: \
+        "How to <do the thing>" with concrete step-by-step instructions, exact tool, \
+        exact commands or AppleScript, exact file paths, exact API endpoints, exact \
+        parameter names. Future-Brown should be able to execute the recipe with no \
+        further discovery. \
+        Also save: gotchas / workarounds / undocumented limits, user-specific \
+        identifiers (file paths, contacts, account names, project roots), and stated \
+        user preferences. \
+        Lead with a search-friendly title sentence so the memory is findable later. \
+        Tag with one of: `procedure`, `how-to`, `gotcha`, `user-config`, `identifier`, \
+        `domain-fact` — tags drive consolidation. One concept per memory. \
         If a closely related memory already exists, it will be automatically consolidated.
         """
 

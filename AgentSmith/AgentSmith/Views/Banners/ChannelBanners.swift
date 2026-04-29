@@ -63,89 +63,18 @@ struct TaskCreatedBanner: View {
             // Scheduled-fire chip. Lives in its own band when there's no Context row;
             // when there IS a Context row below, this sits as a complementary row above it.
             if let runAt = scheduledRunAt {
-                HStack(spacing: 4) {
-                    Image(systemName: "clock")
-                        .font(AppFonts.bannerIconSmall)
-                        .foregroundStyle(scheduledAccent)
-                    Text("Scheduled \(formatScheduledTime(runAt))")
-                        .font(AppFonts.channelBody)
-                        .foregroundStyle(scheduledAccent)
-                    Spacer()
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
+                TaskCreatedBannerScheduledChip(runAt: runAt)
             }
 
             // Semantic context retrieved at task creation
             if hasContext {
-                Divider().opacity(0.3).padding(.horizontal, 10)
-
-                Button(action: { isContextExpanded.toggle() }, label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "brain.head.profile")
-                            .font(AppFonts.bannerIconSmall)
-                            .foregroundStyle(.purple)
-
-                        let parts = [
-                            memoryCount > 0
-                                ? "\(memoryCount) memor\(memoryCount == 1 ? "y" : "ies")"
-                                : nil,
-                            priorTaskCount > 0
-                                ? "\(priorTaskCount) prior task\(priorTaskCount == 1 ? "" : "s")"
-                                : nil
-                        ].compactMap { $0 }
-
-                        Text("Context: \(parts.joined(separator: ", "))")
-                            .font(AppFonts.channelBody)
-                            .foregroundStyle(.purple.opacity(0.8))
-
-                        Text(isContextExpanded ? "(hide)" : "(show)")
-                            .font(.caption)
-                            .foregroundStyle(.blue)
-
-                        Spacer()
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .contentShape(Rectangle())
-                })
-                .buttonStyle(.plain)
-
-                if isContextExpanded {
-                    VStack(alignment: .leading, spacing: 10) {
-                        if let contextMemories {
-                            Text("Memories")
-                                .font(.caption.bold())
-                                .foregroundStyle(.secondary)
-                            let memoryEntries = parseContextEntries(contextMemories)
-                            ForEach(Array(memoryEntries.enumerated()), id: \.offset) { idx, entry in
-                                if idx > 0 {
-                                    Divider().opacity(0.4)
-                                }
-                                Text(entry)
-                                    .font(AppFonts.inspectorBody)
-                                    .foregroundStyle(.secondary)
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                        }
-                        if let contextPriorTasks {
-                            Text("Prior Tasks")
-                                .font(.caption.bold())
-                                .foregroundStyle(.secondary)
-                            let taskEntries = parseContextEntries(contextPriorTasks)
-                            ForEach(Array(taskEntries.enumerated()), id: \.offset) { idx, entry in
-                                if idx > 0 {
-                                    Divider().opacity(0.4)
-                                }
-                                contextEntryView(entry)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                TaskCreatedBannerContextSection(
+                    memoryCount: memoryCount,
+                    priorTaskCount: priorTaskCount,
+                    contextMemories: contextMemories,
+                    contextPriorTasks: contextPriorTasks,
+                    isExpanded: $isContextExpanded
+                )
             }
 
             // Bottom rule
@@ -835,8 +764,7 @@ struct MemoryBanner: View {
                         .foregroundStyle(.secondary)
                     let entries = parseContextEntries(memoryResults)
                     ForEach(Array(entries.enumerated()), id: \.offset) { idx, entry in
-                        if idx > 0 { Divider().opacity(0.4) }
-                        contextEntryView(entry)
+                        ContextEntryDividedRow(entry: entry, showsDivider: idx > 0)
                     }
                 }
                 if let taskResults, !taskResults.isEmpty {
@@ -845,8 +773,7 @@ struct MemoryBanner: View {
                         .foregroundStyle(.secondary)
                     let entries = parseContextEntries(taskResults)
                     ForEach(Array(entries.enumerated()), id: \.offset) { idx, entry in
-                        if idx > 0 { Divider().opacity(0.4) }
-                        contextEntryView(entry)
+                        ContextEntryDividedRow(entry: entry, showsDivider: idx > 0)
                     }
                 }
             }
