@@ -13,6 +13,7 @@ struct SummarizerCard: View {
     @Bindable var viewModel: AppViewModel
     let messages: [ChannelMessage]
     let isProcessing: Bool
+    let executingTools: [String]
     let currentSystemPrompt: String
     let pollInterval: TimeInterval
     let maxToolCalls: Int
@@ -62,6 +63,7 @@ struct SummarizerCard: View {
             SummarizerCardHeader(
                 hasActivity: hasActivity,
                 isProcessing: isProcessing,
+                executingTools: executingTools,
                 roleColor: Self.roleColor,
                 expanded: $expanded,
                 onShowConfig: { showingConfig = true }

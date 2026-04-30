@@ -9,6 +9,7 @@ struct AgentInspectorWindow: View {
 
     @State private var expandedTurnIDs: Set<UUID> = []
     @State private var processingStartDate: Date?
+    @State private var toolExecutingStartDate: Date?
 
     private var roleColor: Color { AppColors.color(for: .agent(role)) }
 
@@ -22,6 +23,14 @@ struct AgentInspectorWindow: View {
     }
 
     private var isProcessing: Bool { viewModel.processingRoles.contains(role) }
+    private var executingTools: [String] {
+        guard let counts = viewModel.toolExecutingByRole[role] else { return [] }
+        var out: [String] = []
+        for name in counts.keys.sorted() {
+            for _ in 0..<(counts[name] ?? 0) { out.append(name) }
+        }
+        return out
+    }
     private var availableTools: [String] { viewModel.agentToolNames[role] ?? [] }
     private var contextMessages: [LLMMessage] { viewModel.inspectorStore.contextMessages(for: role) }
     private var llmTurns: [LLMTurnRecord] { viewModel.inspectorStore.turnsByRole[role] ?? [] }
@@ -50,7 +59,9 @@ struct AgentInspectorWindow: View {
                 hasActivity: hasActivity,
                 isProcessing: isProcessing,
                 isTerminated: role != .jones && isTerminated,
+                executingTools: executingTools,
                 processingStartDate: processingStartDate,
+                toolExecutingStartDate: toolExecutingStartDate,
                 onDone: { dismiss() }
             )
 
@@ -75,10 +86,18 @@ struct AgentInspectorWindow: View {
             if isProcessing {
                 DispatchQueue.main.async { processingStartDate = Date() }
             }
+            if !executingTools.isEmpty {
+                DispatchQueue.main.async { toolExecutingStartDate = Date() }
+            }
         }
         .onChange(of: isProcessing) { _, newValue in
             DispatchQueue.main.async {
                 processingStartDate = newValue ? Date() : nil
+            }
+        }
+        .onChange(of: executingTools.isEmpty) { _, isEmpty in
+            DispatchQueue.main.async {
+                toolExecutingStartDate = isEmpty ? nil : Date()
             }
         }
     }

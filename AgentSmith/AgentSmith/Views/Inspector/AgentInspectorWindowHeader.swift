@@ -9,7 +9,9 @@ struct AgentInspectorWindowHeader: View {
     let hasActivity: Bool
     let isProcessing: Bool
     let isTerminated: Bool
+    let executingTools: [String]
     let processingStartDate: Date?
+    let toolExecutingStartDate: Date?
     let onDone: () -> Void
 
     var body: some View {
@@ -34,6 +36,17 @@ struct AgentInspectorWindowHeader: View {
                         ThinkingElapsedTime(since: start, font: .headline)
                     }
                 }
+            } else if !executingTools.isEmpty {
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text(workingLabel)
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                    if let start = toolExecutingStartDate {
+                        ThinkingElapsedTime(since: start, font: .headline)
+                    }
+                }
             } else if hasActivity && isTerminated {
                 Text("Terminated")
                     .font(.headline)
@@ -48,5 +61,12 @@ struct AgentInspectorWindowHeader: View {
                 .keyboardShortcut(.cancelAction)
         }
         .padding(16)
+    }
+
+    private var workingLabel: String {
+        if executingTools.count == 1 {
+            return "Working — \(executingTools[0])"
+        }
+        return "Working — \(executingTools.count) tools"
     }
 }

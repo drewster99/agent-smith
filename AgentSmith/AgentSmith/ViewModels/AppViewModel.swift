@@ -131,6 +131,12 @@ final class AppViewModel {
     private static let maxMessageHistory = 100
     /// Roles of agents that are currently waiting for an LLM response.
     var processingRoles: Set<AgentRole> = []
+    /// Tool names currently executing, per agent role. A multiset (counts) — a single role
+    /// can have multiple parallel calls of the same tool in flight (e.g. parallel
+    /// `run_applescript`), so we track counts rather than a Set so the indicator clears
+    /// only when the LAST call of a given name finishes. Surfaced in the inspector status
+    /// badge as "Working — <toolName>" when no LLM call is also in flight.
+    var toolExecutingByRole: [AgentRole: [String: Int]] = [:]
     /// Tools available to each agent role, populated when agents come online.
     var agentToolNames: [AgentRole: [String]] = [:]
     /// Whether the Inspector panel is visible.
@@ -499,6 +505,7 @@ final class AppViewModel {
                 self.abortReason = reason
                 self.isRunning = false
                 self.processingRoles.removeAll()
+                self.toolExecutingByRole.removeAll()
                 self.agentToolNames.removeAll()
                 self.inspectorStore.clearAll()
                 self.runtime = nil
@@ -512,6 +519,23 @@ final class AppViewModel {
                     self.processingRoles.insert(role)
                 } else {
                     self.processingRoles.remove(role)
+                }
+            }
+        }
+
+        await newRuntime.setOnToolExecutionStateChange { [weak self] role, toolName, started in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                var counts = self.toolExecutingByRole[role] ?? [:]
+                if started {
+                    counts[toolName, default: 0] += 1
+                } else if let n = counts[toolName] {
+                    if n <= 1 { counts.removeValue(forKey: toolName) } else { counts[toolName] = n - 1 }
+                }
+                if counts.isEmpty {
+                    self.toolExecutingByRole.removeValue(forKey: role)
+                } else {
+                    self.toolExecutingByRole[role] = counts
                 }
             }
         }
@@ -1012,6 +1036,7 @@ final class AppViewModel {
         stopLogger.notice("VM.stopAll runtime.stopAll returned session=\(self.session.name, privacy: .public) elapsedMs=\(Int(Date().timeIntervalSince(entry) * 1000), privacy: .public)")
         isRunning = false
         processingRoles.removeAll()
+        toolExecutingByRole.removeAll()
         agentToolNames.removeAll()
         inspectorStore.clearAll()
         channelStreamTask?.cancel()

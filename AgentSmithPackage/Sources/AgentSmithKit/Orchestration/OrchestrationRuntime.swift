@@ -83,6 +83,12 @@ public actor OrchestrationRuntime {
     private var onAbort: (@Sendable (String) -> Void)?
     /// Callback to notify the app layer when an agent starts or stops an LLM call.
     private var onProcessingStateChange: (@Sendable (AgentRole, Bool) -> Void)?
+    /// Callback to notify the app layer when an agent starts or stops executing a tool.
+    /// Distinct from `onProcessingStateChange` (LLM call) — fires for the tool-execution
+    /// span, which can be much longer (e.g. a slow AppleScript) and otherwise leaves the
+    /// UI showing the agent as "Idle" while it's actually blocked waiting on a tool to
+    /// return. The `String` parameter is the tool's name; `Bool` is `true` on start.
+    private var onToolExecutionStateChange: (@Sendable (AgentRole, String, Bool) -> Void)?
     /// Callback fired when an agent comes online, passing its role and configured tool names.
     private var onAgentStarted: (@Sendable (AgentRole, [String]) -> Void)?
     /// Callback fired when an agent records a new LLM turn, for incremental UI updates.
@@ -395,6 +401,12 @@ public actor OrchestrationRuntime {
     /// Registers a callback fired when an agent starts or stops an LLM API call.
     public func setOnProcessingStateChange(_ handler: @escaping @Sendable (AgentRole, Bool) -> Void) {
         onProcessingStateChange = handler
+    }
+
+    /// Registers a callback fired when an agent starts or stops executing a tool.
+    /// Parameters: agent role, tool name, started (true on start, false on completion).
+    public func setOnToolExecutionStateChange(_ handler: @escaping @Sendable (AgentRole, String, Bool) -> Void) {
+        onToolExecutionStateChange = handler
     }
 
     /// Registers a callback fired when an agent comes online, with its role and tool names.
@@ -1104,6 +1116,7 @@ public actor OrchestrationRuntime {
     private func clearObserverCallbacks() {
         onAbort = nil
         onProcessingStateChange = nil
+        onToolExecutionStateChange = nil
         onAgentStarted = nil
         onTurnRecorded = nil
         onEvaluationRecorded = nil
@@ -1116,6 +1129,7 @@ public actor OrchestrationRuntime {
     public var observerCallbacksCleared: Bool {
         onAbort == nil
             && onProcessingStateChange == nil
+            && onToolExecutionStateChange == nil
             && onAgentStarted == nil
             && onTurnRecorded == nil
             && onEvaluationRecorded == nil
@@ -1503,6 +1517,10 @@ public actor OrchestrationRuntime {
                 guard let self else { return }
                 Task { await self.notifyProcessingStateChange(role: .jones, isProcessing: isProcessing) }
             },
+            onToolExecutionStateChange: { [weak self] toolName, started in
+                guard let self else { return }
+                Task { await self.notifyToolExecutionStateChange(role: role, toolName: toolName, started: started) }
+            },
             scheduleWake: { [followUpScheduler] wakeAt, instructions, taskID, replacesID, recurrence, survivesTaskTermination in
                 guard let followUpScheduler else { return .error("Scheduler not available.") }
                 return await followUpScheduler.scheduleWake(
@@ -1557,6 +1575,11 @@ public actor OrchestrationRuntime {
 
     private func notifyProcessingStateChange(role: AgentRole, isProcessing: Bool) async {
         onProcessingStateChange?(role, isProcessing)
+        await powerManager?.activityOccurred()
+    }
+
+    private func notifyToolExecutionStateChange(role: AgentRole, toolName: String, started: Bool) async {
+        onToolExecutionStateChange?(role, toolName, started)
         await powerManager?.activityOccurred()
     }
 

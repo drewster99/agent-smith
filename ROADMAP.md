@@ -2,6 +2,18 @@
 
 ## Planned
 
+### Per-tool wall-clock timeouts
+Tool calls today run with no enforced wall-clock cap. A pathological invocation — e.g. a `run_applescript` that walks every Contacts entry and shells out per phone — can pin the agent for minutes. Worse, in a parallel batch the slowest leg blocks every other result from being delivered to the LLM (Anthropic's API requires all `tool_use` blocks in an assistant turn to have matching `tool_result` blocks before the next user turn). One slow tool ⇒ the whole turn stalls.
+
+We need a per-tool wall-clock timeout that races `tool.execute(...)` against `Task.sleep` and, on expiry, returns a structured failure result so the agent can recover (retry with a narrower query, abandon, or report). Fixed numbers don't fit — different tools have legitimately different cost shapes — so the default should be configurable via the `AgentTool` protocol with a sensible fallback. Starting proposal:
+
+- `run_applescript`: 90s (long enough for a multi-app query, short enough that a runaway script gets reaped)
+- `bash`: 300s (build commands, test runs, package installs are real)
+- network/file/grep tools: 60s
+- LLM-driven sub-tools (Jones evaluations, summarizer): inherit their own LLM-side timeout; no wrapper
+
+These are starting numbers — tune by watching real usage. The user may also want to override per-call (`with timeout of N seconds` for AppleScript already exists script-side; similar overrides per tool would be nice). Identified 2026-04-29 from the "brown stopped" diagnostic where a Contacts AppleScript ran 2m 21s before returning, blocking a parallel Messages result and making Brown look frozen.
+
 ### Investigate `SessionManager.viewModel(for:)` load-state coupling
 `SessionManager.viewModel(for:)` lazily creates an `AppViewModel` and fires `Task { await vm.loadPersistedState() }` without awaiting. Callers receive a VM that may not have loaded its disk state yet. Today this is fine because every consumer guards on `vm.hasLoadedPersistedState` — and the only consumer that matters (the UI) renders empty state until that flag flips. But the contract is fragile: a future caller assuming "I got a VM, I can read its tasks" will silently see empty arrays for one tick.
 

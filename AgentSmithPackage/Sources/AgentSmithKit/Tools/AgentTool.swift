@@ -151,6 +151,13 @@ public struct ToolContext: Sendable {
     public let onProcessingStateChange: @Sendable (Bool) -> Void
     /// Called with `true` when Jones begins a security evaluation LLM call, `false` when it completes.
     public let onJonesProcessingStateChange: @Sendable (Bool) -> Void
+    /// Called when a tool execution starts or finishes. `started == true` adds the tool's
+    /// name to the in-flight set for this agent; `started == false` removes it. Allows the
+    /// UI to show a "Working" / "Tool: <name>" indicator distinct from the LLM "Thinking"
+    /// state — important when a slow tool blocks the agent for minutes after the LLM call
+    /// has returned. Multiple concurrent calls (parallel-tool batches) are fine; ordering
+    /// of starts/ends is preserved per call ID.
+    public let onToolExecutionStateChange: @Sendable (_ toolName: String, _ started: Bool) -> Void
     /// Schedules a deferred wake-up. See `ScheduledWake` for the per-wake record. Returns
     /// `.scheduled(wake)` or `.error(...)`. Args: wakeAt, instructions, taskID, replacesID,
     /// recurrence, survivesTaskTermination. Pass `survivesTaskTermination: true` for wakes
@@ -205,6 +212,7 @@ public struct ToolContext: Sendable {
         onSelfTerminate: @escaping @Sendable () async -> Void = {},
         onProcessingStateChange: @escaping @Sendable (Bool) -> Void = { _ in },
         onJonesProcessingStateChange: @escaping @Sendable (Bool) -> Void = { _ in },
+        onToolExecutionStateChange: @escaping @Sendable (String, Bool) -> Void = { _, _ in },
         scheduleWake: @escaping @Sendable (Date, String, UUID?, UUID?, Recurrence?, Bool) async -> ScheduleWakeOutcome = { _, _, _, _, _, _ in .error("Scheduling not configured.") },
         listScheduledWakes: @escaping @Sendable () async -> [ScheduledWake] = { [] },
         cancelScheduledWake: @escaping @Sendable (UUID) async -> Bool = { _ in false },
@@ -244,6 +252,7 @@ public struct ToolContext: Sendable {
         self.onSelfTerminate = onSelfTerminate
         self.onProcessingStateChange = onProcessingStateChange
         self.onJonesProcessingStateChange = onJonesProcessingStateChange
+        self.onToolExecutionStateChange = onToolExecutionStateChange
         self.scheduleWake = scheduleWake
         self.listScheduledWakes = listScheduledWakes
         self.cancelScheduledWake = cancelScheduledWake

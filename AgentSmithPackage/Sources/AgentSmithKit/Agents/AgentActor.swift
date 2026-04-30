@@ -1180,6 +1180,8 @@ public actor AgentActor {
                     if disposition.approved {
                         let executionStart = Date()
                         let succeeded: Bool
+                        let toolName = entry.tool.name
+                        ctx.onToolExecutionStateChange(toolName, true)
                         do {
                             let args = try entry.call.parsedArguments()
                             let outcome = try await entry.tool.execute(arguments: args, context: ctx)
@@ -1189,6 +1191,7 @@ public actor AgentActor {
                             result = "Tool error: \(error.localizedDescription)"
                             succeeded = false
                         }
+                        ctx.onToolExecutionStateChange(toolName, false)
                         executionMs = Int(Date().timeIntervalSince(executionStart) * 1000)
                         // Mirror the sequential `directExecute` path: record the outcome on the
                         // shared tracker so Jones's recent-tool-calls context shows whether this
@@ -1434,6 +1437,8 @@ public actor AgentActor {
         let start = Date()
         let result: String
         let executionSucceeded: Bool
+        let toolName = tool.name
+        toolContext.onToolExecutionStateChange(toolName, true)
         do {
             let args = try call.parsedArguments()
             let outcome = try await tool.execute(arguments: args, context: toolContext)
@@ -1443,6 +1448,7 @@ public actor AgentActor {
             result = "Tool error: \(error.localizedDescription)"
             executionSucceeded = false
         }
+        toolContext.onToolExecutionStateChange(toolName, false)
         let elapsedMs = Int(Date().timeIntervalSince(start) * 1000)
         turnToolExecutionMs += elapsedMs
         turnToolResultChars += result.count

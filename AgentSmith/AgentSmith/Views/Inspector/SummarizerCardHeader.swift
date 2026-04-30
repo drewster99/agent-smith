@@ -4,6 +4,7 @@ import SwiftUI
 struct SummarizerCardHeader: View {
     let hasActivity: Bool
     let isProcessing: Bool
+    let executingTools: [String]
     let roleColor: Color
     @Binding var expanded: Bool
     let onShowConfig: () -> Void
@@ -29,6 +30,14 @@ struct SummarizerCardHeader: View {
                             ProgressView()
                                 .controlSize(.mini)
                             Text("Summarizing")
+                                .font(AppFonts.inspectorLabel)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if !executingTools.isEmpty {
+                        HStack(spacing: 4) {
+                            ProgressView()
+                                .controlSize(.mini)
+                            Text(executingTools.count == 1 ? "Working — \(executingTools[0])" : "Working — \(executingTools.count) tools")
                                 .font(AppFonts.inspectorLabel)
                                 .foregroundStyle(.secondary)
                         }

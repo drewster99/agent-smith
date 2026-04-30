@@ -92,7 +92,7 @@ struct InspectorView: View {
 
 /// Pre-computed data for a single agent role. Equatable so SwiftUI can short-circuit
 /// AgentCard's body re-evaluation when the cached struct is unchanged.
-struct AgentRoleData: Equatable {
+private struct AgentRoleData: Equatable {
     let role: AgentRole
     let roleMessages: [ChannelMessage]
     let recentMessages: [ChannelMessage]
@@ -106,15 +106,17 @@ struct AgentRoleData: Equatable {
     let availableTools: [String]
     let evaluationRecords: [EvaluationRecord]
     let isProcessing: Bool
+    let executingTools: [String]
     let modelConfig: ModelConfiguration?
 }
 
 /// Pre-computed data for the summarizer role.
-struct SummarizerData: Equatable {
+private struct SummarizerData: Equatable {
     let currentSystemPrompt: String
     let pollInterval: TimeInterval
     let maxToolCalls: Int
     let isProcessing: Bool
+    let executingTools: [String]
     let messages: [ChannelMessage]
 }
 
@@ -159,6 +161,7 @@ private struct RoleAgentCard: View {
         .onChange(of: role == .jones ? viewModel.inspectorStore.evaluationRecords.count : 0)
                                                                                      { _, _ in recompute() }
         .onChange(of: viewModel.processingRoles.contains(role))                      { _, _ in recompute() }
+        .onChange(of: viewModel.toolExecutingByRole[role])                           { _, _ in recompute() }
         .onChange(of: viewModel.agentPollIntervals[role])                            { _, _ in recompute() }
         .onChange(of: viewModel.agentMaxToolCalls[role])                             { _, _ in recompute() }
         .onChange(of: viewModel.agentToolNames[role])                                { _, _ in recompute() }
@@ -175,6 +178,7 @@ private struct RoleAgentCard: View {
             viewModel: viewModel,
             role: cached.role,
             isProcessing: cached.isProcessing,
+            executingTools: cached.executingTools,
             hasActivity: cached.hasActivity,
             availableTools: cached.availableTools,
             recentMessages: cached.recentMessages,
@@ -234,6 +238,7 @@ private struct RoleAgentCard: View {
             availableTools: viewModel.agentToolNames[role] ?? [],
             evaluationRecords: role == .jones ? store.evaluationRecords : [],
             isProcessing: viewModel.processingRoles.contains(role),
+            executingTools: Self.executingToolNames(viewModel.toolExecutingByRole[role]),
             modelConfig: viewModel.resolvedAgentConfigs[role]
         )
         // Skip the assignment if the struct didn't change — keeps body output stable
@@ -242,6 +247,18 @@ private struct RoleAgentCard: View {
         DispatchQueue.main.async {
             if cached != next { cached = next }
         }
+    }
+
+    /// Flattens the `[toolName: count]` multiset into an ordered, repeated-name list so
+    /// the card's status badge can show "Working — run_applescript" for a single call,
+    /// "Working — 2 tools" for a parallel batch.
+    static func executingToolNames(_ counts: [String: Int]?) -> [String] {
+        guard let counts else { return [] }
+        var out: [String] = []
+        for name in counts.keys.sorted() {
+            for _ in 0..<(counts[name] ?? 0) { out.append(name) }
+        }
+        return out
     }
 }
 
@@ -265,6 +282,7 @@ private struct SummarizerAgentCard: View {
         .task { recompute() }
         .onChange(of: summarizerMessages)                              { _, _ in recompute() }
         .onChange(of: viewModel.processingRoles.contains(.summarizer)) { _, _ in recompute() }
+        .onChange(of: viewModel.toolExecutingByRole[.summarizer])      { _, _ in recompute() }
         .onChange(of: viewModel.agentPollIntervals[.summarizer])       { _, _ in recompute() }
         .onChange(of: viewModel.agentMaxToolCalls[.summarizer])        { _, _ in recompute() }
     }
@@ -276,6 +294,7 @@ private struct SummarizerAgentCard: View {
             viewModel: viewModel,
             messages: cached.messages,
             isProcessing: cached.isProcessing,
+            executingTools: cached.executingTools,
             currentSystemPrompt: cached.currentSystemPrompt,
             pollInterval: cached.pollInterval,
             maxToolCalls: cached.maxToolCalls,
@@ -299,6 +318,7 @@ private struct SummarizerAgentCard: View {
             pollInterval: viewModel.agentPollIntervals[.summarizer] ?? 5,
             maxToolCalls: viewModel.agentMaxToolCalls[.summarizer] ?? 100,
             isProcessing: viewModel.processingRoles.contains(.summarizer),
+            executingTools: RoleAgentCard.executingToolNames(viewModel.toolExecutingByRole[.summarizer]),
             messages: summarizerMessages
         )
         // Project rule: defer @State mutation out of .onChange via DispatchQueue.main.async.
@@ -312,6 +332,7 @@ private struct AgentCard: View {
     @Bindable var viewModel: AppViewModel
     let role: AgentRole
     let isProcessing: Bool
+    let executingTools: [String]
     let hasActivity: Bool
     let availableTools: [String]
     let recentMessages: [ChannelMessage]
@@ -332,6 +353,7 @@ private struct AgentCard: View {
     @Environment(\.openWindow) private var openWindow
     @State private var expanded = true
     @State private var processingStartDate: Date?
+    @State private var toolExecutingStartDate: Date?
     @State private var showingConfig = false
     @State private var expandedTurnIDs: Set<UUID> = []
 
@@ -395,7 +417,9 @@ private struct AgentCard: View {
                             hasActivity: hasActivity,
                             isJones: role == .jones,
                             isTerminated: role != .jones && isTerminated,
-                            processingStartDate: processingStartDate
+                            executingTools: executingTools,
+                            processingStartDate: processingStartDate,
+                            toolExecutingStartDate: toolExecutingStartDate
                         )
 
                         if opensInWindow {
@@ -479,10 +503,18 @@ private struct AgentCard: View {
             if isProcessing {
                 DispatchQueue.main.async { processingStartDate = Date() }
             }
+            if !executingTools.isEmpty {
+                DispatchQueue.main.async { toolExecutingStartDate = Date() }
+            }
         }
         .onChange(of: isProcessing) { _, newValue in
             DispatchQueue.main.async {
                 processingStartDate = newValue ? Date() : nil
+            }
+        }
+        .onChange(of: executingTools.isEmpty) { _, isEmpty in
+            DispatchQueue.main.async {
+                toolExecutingStartDate = isEmpty ? nil : Date()
             }
         }
     }
