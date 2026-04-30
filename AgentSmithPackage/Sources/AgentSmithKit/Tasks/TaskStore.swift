@@ -38,7 +38,8 @@ public actor TaskStore {
     public func addTask(
         title: String,
         description: String,
-        scheduledRunAt: Date? = nil
+        scheduledRunAt: Date? = nil,
+        descriptionAttachments: [Attachment] = []
     ) -> AgentTask {
         archiveStaleCompleted()
         let initialStatus: AgentTask.Status = (scheduledRunAt.map { $0 > Date() } ?? false) ? .scheduled : .pending
@@ -46,7 +47,8 @@ public actor TaskStore {
             title: title,
             description: description,
             status: initialStatus,
-            scheduledRunAt: scheduledRunAt
+            scheduledRunAt: scheduledRunAt,
+            descriptionAttachments: descriptionAttachments
         )
         tasks[task.id] = task
         onChange?()
@@ -229,9 +231,9 @@ public actor TaskStore {
     }
 
     /// Appends a progress update to a task, enforcing the per-task cap.
-    public func addUpdate(id: UUID, message: String) {
+    public func addUpdate(id: UUID, message: String, attachments: [Attachment] = []) {
         guard var task = tasks[id] else { return }
-        task.updates.append(AgentTask.TaskUpdate(message: message))
+        task.updates.append(AgentTask.TaskUpdate(message: message, attachments: attachments))
         if task.updates.count > AgentTask.maxUpdates {
             task.updates.removeFirst(task.updates.count - AgentTask.maxUpdates)
         }
@@ -282,10 +284,11 @@ public actor TaskStore {
     }
 
     /// Stores a result (and optional commentary) on a task.
-    public func setResult(id: UUID, result: String, commentary: String?) {
+    public func setResult(id: UUID, result: String, commentary: String?, attachments: [Attachment] = []) {
         guard var task = tasks[id] else { return }
         task.result = result
         task.commentary = commentary
+        task.resultAttachments = attachments
         task.updatedAt = Date()
         tasks[id] = task
         onChange?()

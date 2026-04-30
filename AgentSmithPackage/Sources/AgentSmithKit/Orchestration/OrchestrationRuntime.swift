@@ -138,6 +138,12 @@ public actor OrchestrationRuntime {
     /// failures log to the app's logger but do not block the runtime.
     private var persistPendingScheduledRunQueue: (@Sendable ([UUID]) async -> Void)?
 
+    /// Per-session attachment registry. Set by the app layer once the runtime is
+    /// constructed (the registry needs the per-session `PersistenceManager`, which the
+    /// runtime itself doesn't carry). When unset, attachment-aware tools degrade to
+    /// "no attachments resolved" — they still post text-only versions of the tool action.
+    private var attachmentRegistry: AttachmentRegistry?
+
     /// FIFO queue used to serialize `restartForNewTask` requests. Without this,
     /// two near-concurrent restart calls would each fire their own
     /// `Task.detached` and interleave their `stopAll() + start()` chains —
@@ -322,14 +328,55 @@ public actor OrchestrationRuntime {
     static func composeBrownTaskBriefing(for task: AgentTask) -> String {
         var parts: [String] = []
         parts.append("Task: \"\(task.title)\" (ID: \(task.id.uuidString))\n\n\(task.description)")
+        if !task.descriptionAttachments.isEmpty {
+            let lines = task.descriptionAttachments.map(Self.attachmentRefLine)
+            parts.append("## Attachments\n\(lines.joined(separator: "\n"))")
+        }
         if !task.updates.isEmpty {
-            let history = task.updates.map { "- \($0.message)" }.joined(separator: "\n")
-            parts.append("## Prior Progress\n\(history)")
+            let updateLines: [String] = task.updates.map { update in
+                if update.attachments.isEmpty {
+                    return "- \(update.message)"
+                }
+                let attachmentRefs = update.attachments.map(Self.attachmentRefLine).joined(separator: "\n  ")
+                return "- \(update.message)\n  \(attachmentRefs)"
+            }
+            parts.append("## Prior Progress\n\(updateLines.joined(separator: "\n"))")
         }
         if let brownContext = task.lastBrownContext {
             parts.append("## Last Working State\n\(brownContext)")
         }
         return parts.joined(separator: "\n\n")
+    }
+
+    /// Single-line attachment reference suitable for inclusion in any LLM-facing text.
+    /// Mirrors the format used by `AgentActor` when surfacing message-attached files so
+    /// the LLM can forward the same `id=...` value into a downstream tool call.
+    private static func attachmentRefLine(_ attachment: Attachment) -> String {
+        "[Attached: id=\(attachment.id.uuidString) filename=\(attachment.filename) (\(attachment.mimeType), \(attachment.formattedSize))]"
+    }
+
+    /// Returns the union of all attachments referenced by a task — its description, the
+    /// in-progress updates, and the final result. Used when seeding Brown's briefing so
+    /// every persisted attachment is presented as both a text ref and (for images) inline
+    /// LLM image content. Lazy-loads bytes via the registry where the in-memory record is
+    /// metadata-only (e.g. a task restored from disk after restart).
+    func collectTaskAttachments(_ task: AgentTask) async -> [Attachment] {
+        var collected: [Attachment] = []
+        let candidates = task.descriptionAttachments
+            + task.updates.flatMap { $0.attachments }
+            + task.resultAttachments
+        for candidate in candidates {
+            if candidate.data != nil {
+                collected.append(candidate)
+                continue
+            }
+            if let registry = attachmentRegistry, let resolved = await registry.resolve(candidate.id) {
+                collected.append(resolved)
+            } else {
+                collected.append(candidate)
+            }
+        }
+        return collected
     }
 
     /// Re-arms wakes for any `.scheduled` task that doesn't already have a wake registered
@@ -407,6 +454,34 @@ public actor OrchestrationRuntime {
     /// Parameters: agent role, tool name, started (true on start, false on completion).
     public func setOnToolExecutionStateChange(_ handler: @escaping @Sendable (AgentRole, String, Bool) -> Void) {
         onToolExecutionStateChange = handler
+    }
+
+    /// Installs the per-session attachment persistence hooks. Called by the app layer
+    /// once after constructing the runtime — the loader/saver closures bridge to the
+    /// session-scoped `PersistenceManager`, which the runtime itself doesn't carry.
+    /// Internally constructs an `AttachmentRegistry` so `create_task`, `task_update`,
+    /// and `task_complete` can resolve LLM-supplied attachment IDs and ingest local
+    /// files Brown produces.
+    public func setAttachmentPersistence(
+        loader: @escaping @Sendable (UUID, String) async -> Data?,
+        saver: @escaping @Sendable (Attachment) async throws -> Void
+    ) {
+        attachmentRegistry = AttachmentRegistry(loader: loader, saver: saver)
+    }
+
+    /// Pre-registers a list of attachments in the per-session registry. Used during
+    /// `start(resumingTaskID:)` to seed the registry with attachments persisted on
+    /// existing tasks so a fresh Brown can resolve IDs referenced from prior updates.
+    public func registerAttachments(_ attachments: [Attachment]) async {
+        guard let registry = attachmentRegistry else { return }
+        await registry.register(contentsOf: attachments)
+    }
+
+    /// Resolves a single attachment by ID via the registry, lazy-loading bytes from
+    /// disk if needed. Used by the seed-Brown path to rehydrate task-attached files.
+    public func resolveAttachment(id: UUID) async -> Attachment? {
+        guard let registry = attachmentRegistry else { return nil }
+        return await registry.resolve(id)
     }
 
     /// Registers a callback fired when an agent comes online, with its role and tool names.
@@ -741,6 +816,21 @@ public actor OrchestrationRuntime {
             await taskStore.updateStatus(id: task.id, status: .interrupted)
         }
 
+        // Pre-register every persisted task attachment so a fresh Brown spawned during
+        // this run can resolve IDs referenced by `task_update` / `task_complete` calls
+        // that originally landed in a prior session. Bytes are lazy-loaded on first
+        // resolve via the registry's loader closure.
+        if attachmentRegistry != nil {
+            let allTaskAttachments: [Attachment] = activeTasks.flatMap { task in
+                task.descriptionAttachments
+                    + task.updates.flatMap { $0.attachments }
+                    + task.resultAttachments
+            }
+            if !allTaskAttachments.isEmpty {
+                await registerAttachments(allTaskAttachments)
+            }
+        }
+
         let initialInstruction: String
 
         // Fast path: restarting for a specific task (triggered by run_task).
@@ -763,12 +853,13 @@ public actor OrchestrationRuntime {
                     // (Jones reads task.description directly). Direct seeding keeps the
                     // data flow clean and stays symmetric with `rebuildContextFromTask`.
                     let briefing = Self.composeBrownTaskBriefing(for: resumingTask)
+                    let attachmentsForBrown = await collectTaskAttachments(resumingTask)
                     if let brownAgent = agents[brownID] {
                         // Synthetic ack runs BEFORE any LLM call on Brown's first run-loop
                         // tick — set it before seeding so the synthetic-tool-call branch
                         // doesn't accidentally race with the seeded user message.
                         await brownAgent.setSyntheticFirstToolCall("task_acknowledged")
-                        await brownAgent.appendUserMessage(briefing)
+                        await brownAgent.appendUserMessage(briefing, attachments: attachmentsForBrown)
                     }
                     brownSpawned = true
                 } else {
@@ -858,9 +949,10 @@ public actor OrchestrationRuntime {
                     await taskStore.assignAgent(taskID: task.id, agentID: brownID)
 
                     let briefing = Self.composeBrownTaskBriefing(for: task)
+                    let attachmentsForBrown = await collectTaskAttachments(task)
                     if let brownAgent = agents[brownID] {
                         await brownAgent.setSyntheticFirstToolCall("task_acknowledged")
-                        await brownAgent.appendUserMessage(briefing)
+                        await brownAgent.appendUserMessage(briefing, attachments: attachmentsForBrown)
                     }
                     autoResumedTask = task
                 }
@@ -1019,6 +1111,9 @@ public actor OrchestrationRuntime {
     /// Sends a user message (with optional attachments) privately to Smith.
     public func sendUserMessage(_ text: String, attachments: [Attachment] = []) async {
         await powerManager?.activityOccurred()
+        if let registry = attachmentRegistry, !attachments.isEmpty {
+            await registry.register(contentsOf: attachments)
+        }
         await channel.post(ChannelMessage(
             sender: .user,
             recipientID: smithID,
@@ -1569,6 +1664,23 @@ public actor OrchestrationRuntime {
             },
             hasToolFailed: { [tracker] toolCallID in
                 await tracker.hasFailed(toolCallID: toolCallID)
+            },
+            resolveAttachments: { [weak self] idStrings in
+                guard let self else { return ([], idStrings) }
+                guard let registry = await self.attachmentRegistry else { return ([], idStrings) }
+                return await registry.resolve(idStrings: idStrings)
+            },
+            ingestAttachmentFile: { [weak self] path in
+                guard let registry = await self?.attachmentRegistry else {
+                    return (nil, "Attachment registry not configured for this runtime.")
+                }
+                let result = await registry.ingestFile(path: path)
+                switch result {
+                case .success(let attachment):
+                    return (attachment, nil)
+                case .failure(let err):
+                    return (nil, err.description)
+                }
             }
         )
     }

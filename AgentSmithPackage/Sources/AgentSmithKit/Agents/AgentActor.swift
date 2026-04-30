@@ -275,6 +275,27 @@ public actor AgentActor {
         pushLiveContext()
     }
 
+    /// Same as `appendUserMessage(_:)` but also injects image attachments as inline
+    /// image content for the LLM. Non-image attachments should already be referenced in
+    /// the text body via `[Attached: id=... filename=...]` lines so the agent can refer
+    /// to them by ID downstream. Used by the seed-Brown briefing path so a task created
+    /// with attached files reaches Brown's first LLM turn with the bytes intact.
+    public func appendUserMessage(_ text: String, attachments: [Attachment]) {
+        if attachments.isEmpty {
+            appendUserMessage(text)
+            return
+        }
+        var images: [LLMImageContent] = []
+        for attachment in attachments where attachment.isImage {
+            guard let data = attachment.data else { continue }
+            images.append(LLMImageContent(data: data, mimeType: attachment.mimeType))
+        }
+        let llmImages: [LLMImageContent]? = images.isEmpty ? nil : images
+        conversationHistory.append(LLMMessage(role: .user, text: text, images: llmImages))
+        hasUnprocessedInput = true
+        pushLiveContext()
+    }
+
     /// Returns a snapshot of recent LLM turns for per-turn inspection.
     public func turnsSnapshot() -> [LLMTurnRecord] {
         llmTurns
@@ -2094,9 +2115,12 @@ public actor AgentActor {
             }
 
             var textParts = [formatted]
-            let nonImageAttachments = message.attachments.filter { !$0.isImage }
-            for attachment in nonImageAttachments {
-                textParts.append("[Attached file: \(attachment.filename) (\(attachment.mimeType), \(attachment.formattedSize))]")
+            // Surface BOTH image and non-image attachment IDs so the agent can reference
+            // them in tool-call arguments (e.g. `create_task` with `attachment_ids`).
+            // Image content is also injected directly above; this line gives the LLM the
+            // identifier it needs to forward the same image into a downstream tool call.
+            for attachment in message.attachments {
+                textParts.append("[Attached: id=\(attachment.id.uuidString) filename=\(attachment.filename) (\(attachment.mimeType), \(attachment.formattedSize))]")
             }
 
             allTextParts.append(textParts.joined(separator: "\n"))

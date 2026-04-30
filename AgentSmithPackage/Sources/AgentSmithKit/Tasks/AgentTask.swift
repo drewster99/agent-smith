@@ -40,15 +40,50 @@ public struct AgentTask: Identifiable, Codable, Sendable, Equatable {
     /// this as an "edited" indicator. Editing does not change `status` — a completed
     /// task remains `.completed` after a description edit.
     public var lastEditedAt: Date?
+    /// Attachments captured at task creation. Sourced from the user's incoming message
+    /// when Smith calls `create_task` with an `attachment_ids` arg, plus anything Smith
+    /// later attaches via amendment. Brown sees these in his initial briefing — image
+    /// attachments are passed to the LLM as image content, others as text-only refs.
+    /// `Attachment` itself excludes file bytes from Codable; bytes live in the per-session
+    /// attachments directory.
+    public var descriptionAttachments: [Attachment]
+    /// Attachments produced or referenced as part of the final task result. Set by
+    /// `task_complete`. Surfaced to Smith with the awaitingReview banner.
+    public var resultAttachments: [Attachment]
 
     /// A single progress update recorded on a task.
     public struct TaskUpdate: Codable, Sendable, Equatable {
         public var date: Date
         public var message: String
+        /// Attachments captured with this update. Image attachments are forwarded to
+        /// Smith as image content; text refs are appended to the update body. Non-empty
+        /// only when `task_update` was called with `attachment_ids` or `attachment_paths`.
+        public var attachments: [Attachment]
 
-        public init(date: Date = Date(), message: String) {
+        public init(date: Date = Date(), message: String, attachments: [Attachment] = []) {
             self.date = date
             self.message = message
+            self.attachments = attachments
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case date, message, attachments
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            date = try c.decode(Date.self, forKey: .date)
+            message = try c.decode(String.self, forKey: .message)
+            attachments = try c.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(date, forKey: .date)
+            try c.encode(message, forKey: .message)
+            if !attachments.isEmpty {
+                try c.encode(attachments, forKey: .attachments)
+            }
         }
     }
 
@@ -126,7 +161,9 @@ public struct AgentTask: Identifiable, Codable, Sendable, Equatable {
         relevantMemories: [RelevantMemory]? = nil,
         relevantPriorTasks: [RelevantPriorTask]? = nil,
         scheduledRunAt: Date? = nil,
-        lastEditedAt: Date? = nil
+        lastEditedAt: Date? = nil,
+        descriptionAttachments: [Attachment] = [],
+        resultAttachments: [Attachment] = []
     ) {
         self.id = id
         self.title = title
@@ -148,12 +185,14 @@ public struct AgentTask: Identifiable, Codable, Sendable, Equatable {
         self.relevantPriorTasks = relevantPriorTasks
         self.scheduledRunAt = scheduledRunAt
         self.lastEditedAt = lastEditedAt
+        self.descriptionAttachments = descriptionAttachments
+        self.resultAttachments = resultAttachments
     }
 
     // MARK: - Codable (backward-compatible with persisted data lacking `disposition`)
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt, startedAt, completedAt, updates, acknowledgmentCount, lastBrownContext, summary, relevantMemories, relevantPriorTasks, scheduledRunAt, lastEditedAt
+        case id, title, description, status, disposition, assigneeIDs, result, commentary, createdAt, updatedAt, startedAt, completedAt, updates, acknowledgmentCount, lastBrownContext, summary, relevantMemories, relevantPriorTasks, scheduledRunAt, lastEditedAt, descriptionAttachments, resultAttachments
     }
 
     public init(from decoder: Decoder) throws {
@@ -178,6 +217,8 @@ public struct AgentTask: Identifiable, Codable, Sendable, Equatable {
         relevantPriorTasks = try c.decodeIfPresent([RelevantPriorTask].self, forKey: .relevantPriorTasks)
         scheduledRunAt = try c.decodeIfPresent(Date.self, forKey: .scheduledRunAt)
         lastEditedAt = try c.decodeIfPresent(Date.self, forKey: .lastEditedAt)
+        descriptionAttachments = try c.decodeIfPresent([Attachment].self, forKey: .descriptionAttachments) ?? []
+        resultAttachments = try c.decodeIfPresent([Attachment].self, forKey: .resultAttachments) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -206,5 +247,11 @@ public struct AgentTask: Identifiable, Codable, Sendable, Equatable {
         try c.encodeIfPresent(relevantPriorTasks, forKey: .relevantPriorTasks)
         try c.encodeIfPresent(scheduledRunAt, forKey: .scheduledRunAt)
         try c.encodeIfPresent(lastEditedAt, forKey: .lastEditedAt)
+        if !descriptionAttachments.isEmpty {
+            try c.encode(descriptionAttachments, forKey: .descriptionAttachments)
+        }
+        if !resultAttachments.isEmpty {
+            try c.encode(resultAttachments, forKey: .resultAttachments)
+        }
     }
 }

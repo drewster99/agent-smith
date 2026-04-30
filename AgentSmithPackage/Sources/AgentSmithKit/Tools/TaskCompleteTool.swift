@@ -5,7 +5,10 @@ public struct TaskCompleteTool: AgentTool {
     public let name = "task_complete"
     public let toolDescription = """
         Submit your completed work for review. Provide the full result — do not summarize. \
-        After calling this, stop working and wait for Smith's verdict.
+        After calling this, stop working and wait for Smith's verdict. \
+        Optionally attach files via `attachment_ids` (existing IDs) or `attachment_paths` \
+        (local file paths to ingest) so Smith can review screenshots, generated artifacts, \
+        or any output produced during the task.
         """
 
     public let parameters: [String: AnyCodable] = [
@@ -18,6 +21,16 @@ public struct TaskCompleteTool: AgentTool {
             "commentary": .dictionary([
                 "type": .string("string"),
                 "description": .string("Optional commentary about approach, caveats, or notes for Smith.")
+            ]),
+            "attachment_ids": .dictionary([
+                "type": .string("array"),
+                "items": .dictionary(["type": .string("string")]),
+                "description": .string("Optional UUID strings of existing attachments (from the task description, prior updates, or earlier Brown sessions) to include with the result.")
+            ]),
+            "attachment_paths": .dictionary([
+                "type": .string("array"),
+                "items": .dictionary(["type": .string("string")]),
+                "description": .string("Optional local file paths to read and attach to the result. Each is loaded, persisted to the per-session attachments directory, and surfaced to Smith with the awaitingReview banner.")
             ])
         ]),
         "required": .array([.string("result")])
@@ -63,8 +76,14 @@ public struct TaskCompleteTool: AgentTool {
             return .success("Task already submitted for review.")
         }
 
+        let resolution = await TaskUpdateTool.resolveAttachments(arguments: arguments, context: context)
+        if let failureMessage = resolution.failure {
+            return .failure(failureMessage)
+        }
+        let attachments = resolution.attachments
+
         // Store result on the task (survives restarts) and transition status
-        await context.taskStore.setResult(id: task.id, result: result, commentary: commentary)
+        await context.taskStore.setResult(id: task.id, result: result, commentary: commentary, attachments: attachments)
         await context.taskStore.updateStatus(id: task.id, status: .awaitingReview)
 
         // Notify Smith privately
@@ -82,13 +101,18 @@ public struct TaskCompleteTool: AgentTool {
             recipientID: smithID,
             recipient: .agent(.smith),
             content: message,
+            attachments: attachments,
             metadata: [
                 "messageKind": .string("task_complete"),
                 "taskTitle": .string(task.title)
             ]
         ))
 
-        return .success("Task submitted for review: \(task.title)")
+        if attachments.isEmpty {
+            return .success("Task submitted for review: \(task.title)")
+        }
+        let names = attachments.map { $0.filename }.joined(separator: ", ")
+        return .success("Task submitted for review: \(task.title) — with \(attachments.count) attachment(s): \(names)")
     }
 
     /// Posts a system channel message recording an auto-rejection of an empty/missing-result

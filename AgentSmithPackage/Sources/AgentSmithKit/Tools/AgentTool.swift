@@ -196,6 +196,18 @@ public struct ToolContext: Sendable {
     /// Checks if a tool call has already failed after being approved. Async because
     /// the underlying store is actor-isolated.
     public let hasToolFailed: @Sendable (String) async -> Bool
+    /// Resolves a list of attachment-ID strings (UUID strings) to live `Attachment`
+    /// records via the per-session `AttachmentRegistry`. Returns the resolved attachments
+    /// and a list of any IDs that couldn't be resolved (for tool error messages).
+    /// Used by `create_task`, `task_update`, and `task_complete` to forward user-attached
+    /// or task-attached files when the LLM references them by ID.
+    public let resolveAttachments: @Sendable ([String]) async -> (resolved: [Attachment], rejected: [String])
+    /// Reads a local file from disk, mints a fresh `Attachment`, persists its bytes to
+    /// the per-session attachments directory, and registers it for later ID-based lookup.
+    /// Used by Brown's lifecycle tools (`task_update`, `task_complete`) to attach files
+    /// produced during the task. Returns the new `Attachment` on success; on failure
+    /// returns nil with a human-readable error string.
+    public let ingestAttachmentFile: @Sendable (String) async -> (attachment: Attachment?, error: String?)
 
     public init(
         agentID: UUID,
@@ -236,6 +248,10 @@ public struct ToolContext: Sendable {
         },
         hasToolFailed: @escaping @Sendable (String) async -> Bool = { _ in
             fatalError("ToolContext.hasToolFailed was not configured — wire it through to a ToolExecutionTracker.")
+        },
+        resolveAttachments: @escaping @Sendable ([String]) async -> (resolved: [Attachment], rejected: [String]) = { _ in ([], []) },
+        ingestAttachmentFile: @escaping @Sendable (String) async -> (attachment: Attachment?, error: String?) = { _ in
+            (nil, "ToolContext.ingestAttachmentFile was not configured.")
         }
     ) {
         self.agentID = agentID
@@ -267,6 +283,8 @@ public struct ToolContext: Sendable {
         self.setToolExecutionStatus = setToolExecutionStatus
         self.hasToolSucceeded = hasToolSucceeded
         self.hasToolFailed = hasToolFailed
+        self.resolveAttachments = resolveAttachments
+        self.ingestAttachmentFile = ingestAttachmentFile
     }
 
     /// Posts a message to the channel, auto-stamping it with the owning agent's

@@ -3,7 +3,12 @@ import Foundation
 /// Brown tool: sends a progress update to Smith about the current task.
 public struct TaskUpdateTool: AgentTool {
     public let name = "task_update"
-    public let toolDescription = "Send a progress update to Smith about your current task. No status change occurs."
+    public let toolDescription = """
+        Send a progress update to Smith about your current task. No status change occurs. \
+        Optionally attach files via `attachment_ids` (IDs of attachments already known to \
+        the task or session) or `attachment_paths` (local file paths you want to include — \
+        each is read, persisted into the per-session attachments dir, and forwarded to Smith).
+        """
 
     public let parameters: [String: AnyCodable] = [
         "type": .string("object"),
@@ -11,6 +16,16 @@ public struct TaskUpdateTool: AgentTool {
             "message": .dictionary([
                 "type": .string("string"),
                 "description": .string("The progress update message.")
+            ]),
+            "attachment_ids": .dictionary([
+                "type": .string("array"),
+                "items": .dictionary(["type": .string("string")]),
+                "description": .string("Optional UUID strings of existing attachments to forward with the update. Use when relaying an attachment Smith already knows about (the task's description attachments or a prior update's attachments).")
+            ]),
+            "attachment_paths": .dictionary([
+                "type": .string("array"),
+                "items": .dictionary(["type": .string("string")]),
+                "description": .string("Optional local file paths to read and attach. Each path is loaded, persisted under the per-session attachments directory, and surfaced to Smith. Use for screenshots, generated artifacts, or output files produced during the task.")
             ])
         ]),
         "required": .array([.string("message")])
@@ -31,8 +46,14 @@ public struct TaskUpdateTool: AgentTool {
             return .failure("No active task assigned to you.")
         }
 
+        let resolution = await Self.collectAttachments(arguments: arguments, context: context)
+        if let failureMessage = resolution.failure {
+            return .failure(failureMessage)
+        }
+        let attachments = resolution.attachments
+
         // Persist on the task so it survives restarts.
-        await context.taskStore.addUpdate(id: task.id, message: message)
+        await context.taskStore.addUpdate(id: task.id, message: message, attachments: attachments)
 
         guard let smithID = await context.agentIDForRole(.smith) else {
             return .failure("Agent Smith is not available.")
@@ -45,6 +66,7 @@ public struct TaskUpdateTool: AgentTool {
             recipientID: smithID,
             recipient: .agent(.smith),
             content: "Task update for '\(task.title)': \(message)",
+            attachments: attachments,
             metadata: ["messageKind": .string("task_update")]
         ))
 
@@ -57,6 +79,63 @@ public struct TaskUpdateTool: AgentTool {
             metadata: ["messageKind": .string("task_update_guidance")]
         ))
 
-        return .success("Update sent to Agent Smith.")
+        if attachments.isEmpty {
+            return .success("Update sent to Agent Smith.")
+        }
+        let names = attachments.map { $0.filename }.joined(separator: ", ")
+        return .success("Update sent to Agent Smith with \(attachments.count) attachment(s): \(names)")
+    }
+
+    /// Resolves both `attachment_ids` (existing) and `attachment_paths` (new local files)
+    /// into a single `[Attachment]` list. On any resolution failure (unknown ID,
+    /// file-not-found, too-large) returns a tool failure message rather than silently
+    /// dropping attachments — Brown should retry with a corrected list.
+    fileprivate static func collectAttachments(
+        arguments: [String: AnyCodable],
+        context: ToolContext
+    ) async -> (attachments: [Attachment], failure: String?) {
+        var collected: [Attachment] = []
+
+        if case .array(let raw) = arguments["attachment_ids"] {
+            let idStrings: [String] = raw.compactMap {
+                if case .string(let s) = $0 { return s }
+                return nil
+            }
+            if !idStrings.isEmpty {
+                let outcome = await context.resolveAttachments(idStrings)
+                if !outcome.rejected.isEmpty {
+                    return (collected, "Unknown attachment_ids: \(outcome.rejected.joined(separator: ", ")). The IDs must come from a `[Attached: id=...]` reference Smith or Brown previously saw — do not invent them.")
+                }
+                collected.append(contentsOf: outcome.resolved)
+            }
+        }
+
+        if case .array(let raw) = arguments["attachment_paths"] {
+            let paths: [String] = raw.compactMap {
+                if case .string(let s) = $0 { return s }
+                return nil
+            }
+            for path in paths {
+                let outcome = await context.ingestAttachmentFile(path)
+                if let attachment = outcome.attachment {
+                    collected.append(attachment)
+                } else {
+                    return (collected, outcome.error ?? "Failed to ingest attachment at path: \(path)")
+                }
+            }
+        }
+
+        return (collected, nil)
+    }
+}
+
+/// Bridge so `TaskCompleteTool` can reuse the same id+path resolution logic without
+/// duplicating it. Internal to the package.
+extension TaskUpdateTool {
+    static func resolveAttachments(
+        arguments: [String: AnyCodable],
+        context: ToolContext
+    ) async -> (attachments: [Attachment], failure: String?) {
+        await collectAttachments(arguments: arguments, context: context)
     }
 }

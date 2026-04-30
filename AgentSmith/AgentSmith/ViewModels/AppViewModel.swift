@@ -490,6 +490,14 @@ final class AppViewModel {
             autoRunInterruptedTasks: autoRunInterruptedTasks,
             memoryStore: sharedMemoryStore
         )
+        // Bridge per-session attachment persistence into the runtime so the new
+        // attachment-aware tools (create_task / task_update / task_complete) can
+        // resolve IDs and ingest local files.
+        let pm = persistenceManager
+        await newRuntime.setAttachmentPersistence(
+            loader: { id, filename in await pm.loadAttachmentData(id: id, filename: filename) },
+            saver: { attachment in try await pm.saveAttachment(attachment) }
+        )
         runtime = newRuntime
         isRunning = true
 

@@ -37,6 +37,11 @@ public struct CreateTaskTool: AgentTool {
             "scheduled_run_at": .dictionary([
                 "type": .string("string"),
                 "description": .string("Optional ISO-8601 timestamp. When set and in the future, the task is created with status `scheduled` and a paired timer fires at that time to run it. Use when the user says \"do X at <time>\".")
+            ]),
+            "attachment_ids": .dictionary([
+                "type": .string("array"),
+                "items": .dictionary(["type": .string("string")]),
+                "description": .string("Optional UUID strings of attachments to include with this task. Use when the user attached an image, PDF, or file the worker will need. The IDs are surfaced in the user's incoming message as `[Attached: id=<UUID> filename=...]`. Forward the EXACT id values verbatim. Brown will see image attachments as image content and any non-image attachments as text references.")
             ])
         ]),
         "required": .array([.string("title"), .string("description")])
@@ -61,6 +66,24 @@ public struct CreateTaskTool: AgentTool {
         }
         guard case .string(let description) = arguments["description"] else {
             return .failure(await Self.missingDescriptionFailure(context: context, title: title))
+        }
+
+        // Resolve any caller-supplied attachment IDs against the per-session registry.
+        // Unknown IDs are returned as a tool failure so Smith re-issues create_task with
+        // a corrected list rather than silently dropping the user's attachments.
+        var resolvedAttachments: [Attachment] = []
+        if case .array(let raw) = arguments["attachment_ids"] {
+            let idStrings: [String] = raw.compactMap {
+                if case .string(let s) = $0 { return s }
+                return nil
+            }
+            if !idStrings.isEmpty {
+                let outcome = await context.resolveAttachments(idStrings)
+                if !outcome.rejected.isEmpty {
+                    return .failure("create_task: unknown attachment_ids: \(outcome.rejected.joined(separator: ", ")). Use the EXACT id strings from the `[Attached: id=...]` lines in the user's message.")
+                }
+                resolvedAttachments = outcome.resolved
+            }
         }
 
         var scheduledRunAt: Date?
@@ -98,7 +121,8 @@ public struct CreateTaskTool: AgentTool {
         let task = await context.taskStore.addTask(
             title: title,
             description: description,
-            scheduledRunAt: scheduledRunAt
+            scheduledRunAt: scheduledRunAt,
+            descriptionAttachments: resolvedAttachments
         )
 
         // Search semantic memory for relevant context to attach to this task.
