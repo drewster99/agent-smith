@@ -94,35 +94,41 @@ final class ImageCache {
             return cached
         }
 
-        // 2. Heavy work off main actor: disk lookup, source read, thumbnail gen
+        // 2. Heavy work off main actor: disk lookup, source read, thumbnail gen.
+        // Captured locals (Sendable) so the detached task isn't bridged to MainActor.
         let maxDimension = tier.maxPixelDimension
         let diskURL = (tier == .chip || tier == .small)
             ? diskCacheURL(attachmentID: attachment.id, tier: tier)
             : nil
         let attachmentData = attachment.data
         let isFull = tier == .full
-
-        // Disk cache hit short-circuits before we even need the source bytes.
-        if let url = diskURL,
-           FileManager.default.fileExists(atPath: url.path),
-           let diskImage = NSImage(contentsOf: url) {
-            ramCache.setObject(diskImage, forKey: cacheKey)
-            return diskImage
-        }
-
-        // Resolve source bytes: in-memory first, then via the session-aware loader.
-        let sourceData: Data?
-        if let attachmentData {
-            sourceData = attachmentData
-        } else if let bytesLoader {
-            sourceData = await bytesLoader(attachment.id, attachment.filename)
-        } else {
-            sourceData = nil
-        }
+        let attachmentID = attachment.id
+        let attachmentFilename = attachment.filename
 
         let result: NSImage? = await Task.detached(priority: .userInitiated) {
+            // Disk cache hit (chip and small only) short-circuits before any source-byte
+            // load — important because chip/small are the hot path in the channel
+            // transcript and reloading 200KB images on every scroll is wasteful.
+            if let url = diskURL,
+               FileManager.default.fileExists(atPath: url.path),
+               let diskImage = NSImage(contentsOf: url) {
+                return diskImage
+            }
+
+            // Source bytes: in-memory first, then via the session-aware loader. The
+            // loader is @Sendable + async; PersistenceManager is an actor so its own
+            // isolation handles thread-safety.
+            let sourceData: Data?
+            if let attachmentData {
+                sourceData = attachmentData
+            } else if let bytesLoader {
+                sourceData = await bytesLoader(attachmentID, attachmentFilename)
+            } else {
+                sourceData = nil
+            }
+
             guard let sourceData else {
-                imageCacheLogger.error("ImageCache: attachment \(attachment.id.uuidString, privacy: .public) bytes unavailable (filename=\(attachment.filename, privacy: .public)) — UI will render placeholder")
+                imageCacheLogger.error("ImageCache: attachment \(attachmentID.uuidString, privacy: .public) bytes unavailable (filename=\(attachmentFilename, privacy: .public)) — UI will render placeholder")
                 return nil
             }
 
