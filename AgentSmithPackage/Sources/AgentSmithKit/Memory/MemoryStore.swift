@@ -32,7 +32,7 @@ public struct TaskSummarySearchResult: Sendable {
 
 /// Errors thrown by `MemoryStore` when the embedding backend returns something we
 /// can't safely store or compare.
-public enum MemoryStoreError: Error, CustomStringConvertible {
+private enum MemoryStoreError: Error, CustomStringConvertible {
     /// The embedding backend returned an empty vector. Storing it would silently
     /// disable semantic search for the entry.
     case emptyEmbedding
@@ -40,7 +40,7 @@ public enum MemoryStoreError: Error, CustomStringConvertible {
     /// math would propagate non-finite values through scoring and break sort order.
     case nonFiniteEmbedding
 
-    public var description: String {
+    var description: String {
         switch self {
         case .emptyEmbedding: return "Embedding backend returned an empty vector"
         case .nonFiniteEmbedding: return "Embedding backend returned a non-finite vector (NaN/inf)"
