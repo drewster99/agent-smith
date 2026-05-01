@@ -387,16 +387,33 @@ public actor OrchestrationRuntime {
         }
     }
 
-    /// Returns the union of all attachments referenced by a task — its description, the
-    /// in-progress updates, and the final result. Used when seeding Brown's briefing so
-    /// every persisted attachment is presented as both a text ref and (for images) inline
-    /// LLM image content. Lazy-loads bytes via the registry where the in-memory record is
-    /// metadata-only (e.g. a task restored from disk after restart).
+    /// Maximum number of MOST-RECENT updates whose attachments get rehydrated into Brown's
+    /// briefing on a respawn. Older updates' attachment refs still appear in the markdown
+    /// briefing text (so Brown knows they existed and can `view_attachment` them by id),
+    /// but their image bytes are NOT eagerly re-injected into the conversation history.
+    /// Without this cap, every Brown respawn re-pays the full image-cost of the entire
+    /// task, compounding badly across long-running multi-update tasks.
+    static let briefingUpdateAttachmentBudget = 3
+
+    /// Returns the attachments that should be eagerly rehydrated into Brown's briefing
+    /// (i.e. injected as image content blocks where applicable). Selection rules:
+    /// - **Description attachments**: ALL included. The user attached these to *ask about
+    ///   them*; Brown's first turn needs to see them.
+    /// - **Update attachments**: only the most-recent `briefingUpdateAttachmentBudget`
+    ///   updates' attachments are eagerly loaded. Older updates' refs appear as markdown
+    ///   links in the briefing text (Brown can call `view_attachment(ids:)` to load them).
+    /// - **Result attachments**: NEVER eagerly loaded on a respawn. The result is the
+    ///   *output* of the task, not Brown's input — re-seating Brown to "redo" or "revise"
+    ///   doesn't require him to look at his own previous output's attached files. If
+    ///   needed, Brown can `view_attachment` them.
+    ///
+    /// Lazy-loads bytes via the registry where the in-memory record is metadata-only
+    /// (e.g. a task restored from disk after restart).
     func collectTaskAttachments(_ task: AgentTask) async -> [Attachment] {
         var collected: [Attachment] = []
-        let candidates = task.descriptionAttachments
-            + task.updates.flatMap { $0.attachments }
-            + task.resultAttachments
+        var candidates: [Attachment] = task.descriptionAttachments
+        let recentUpdates = task.updates.suffix(Self.briefingUpdateAttachmentBudget)
+        candidates.append(contentsOf: recentUpdates.flatMap { $0.attachments })
         for candidate in candidates {
             if candidate.data != nil {
                 collected.append(candidate)
