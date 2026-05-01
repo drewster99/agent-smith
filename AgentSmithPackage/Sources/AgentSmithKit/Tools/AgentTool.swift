@@ -164,7 +164,7 @@ public struct ToolContext: Sendable {
     /// whose intent is to act on a task whose previous run has already terminated (e.g.
     /// `run_task`, `summarize`) — otherwise the first run's completion will wipe every
     /// queued future wake against the same task.
-    public let scheduleWake: @Sendable (Date, String, UUID?, UUID?, Recurrence?, Bool) async -> ScheduleWakeOutcome
+    let scheduleWake: @Sendable (Date, String, UUID?, UUID?, Recurrence?, Bool) async -> ScheduleWakeOutcome
     /// Returns all currently-scheduled wakes for the calling agent (sorted by `wakeAt`).
     public let listScheduledWakes: @Sendable () async -> [ScheduledWake]
     /// Cancels a single wake by id. Returns true on success.
@@ -223,7 +223,7 @@ public struct ToolContext: Sendable {
     /// "standard".
     public let stageAttachmentsForNextTurn: @Sendable ([Attachment], String) async -> Void
 
-    public init(
+    init(
         agentID: UUID,
         agentRole: AgentRole,
         channel: MessageChannel,

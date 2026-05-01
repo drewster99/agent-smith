@@ -1,12 +1,12 @@
 import Foundation
 
 /// Defines Jones' system prompt (security gatekeeper with text-based responses, no tools).
-public enum JonesBehavior {
+enum JonesBehavior {
     /// Jones has access to file_read for inspecting file contents during security evaluation.
-    public static var toolNames: [String] { ["file_read"] }
+    static var toolNames: [String] { ["file_read"] }
 
     /// System prompt — security gatekeeper with text-based disposition responses.
-    public static var systemPrompt: String {
+    static var systemPrompt: String {
         """
         \(AgentRole.jones.baseSystemPrompt)
         

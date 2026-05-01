@@ -90,7 +90,7 @@ public struct EvaluationRecord: Sendable, Identifiable, Equatable {
 /// Makes LLM calls using Jones's model configuration to evaluate tool requests.
 /// Thread-safe — can be called concurrently for parallel tool call batches.
 /// Each Brown agent gets its own evaluator instance; state dies with Brown.
-public actor SecurityEvaluator {
+actor SecurityEvaluator {
     private let provider: any LLMProvider
     private let systemPrompt: String
     private let channel: MessageChannel

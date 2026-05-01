@@ -4,8 +4,8 @@ import os
 /// Core agent actor: owns an LLM session, subscribes to the channel,
 /// runs an async loop of receive -> LLM -> act -> report.
 public actor AgentActor {
-    public let id: UUID
-    public let configuration: AgentConfiguration
+    let id: UUID
+    let configuration: AgentConfiguration
     private let provider: any LLMProvider
     private let tools: [any AgentTool]
     private let toolContext: ToolContext
@@ -225,7 +225,7 @@ public actor AgentActor {
     /// Fires when the conversation history changes, pushing a live snapshot to the UI layer.
     private var onContextChanged: (@Sendable ([LLMMessage]) -> Void)?
 
-    public init(
+    init(
         id: UUID = UUID(),
         configuration: AgentConfiguration,
         provider: any LLMProvider,
@@ -254,7 +254,7 @@ public actor AgentActor {
     }
 
     /// Injects the security evaluator used for Brown's tool approval flow.
-    public func setSecurityEvaluator(_ evaluator: SecurityEvaluator) {
+    func setSecurityEvaluator(_ evaluator: SecurityEvaluator) {
         securityEvaluator = evaluator
     }
 
@@ -380,7 +380,7 @@ public actor AgentActor {
     /// validation failures. If `replacesID` is supplied, that wake is cancelled before
     /// scheduling the new one. Multiple wakes can share a wake time without conflict —
     /// callers that genuinely want a single replacement should pass `replacesID`.
-    public func scheduleWake(
+    func scheduleWake(
         wakeAt: Date,
         instructions: String,
         taskID: UUID? = nil,
