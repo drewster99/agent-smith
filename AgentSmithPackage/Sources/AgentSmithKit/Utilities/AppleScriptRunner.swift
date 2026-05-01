@@ -148,8 +148,17 @@ actor AppleScriptRunner {
 
     /// Dedicated serial queue for NSAppleScript invocations. Avoids re-using
     /// arbitrary cooperative threads (NSAppleScript is sensitive to thread
-    /// identity) while keeping the UI free.
-    private static let scriptQueue = DispatchQueue(label: "agent-smith.applescript.runner")
+    /// identity) while keeping the UI free. QoS is `.userInitiated` to match
+    /// the calling actor's typical priority — without this, a Brown turn (which
+    /// runs at user-initiated) suspending on a default-QoS queue triggers
+    /// runtime priority-inversion warnings ("Thread running at User-initiated
+    /// QoS class waiting on a lower QoS thread"). NSAppleScript dispatch is
+    /// short-lived and CPU-bound; promoting the queue to userInitiated has no
+    /// throughput downside and silences the warning.
+    private static let scriptQueue = DispatchQueue(
+        label: "agent-smith.applescript.runner",
+        qos: .userInitiated
+    )
 
     public init() {}
 

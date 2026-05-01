@@ -2,6 +2,80 @@
 
 ## Planned
 
+### Attachments — v2 follow-ups
+
+A cluster of deferred items from the v1 attachment work (committed in `a150dae`,
+`081bcd7`, `3cf96d2`, `ed7316f`, `7256b22`, `fb44815`, `92e4513`):
+
+**Briefing budget — time-aware, not just last-N count.** The current `collectTaskAttachments`
+caps eagerly-loaded image bytes to the last 3 updates' attachments. That's order-based —
+if updates 1-2 happened today and updates 3-N are months old, recent attachments still
+get culled in favor of the chronological tail. Switch to a hybrid that prefers (a)
+recency by wall-clock time and (b) aggregate-bytes budget. `view_attachment(ids:)`
+remains the on-demand fallback for older attachments.
+
+**Per-task aggregate cap.** v1 ships per-file (default 25 MB) and per-message
+(default 50 MB) caps; per-task aggregate (e.g. "no task may carry more than 200 MB
+of attachments cumulatively across description / updates / result") was scoped out
+because LLM cost is per-message. Add later if disk usage becomes a complaint.
+
+**Settings caps live without restart.** Currently caps apply at session start;
+mid-session changes need an agent restart. Wire the runtime to observe
+`SharedAppState` mutations (Combine or `@Observable` change publisher) and push
+them down. Settings UI text already documents the restart requirement.
+
+**Format converters at ingestion.** SVG → PNG (qlmanage subprocess), DOCX/RTF/Pages
+→ PDF (textutil + PDFKit chain), XLSX → CSV, HEIC → JPEG at ingestion (so storage
+is JPEG, not HEIC — currently converted only at LLM-injection time via
+ImageDownscaler). Each is a few-dozen-line function but needs subprocess management
+and per-format error handling. v1 sidestepped via the mime-allowlist filter on
+image injection (`ImageDownscaler.isProviderInjectable`); SVG specifically is still
+useful via `file_read` (which maps `.svg` to text and returns the XML body).
+
+**Folder drag-and-drop.** Reference-vs-bulk-ingest UX needs a real product call:
+- Reference (default for ≥10 files or any single ≥5 MB): manifest-only, points at
+  the original folder path. Brown reads via `bash` / `file_read`.
+- Bulk-ingest (default for small folders): each file becomes its own `Attachment`
+  with a synthetic group ID. Brown can iterate via `view_attachment(group:)`.
+Settings should let the user override per-session ("reference / bulk / always ask").
+
+**Per-model `ModelAttachmentCapabilities`.** Currently the image-injection filter is
+a static set of provider-common mimes (jpg/png/gif/webp). A capability record per
+model — in SwiftLLMKit's `ModelConfiguration` — would let us inject WebP only for
+providers that accept it, fall back to JPEG for those that don't, declare PDF
+support per provider for native document-block injection, etc. Required before we
+can push image content through OpenAI Responses API or Gemini's
+`functionResponse.parts` shape.
+
+**Anthropic-style image content in tool results.** `view_attachment` currently uses
+the universal user-message-injection path (works on every vision-capable provider).
+For tools that produce images (`generate_image`, `take_screenshot`, `render_chart`),
+returning the bytes directly in the tool result saves a round-trip when the
+provider supports it (Anthropic, Gemini 3, OpenAI Responses, GLM-4.6V). Layer this
+as an optimization on top of the JSON-handle pattern after `ModelAttachmentCapabilities`
+lands.
+
+**Jones evaluating `view_attachment` content.** `view_attachment` is currently
+gated by Brown's normal Jones approval, but Jones evaluates only the tool args
+(ids + detail), not the image bytes about to be loaded. A malicious image with
+prompt injection in the visual or metadata payload could still reach Brown's
+context. Jones doesn't have `view_attachment` in his tool list (text-only). Future
+work: a Jones-side "viewing" path so the security agent can see the same bytes
+before approving.
+
+**OpenAI Responses API support in SwiftLLMKit.** Big task; mentioned earlier in
+the attachment design discussion. Required before any OpenAI model can consume
+images returned from a tool's `tool_result` (Chat Completions can't carry image
+content in the `role: "tool"` message). Provides reasoning persistence for o-series
+and GPT-5 as a side benefit.
+
+**End-to-end attachment forwarding tests.** v1 ships unit tests for
+`ImageDownscaler`, `AttachmentRegistry`, and `ViewAttachmentTool` in isolation. A
+test that spins up `OrchestrationRuntime`, sends a user message with an image
+attachment, watches Smith forward via `create_task(attachment_ids:)`, and verifies
+Brown's seed briefing carries the image content — that's a real fixture investment
+worth doing once the attachment surface stabilizes.
+
 ### Per-tool wall-clock timeouts
 Tool calls today run with no enforced wall-clock cap. A pathological invocation — e.g. a `run_applescript` that walks every Contacts entry and shells out per phone — can pin the agent for minutes. Worse, in a parallel batch the slowest leg blocks every other result from being delivered to the LLM (Anthropic's API requires all `tool_use` blocks in an assistant turn to have matching `tool_result` blocks before the next user turn). One slow tool ⇒ the whole turn stalls.
 

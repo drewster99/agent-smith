@@ -178,6 +178,17 @@ final class AppViewModel {
     private var taskStore: TaskStore?
     private var channelStreamTask: Task<Void, Never>?
     let persistenceManager: PersistenceManager
+
+    /// Closure that resolves an attachment's bytes from the per-session attachments
+    /// directory. Used by `ImageCache` so attachment views can render thumbnails for
+    /// session-restored attachments where `Attachment.data` is nil. The closure is
+    /// `@Sendable` and crosses task boundaries; capturing `persistenceManager` (an
+    /// actor) is fine because the actor methods are themselves `@Sendable`-callable.
+    var attachmentBytesLoader: @Sendable (UUID, String) async -> Data? {
+        let pm = persistenceManager
+        return { id, filename in await pm.loadAttachmentData(id: id, filename: filename) }
+    }
+
     /// Full message history — a superset of `messages`. Never cleared; always written to disk.
     private var allPersistedMessages: [ChannelMessage] = []
 

@@ -1,20 +1,40 @@
 import SwiftUI
 import AgentSmithKit
 
+/// SwiftUI environment key carrying the per-session attachment-bytes loader. The view
+/// hierarchy reads it via `@Environment(\.attachmentBytesLoader)` so views that can't
+/// own a closure (e.g. `MessageRow`, which is `Equatable`) still get session-aware
+/// loading without modifying their public surface. Set at the root of each session
+/// scene with `.environment(\.attachmentBytesLoader, viewModel.attachmentBytesLoader)`.
+struct AttachmentBytesLoaderKey: EnvironmentKey {
+    static let defaultValue: (@Sendable (UUID, String) async -> Data?)? = nil
+}
+
+extension EnvironmentValues {
+    var attachmentBytesLoader: (@Sendable (UUID, String) async -> Data?)? {
+        get { self[AttachmentBytesLoaderKey.self] }
+        set { self[AttachmentBytesLoaderKey.self] = newValue }
+    }
+}
+
 /// Displays an attachment inline: images as cached thumbnails, other files as badges.
 /// Uses `ImageCache` for efficient tiered rendering. Tapping an image invokes `onTapImage`.
+///
+/// Reads the per-session bytes loader from the environment so session-restored
+/// attachments (where `Attachment.data` is nil and bytes live on disk) still render.
 struct AttachmentView: View {
     let attachment: Attachment
     let tier: ImageCache.Tier
     var onTapImage: (() -> Void)?
 
+    @Environment(\.attachmentBytesLoader) private var bytesLoader
     @State private var loadedImage: NSImage?
 
     var body: some View {
         if attachment.isImage {
             imageView()
                 .task(id: attachment.id) {
-                    loadedImage = await ImageCache.shared.image(for: attachment, tier: tier)
+                    loadedImage = await ImageCache.shared.image(for: attachment, tier: tier, bytesLoader: bytesLoader)
                 }
         } else {
             fileBadge()
@@ -83,6 +103,7 @@ struct ImageLightbox: View {
     let attachment: Attachment
     let onDismiss: () -> Void
 
+    @Environment(\.attachmentBytesLoader) private var bytesLoader
     @State private var fullImage: NSImage?
     @State private var loadFailed = false
 
@@ -135,7 +156,7 @@ struct ImageLightbox: View {
         }
         .transition(.opacity)
         .task {
-            let image = await ImageCache.shared.image(for: attachment, tier: .full)
+            let image = await ImageCache.shared.image(for: attachment, tier: .full, bytesLoader: bytesLoader)
             if let image {
                 fullImage = image
             } else {

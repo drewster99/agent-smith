@@ -333,16 +333,22 @@ public actor OrchestrationRuntime {
     }
 
     /// Builds the user-role message that seeds Brown's conversation history at task spawn.
-    /// Mechanically `task.title + task.description` plus optional Prior Progress / Last
-    /// Working State on resume — verbatim copies of fields the task store already owns,
-    /// no transformation. Used by both the run_task path and the autoRunInterruptedTasks
-    /// cold-launch path; previously posted as a Smith → Brown channel message which
+    /// Used by both the run_task path and the autoRunInterruptedTasks cold-launch path.
+    ///
+    /// Output is markdown:
+    /// - `task.title` and `task.description` verbatim.
+    /// - Description / per-update / result attachments rendered as
+    ///   `[filename](file:///abs/path) mime · size · id=<UUID>` markdown links so Brown can
+    ///   `file_read` non-image content and quote the `id=<UUID>` into downstream tool calls.
+    /// - Optional Prior Progress (from `task.updates`) and Last Working State (from
+    ///   `task.lastBrownContext`).
+    ///
+    /// Async because the attachment-line builder resolves a stable `file://` URL via the
+    /// per-session registry; markdown-link syntax was chosen over an ad-hoc text marker
+    /// because it tends to round-trip through summarizer prompts more reliably.
+    ///
+    /// Replaces the prior "post a Smith → Brown channel message" approach, which
     /// duplicated the New Task banner's description in the user-facing transcript.
-    /// Renders Brown's task briefing as markdown. Async because attachment lines can
-    /// resolve a `file://` URL via the per-session registry — the URL is included in
-    /// the markdown link so Brown can `file_read` the file directly when useful, and
-    /// so the link survives summarization (markdown link syntax tends to round-trip
-    /// through summarizer prompts more reliably than ad-hoc "[Attached: id=...]").
     func composeBrownTaskBriefing(for task: AgentTask) async -> String {
         var parts: [String] = []
         parts.append("Task: \"\(task.title)\" (ID: \(task.id.uuidString))\n\n\(task.description)")

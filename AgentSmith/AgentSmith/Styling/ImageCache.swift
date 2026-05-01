@@ -75,7 +75,18 @@ final class ImageCache {
     /// Returns an image for the given attachment and tier.
     /// Checks the RAM cache synchronously first; on miss, loads from disk or
     /// generates a thumbnail off the main thread.
-    func image(for attachment: Attachment, tier: Tier) async -> NSImage? {
+    ///
+    /// `bytesLoader` is a closure that resolves the attachment's bytes from disk when the
+    /// in-memory `Attachment.data` is nil. Production callers wire this to the session's
+    /// `PersistenceManager.loadAttachmentData(id:filename:)`. When omitted, only attachments
+    /// with eagerly-loaded `.data` are renderable — the session-restored case (where the
+    /// metadata is in memory but the bytes are on disk) returns nil. UI callers should
+    /// prefer the loader form so missing bytes don't silently render as blank space.
+    func image(
+        for attachment: Attachment,
+        tier: Tier,
+        bytesLoader: (@Sendable (UUID, String) async -> Data?)? = nil
+    ) async -> NSImage? {
         let cacheKey = NSString(string: "\(attachment.id.uuidString)-\(tier.rawValue)")
 
         // 1. RAM cache hit (synchronous, no I/O)
@@ -91,20 +102,27 @@ final class ImageCache {
         let attachmentData = attachment.data
         let isFull = tier == .full
 
-        let result: NSImage? = await Task.detached(priority: .userInitiated) {
-            // Disk cache hit (chip and small only)
-            if let url = diskURL,
-               FileManager.default.fileExists(atPath: url.path),
-               let diskImage = NSImage(contentsOf: url) {
-                return diskImage
-            }
+        // Disk cache hit short-circuits before we even need the source bytes.
+        if let url = diskURL,
+           FileManager.default.fileExists(atPath: url.path),
+           let diskImage = NSImage(contentsOf: url) {
+            ramCache.setObject(diskImage, forKey: cacheKey)
+            return diskImage
+        }
 
-            // Load source data. Per-session attachments live under
-            // <session>/attachments/, so callers must hand us an Attachment whose
-            // `data` is already populated (the runtime's AttachmentRegistry is the
-            // canonical loader). The legacy global-path fallback was removed when the
-            // per-session layout retired the global attachments dir.
-            guard let sourceData = attachmentData else {
+        // Resolve source bytes: in-memory first, then via the session-aware loader.
+        let sourceData: Data?
+        if let attachmentData {
+            sourceData = attachmentData
+        } else if let bytesLoader {
+            sourceData = await bytesLoader(attachment.id, attachment.filename)
+        } else {
+            sourceData = nil
+        }
+
+        let result: NSImage? = await Task.detached(priority: .userInitiated) {
+            guard let sourceData else {
+                imageCacheLogger.error("ImageCache: attachment \(attachment.id.uuidString, privacy: .public) bytes unavailable (filename=\(attachment.filename, privacy: .public)) — UI will render placeholder")
                 return nil
             }
 
