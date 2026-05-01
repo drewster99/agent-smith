@@ -84,6 +84,30 @@ final class SharedAppState {
         didSet { UserDefaults.standard.set(scheduledWakesInterruptRunning, forKey: "scheduledWakesInterruptRunning") }
     }
 
+    /// Maximum bytes accepted for any single attachment. Files larger than this are
+    /// rejected at ingestion time. Default 25 MB — large enough to cover phone-camera
+    /// photos and small PDFs, small enough that one bad file can't blow the LLM context.
+    /// Persisted via UserDefaults; settable in Settings.
+    var maxAttachmentBytesPerFile: Int = SharedAppState.intDefault(key: "maxAttachmentBytesPerFile", default: 25 * 1024 * 1024) {
+        didSet { UserDefaults.standard.set(maxAttachmentBytesPerFile, forKey: "maxAttachmentBytesPerFile") }
+    }
+
+    /// Maximum aggregate bytes across all attachments on a single tool call (e.g. a
+    /// `task_complete(attachment_paths: [...])` with five files). Default 50 MB. The cap
+    /// is enforced at the tool-resolver layer so the LLM gets a clean error rather than
+    /// the runtime silently truncating.
+    var maxAttachmentBytesPerMessage: Int = SharedAppState.intDefault(key: "maxAttachmentBytesPerMessage", default: 50 * 1024 * 1024) {
+        didSet { UserDefaults.standard.set(maxAttachmentBytesPerMessage, forKey: "maxAttachmentBytesPerMessage") }
+    }
+
+    /// Reads an Int from UserDefaults, defaulting when the key has never been set.
+    /// Used by the attachment-cap settings so a "first time launch" picks up the
+    /// documented default rather than zero.
+    private static func intDefault(key: String, default fallback: Int) -> Int {
+        if UserDefaults.standard.object(forKey: key) == nil { return fallback }
+        return UserDefaults.standard.integer(forKey: key)
+    }
+
     /// Reads a Bool from UserDefaults, defaulting to `default` when the key has never been set.
     /// Used by the timestamp-display toggles so the documented "default true" survives the
     /// classic `bool(forKey:)` returning false for missing keys.

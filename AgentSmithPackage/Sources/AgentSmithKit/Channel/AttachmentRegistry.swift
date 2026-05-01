@@ -32,10 +32,15 @@ actor AttachmentRegistry {
     /// markdown links. Optional — when nil, `urlFor(_:)` returns nil and callers should
     /// degrade gracefully.
     private let urlProvider: (@Sendable (UUID, String) async -> URL?)?
-    /// Maximum byte count for a file ingested via `ingestFile(path:)`. Anything larger is
-    /// rejected before the bytes are loaded into memory. Matches the soft cap used on the
-    /// user-side attachment picker.
-    private static let maxIngestBytes = 25 * 1024 * 1024
+    /// Default maximum byte count for a file ingested via `ingestFile(path:)`. Used when
+    /// no explicit cap has been wired through the runtime. Matches the soft cap used on
+    /// the user-side attachment picker.
+    static let defaultMaxIngestBytes = 25 * 1024 * 1024
+
+    /// Per-file ingestion cap. Defaults to `defaultMaxIngestBytes` but can be overridden
+    /// via `setMaxIngestBytes(_:)` to surface the user's Settings preference. Files larger
+    /// than this are rejected before bytes hit memory.
+    private var maxIngestBytes: Int = defaultMaxIngestBytes
 
     private var byID: [UUID: Attachment] = [:]
 
@@ -55,6 +60,18 @@ actor AttachmentRegistry {
     func urlFor(_ attachment: Attachment) async -> URL? {
         await urlProvider?(attachment.id, attachment.filename)
     }
+
+    /// Overrides the per-file ingest cap. Called by the runtime when the app layer's
+    /// settings (`SharedAppState.maxAttachmentBytesPerFile`) change. Defaults are kept
+    /// generous; callers tightening the cap should pass a sensible floor.
+    func setMaxIngestBytes(_ bytes: Int) {
+        maxIngestBytes = max(0, bytes)
+    }
+
+    /// Returns the active per-file cap. Surfaced for tool-side aggregate-budget
+    /// enforcement so `attachment_paths` can pre-validate before kicking off a slow
+    /// ingest pipeline.
+    func currentMaxIngestBytes() -> Int { maxIngestBytes }
 
     /// Registers an attachment so subsequent lookups by `id` return it. Idempotent — if
     /// the same ID is already known, the existing record wins (so a later registration
@@ -117,8 +134,8 @@ actor AttachmentRegistry {
 
         let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
         let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
-        if size > Self.maxIngestBytes {
-            return .failure(.tooLarge(path: path, size: size, max: Self.maxIngestBytes))
+        if size > maxIngestBytes {
+            return .failure(.tooLarge(path: path, size: size, max: maxIngestBytes))
         }
 
         let data: Data

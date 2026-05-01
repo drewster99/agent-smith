@@ -500,6 +500,12 @@ final class AppViewModel {
             urlProvider: { id, filename in pm.attachmentURL(id: id, filename: filename) },
             syncURLProvider: { id, filename in pm.attachmentURL(id: id, filename: filename) }
         )
+        // Push the current attachment-size caps from SharedAppState into the runtime so
+        // the registry's per-file cap and the per-message aggregate cap match the user's
+        // configured limits. Caps apply at session start; Settings UI can prompt Restart
+        // if a cap is changed mid-session.
+        await newRuntime.setMaxAttachmentBytesPerFile(shared.maxAttachmentBytesPerFile)
+        await newRuntime.setMaxAttachmentBytesPerMessage(shared.maxAttachmentBytesPerMessage)
         runtime = newRuntime
         isRunning = true
 

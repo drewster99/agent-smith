@@ -144,6 +144,13 @@ public actor OrchestrationRuntime {
     /// "no attachments resolved" — they still post text-only versions of the tool action.
     private var attachmentRegistry: AttachmentRegistry?
 
+    /// Per-message aggregate attachment cap (bytes). Tools that resolve `attachment_ids`
+    /// or `attachment_paths` enforce this against the sum of `byteCount` for the
+    /// resolved set, rejecting before the channel post if exceeded. Defaults to a
+    /// generous 50 MB; the app layer overrides via `setMaxAttachmentBytesPerMessage(_:)`
+    /// from `SharedAppState.maxAttachmentBytesPerMessage`.
+    private var maxAttachmentBytesPerMessage: Int = 50 * 1024 * 1024
+
     /// Synchronous URL resolver matching the registry's async `urlFor(_:)`. Stored so
     /// `makeToolContext` can pass a sync closure into `ToolContext.attachmentURLProvider`,
     /// which is consumed by `AgentActor.drainPendingMessages` (sync path) when building
@@ -535,6 +542,23 @@ public actor OrchestrationRuntime {
         guard let registry = attachmentRegistry else { return nil }
         return await registry.resolve(id)
     }
+
+    /// Sets the per-file ingest cap on the active registry. App-layer Settings calls this
+    /// when the user changes `SharedAppState.maxAttachmentBytesPerFile`.
+    public func setMaxAttachmentBytesPerFile(_ bytes: Int) async {
+        guard let registry = attachmentRegistry else { return }
+        await registry.setMaxIngestBytes(bytes)
+    }
+
+    /// Sets the per-message aggregate cap. Enforced by tool-side resolvers via
+    /// `currentMaxAttachmentBytesPerMessage()`.
+    public func setMaxAttachmentBytesPerMessage(_ bytes: Int) {
+        maxAttachmentBytesPerMessage = max(0, bytes)
+    }
+
+    /// Returns the active per-message cap. Used by tool-side resolvers to short-circuit
+    /// before posting the channel message.
+    public func currentMaxAttachmentBytesPerMessage() -> Int { maxAttachmentBytesPerMessage }
 
     /// Registers a callback fired when an agent comes online, with its role and tool names.
     public func setOnAgentStarted(_ handler: @escaping @Sendable (AgentRole, [String]) -> Void) {
@@ -1746,6 +1770,10 @@ public actor OrchestrationRuntime {
                 }
                 let entries = attachments.map { (attachment: $0, detail: detail) }
                 await agent.stageAttachments(entries)
+            },
+            maxAttachmentBytesPerMessage: { [weak self] in
+                guard let self else { return 50 * 1024 * 1024 }
+                return await self.maxAttachmentBytesPerMessage
             }
         )
     }

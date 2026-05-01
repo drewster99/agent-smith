@@ -222,6 +222,13 @@ public struct ToolContext: Sendable {
     /// detail tier ("thumbnail" / "standard" / "full"); unknown values fall back to
     /// "standard".
     public let stageAttachmentsForNextTurn: @Sendable ([Attachment], String) async -> Void
+    /// Per-message aggregate attachment cap in bytes. Tool resolvers sum
+    /// `Attachment.byteCount` across the resolved set and reject when the total exceeds
+    /// this cap. Sourced from `OrchestrationRuntime.maxAttachmentBytesPerMessage`, which
+    /// the app layer drives from `SharedAppState.maxAttachmentBytesPerMessage`. The
+    /// tool-side check is independent of the per-file cap enforced by the registry's
+    /// `ingestFile`.
+    public let maxAttachmentBytesPerMessage: @Sendable () async -> Int
 
     init(
         agentID: UUID,
@@ -268,7 +275,8 @@ public struct ToolContext: Sendable {
             (nil, "ToolContext.ingestAttachmentFile was not configured.")
         },
         attachmentURLProvider: @escaping @Sendable (UUID, String) -> URL? = { _, _ in nil },
-        stageAttachmentsForNextTurn: @escaping @Sendable ([Attachment], String) async -> Void = { _, _ in }
+        stageAttachmentsForNextTurn: @escaping @Sendable ([Attachment], String) async -> Void = { _, _ in },
+        maxAttachmentBytesPerMessage: @escaping @Sendable () async -> Int = { 50 * 1024 * 1024 }
     ) {
         self.agentID = agentID
         self.agentRole = agentRole
@@ -303,6 +311,7 @@ public struct ToolContext: Sendable {
         self.ingestAttachmentFile = ingestAttachmentFile
         self.attachmentURLProvider = attachmentURLProvider
         self.stageAttachmentsForNextTurn = stageAttachmentsForNextTurn
+        self.maxAttachmentBytesPerMessage = maxAttachmentBytesPerMessage
     }
 
     /// Posts a message to the channel, auto-stamping it with the owning agent's
