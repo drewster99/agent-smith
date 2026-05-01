@@ -39,6 +39,29 @@ public actor AgentActor {
     /// Messages from the channel that arrived while waiting for the LLM.
     private var pendingChannelMessages: [ChannelMessage] = []
 
+    /// Attachments staged by `view_attachment` for injection into the next user turn.
+    /// Drained by `drainPendingMessages` — image bytes (downscaled) become content blocks
+    /// in the assembled LLM message; text/document refs are appended to the message body.
+    /// Cleared after each drain so a stage that doesn't get a turn (rare) doesn't leak
+    /// across runs.
+    private var pendingStagedAttachments: [(attachment: Attachment, detail: AttachmentDetail)] = []
+
+    /// Detail tier requested by `view_attachment`. Controls which downscale variant gets
+    /// staged for injection. Mirrors the tool's `detail` parameter.
+    enum AttachmentDetail: Sendable {
+        case thumbnail  // 512px long edge
+        case standard   // 1024px long edge (default)
+        case full       // original bytes, no resize
+
+        var maxLongEdge: Int? {
+            switch self {
+            case .thumbnail: return 512
+            case .standard: return 1024
+            case .full: return nil
+            }
+        }
+    }
+
     /// Whether the agent has unprocessed input that requires an LLM call.
     /// Prevents re-querying the LLM with identical context after a text-only response.
     private var hasUnprocessedInput = false
@@ -280,6 +303,18 @@ public actor AgentActor {
     /// the text body via `[Attached: id=... filename=...]` lines so the agent can refer
     /// to them by ID downstream. Used by the seed-Brown briefing path so a task created
     /// with attached files reaches Brown's first LLM turn with the bytes intact.
+    /// Stages attachments for injection into the next user turn. Called by the
+    /// `view_attachment` tool so Brown can pull a previously-known attachment into his
+    /// visual context on demand. Multiple calls before a single LLM turn accumulate;
+    /// duplicates (same `id` and `detail`) are deduped on drain.
+    ///
+    /// Internal because `AttachmentDetail` is internal — the only caller is the
+    /// `OrchestrationRuntime`-supplied closure on `ToolContext`, which is in-package.
+    func stageAttachments(_ items: [(attachment: Attachment, detail: AttachmentDetail)]) {
+        pendingStagedAttachments.append(contentsOf: items)
+        hasUnprocessedInput = true
+    }
+
     public func appendUserMessage(_ text: String, attachments: [Attachment]) {
         if attachments.isEmpty {
             appendUserMessage(text)
@@ -288,7 +323,12 @@ public actor AgentActor {
         var images: [LLMImageContent] = []
         for attachment in attachments where attachment.isImage {
             guard let data = attachment.data else { continue }
-            images.append(LLMImageContent(data: data, mimeType: attachment.mimeType))
+            // Same downscale as the channel-message path. Briefing-time injection is the
+            // most context-expensive moment in Brown's lifetime — every reset re-pays the
+            // image cost, so doing it at full resolution by default would compound badly
+            // across long-running tasks.
+            let resized = ImageDownscaler.downscale(data, sourceMimeType: attachment.mimeType)
+            images.append(LLMImageContent(data: resized.data, mimeType: resized.mimeType))
         }
         let llmImages: [LLMImageContent]? = images.isEmpty ? nil : images
         conversationHistory.append(LLMMessage(role: .user, text: text, images: llmImages))
@@ -2039,7 +2079,10 @@ public actor AgentActor {
     }
 
     private func drainPendingMessages() {
-        guard !pendingChannelMessages.isEmpty else { return }
+        // Drain when there's anything to drain — pending channel messages OR attachments
+        // staged via `view_attachment` (which arrive with no associated channel message
+        // but still need to land in the conversation history for the next LLM turn).
+        guard !pendingChannelMessages.isEmpty || !pendingStagedAttachments.isEmpty else { return }
 
         // When awaiting task review, only wake if a private message addressed to this
         // agent arrived (Smith sending revision feedback). Other messages (system banners,
@@ -2111,21 +2154,61 @@ public actor AgentActor {
             let imageAttachments = message.attachments.filter(\.isImage)
             for attachment in imageAttachments {
                 guard let data = attachment.data else { continue }
-                allImages.append(LLMImageContent(data: data, mimeType: attachment.mimeType))
+                // Downscale to a 1024px long-edge JPEG/PNG before injection. Saves vision
+                // tokens significantly for phone screenshots / camera photos without losing
+                // enough detail to answer typical "what's in this image" questions. The
+                // downscaler returns the original bytes when the image is already smaller
+                // and in a provider-friendly format, so cheap inputs stay cheap.
+                let resized = ImageDownscaler.downscale(data, sourceMimeType: attachment.mimeType)
+                allImages.append(LLMImageContent(data: resized.data, mimeType: resized.mimeType))
             }
 
             var textParts = [formatted]
-            // Surface BOTH image and non-image attachment IDs so the agent can reference
-            // them in tool-call arguments (e.g. `create_task` with `attachment_ids`).
-            // Image content is also injected directly above; this line gives the LLM the
-            // identifier it needs to forward the same image into a downstream tool call.
+            // Surface every attachment as a markdown reference so the agent can quote the
+            // `id=<UUID>` into a downstream tool call (`create_task`, `task_update`,
+            // `task_complete`, etc.). Image content is also injected as image blocks above
+            // — the markdown line is a forwarding handle and a `file://` link Brown can
+            // pass to `file_read` for non-image content. The URL provider is sync so this
+            // path stays sync; when no provider is wired (tests), the link is degraded to
+            // a `#` anchor and the agent still has the `id=` substring to forward.
             for attachment in message.attachments {
-                textParts.append("[Attached: id=\(attachment.id.uuidString) filename=\(attachment.filename) (\(attachment.mimeType), \(attachment.formattedSize))]")
+                let url = toolContext.attachmentURLProvider(attachment.id, attachment.filename)
+                let urlString = url?.absoluteString ?? "#"
+                textParts.append("[\(attachment.filename)](\(urlString)) \(attachment.mimeType) · \(attachment.formattedSize) · id=\(attachment.id.uuidString)")
             }
 
             allTextParts.append(textParts.joined(separator: "\n"))
         }
         pendingChannelMessages.removeAll()
+
+        // Drain any attachments staged via `view_attachment`. Image attachments at the
+        // requested detail tier go in as image content blocks; non-image attachments
+        // become markdown reference lines. Dedupe by (id, detail) so a model that calls
+        // view_attachment twice in a row doesn't double-inject. Stage list is cleared
+        // unconditionally — leaving entries across drains creates leaks under retries.
+        if !pendingStagedAttachments.isEmpty {
+            var seen: Set<String> = []
+            var stagedTextParts: [String] = ["[Staged for this turn via view_attachment]"]
+            for entry in pendingStagedAttachments {
+                let key = "\(entry.attachment.id.uuidString)|\(String(describing: entry.detail))"
+                guard !seen.contains(key) else { continue }
+                seen.insert(key)
+                let attachment = entry.attachment
+                if attachment.isImage, let data = attachment.data {
+                    let resized = ImageDownscaler.downscale(
+                        data,
+                        maxLongEdge: entry.detail.maxLongEdge,
+                        sourceMimeType: attachment.mimeType
+                    )
+                    allImages.append(LLMImageContent(data: resized.data, mimeType: resized.mimeType))
+                }
+                let url = toolContext.attachmentURLProvider(attachment.id, attachment.filename)
+                let urlString = url?.absoluteString ?? "#"
+                stagedTextParts.append("[\(attachment.filename)](\(urlString)) \(attachment.mimeType) · \(attachment.formattedSize) · id=\(attachment.id.uuidString)")
+            }
+            allTextParts.append(stagedTextParts.joined(separator: "\n"))
+            pendingStagedAttachments.removeAll()
+        }
 
         let combinedText = allTextParts.joined(separator: "\n\n")
         let images: [LLMImageContent]? = allImages.isEmpty ? nil : allImages

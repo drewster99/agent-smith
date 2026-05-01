@@ -208,6 +208,20 @@ public struct ToolContext: Sendable {
     /// produced during the task. Returns the new `Attachment` on success; on failure
     /// returns nil with a human-readable error string.
     public let ingestAttachmentFile: @Sendable (String) async -> (attachment: Attachment?, error: String?)
+    /// Synchronous resolver for the on-disk URL of an attachment by `(id, filename)`.
+    /// Used by sync-only paths in `AgentActor` (e.g. `drainPendingMessages`) to produce
+    /// `file://` markdown links without an actor hop. Returns nil when no per-session
+    /// path is wired (tests, in-memory contexts). The URL is purely informational —
+    /// callers MUST NOT assume the file exists; bytes still go through the registry.
+    public let attachmentURLProvider: @Sendable (UUID, String) -> URL?
+    /// Stages attachments into the calling agent's next user turn. The runtime drains
+    /// these into the assembled LLM message — image attachments become content blocks at
+    /// the requested detail tier; non-image attachments become markdown reference lines.
+    /// Used by the `view_attachment` tool so an agent can pull a previously-known
+    /// attachment into its visual context on demand. The string parameter is the
+    /// detail tier ("thumbnail" / "standard" / "full"); unknown values fall back to
+    /// "standard".
+    public let stageAttachmentsForNextTurn: @Sendable ([Attachment], String) async -> Void
 
     public init(
         agentID: UUID,
@@ -252,7 +266,9 @@ public struct ToolContext: Sendable {
         resolveAttachments: @escaping @Sendable ([String]) async -> (resolved: [Attachment], rejected: [String]) = { _ in ([], []) },
         ingestAttachmentFile: @escaping @Sendable (String) async -> (attachment: Attachment?, error: String?) = { _ in
             (nil, "ToolContext.ingestAttachmentFile was not configured.")
-        }
+        },
+        attachmentURLProvider: @escaping @Sendable (UUID, String) -> URL? = { _, _ in nil },
+        stageAttachmentsForNextTurn: @escaping @Sendable ([Attachment], String) async -> Void = { _, _ in }
     ) {
         self.agentID = agentID
         self.agentRole = agentRole
@@ -285,6 +301,8 @@ public struct ToolContext: Sendable {
         self.hasToolFailed = hasToolFailed
         self.resolveAttachments = resolveAttachments
         self.ingestAttachmentFile = ingestAttachmentFile
+        self.attachmentURLProvider = attachmentURLProvider
+        self.stageAttachmentsForNextTurn = stageAttachmentsForNextTurn
     }
 
     /// Posts a message to the channel, auto-stamping it with the owning agent's

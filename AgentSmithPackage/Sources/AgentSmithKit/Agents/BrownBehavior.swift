@@ -1,7 +1,7 @@
 import Foundation
 
 /// Defines Brown's tool set and system prompt.
-public enum BrownBehavior {
+enum BrownBehavior {
     // MARK: - Shared tool description helpers
 
     /// Returns the standard approval-gate suffix for Brown-facing tool descriptions.
@@ -30,6 +30,7 @@ public enum BrownBehavior {
             BashTool(),
             GhTool(authStatusSnapshot: ghAuthStatusSnapshot ?? "(auth status was not captured for this spawn)"),
             FileReadTool(),
+            ViewAttachmentTool(),
             FileWriteTool(),
             FileEditTool(),
             GlobTool(),
@@ -46,7 +47,7 @@ public enum BrownBehavior {
 
     /// Tool names for configuration. Auth-status snapshot is irrelevant for names, so the
     /// default is fine here.
-    public static var toolNames: [String] {
+    static var toolNames: [String] {
         tools().map(\.name)
     }
 
@@ -62,7 +63,7 @@ public enum BrownBehavior {
     }
 
     /// System prompt for Brown agents.
-    public static var systemPrompt: String {
+    static var systemPrompt: String {
         """
         \(AgentRole.brown.baseSystemPrompt)
         You are Agent Brown, efficient task executor. You carry out specific assignments \

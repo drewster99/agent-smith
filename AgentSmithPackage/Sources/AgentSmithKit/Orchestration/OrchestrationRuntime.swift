@@ -144,6 +144,12 @@ public actor OrchestrationRuntime {
     /// "no attachments resolved" — they still post text-only versions of the tool action.
     private var attachmentRegistry: AttachmentRegistry?
 
+    /// Synchronous URL resolver matching the registry's async `urlFor(_:)`. Stored so
+    /// `makeToolContext` can pass a sync closure into `ToolContext.attachmentURLProvider`,
+    /// which is consumed by `AgentActor.drainPendingMessages` (sync path) when building
+    /// `file://` markdown links from incoming channel-message attachments.
+    private var attachmentURLProviderClosure: (@Sendable (UUID, String) -> URL?)?
+
     /// FIFO queue used to serialize `restartForNewTask` requests. Without this,
     /// two near-concurrent restart calls would each fire their own
     /// `Task.detached` and interleave their `stopAll() + start()` chains —
@@ -325,20 +331,33 @@ public actor OrchestrationRuntime {
     /// no transformation. Used by both the run_task path and the autoRunInterruptedTasks
     /// cold-launch path; previously posted as a Smith → Brown channel message which
     /// duplicated the New Task banner's description in the user-facing transcript.
-    static func composeBrownTaskBriefing(for task: AgentTask) -> String {
+    /// Renders Brown's task briefing as markdown. Async because attachment lines can
+    /// resolve a `file://` URL via the per-session registry — the URL is included in
+    /// the markdown link so Brown can `file_read` the file directly when useful, and
+    /// so the link survives summarization (markdown link syntax tends to round-trip
+    /// through summarizer prompts more reliably than ad-hoc "[Attached: id=...]").
+    func composeBrownTaskBriefing(for task: AgentTask) async -> String {
         var parts: [String] = []
         parts.append("Task: \"\(task.title)\" (ID: \(task.id.uuidString))\n\n\(task.description)")
         if !task.descriptionAttachments.isEmpty {
-            let lines = task.descriptionAttachments.map(Self.attachmentRefLine)
+            var lines: [String] = []
+            for attachment in task.descriptionAttachments {
+                lines.append(await attachmentMarkdownLine(attachment))
+            }
             parts.append("## Attachments\n\(lines.joined(separator: "\n"))")
         }
         if !task.updates.isEmpty {
-            let updateLines: [String] = task.updates.map { update in
+            var updateLines: [String] = []
+            for update in task.updates {
                 if update.attachments.isEmpty {
-                    return "- \(update.message)"
+                    updateLines.append("- \(update.message)")
+                } else {
+                    var refs: [String] = []
+                    for attachment in update.attachments {
+                        refs.append(await attachmentMarkdownLine(attachment))
+                    }
+                    updateLines.append("- \(update.message)\n  \(refs.joined(separator: "\n  "))")
                 }
-                let attachmentRefs = update.attachments.map(Self.attachmentRefLine).joined(separator: "\n  ")
-                return "- \(update.message)\n  \(attachmentRefs)"
             }
             parts.append("## Prior Progress\n\(updateLines.joined(separator: "\n"))")
         }
@@ -348,11 +367,24 @@ public actor OrchestrationRuntime {
         return parts.joined(separator: "\n\n")
     }
 
-    /// Single-line attachment reference suitable for inclusion in any LLM-facing text.
-    /// Mirrors the format used by `AgentActor` when surfacing message-attached files so
-    /// the LLM can forward the same `id=...` value into a downstream tool call.
-    private static func attachmentRefLine(_ attachment: Attachment) -> String {
-        "[Attached: id=\(attachment.id.uuidString) filename=\(attachment.filename) (\(attachment.mimeType), \(attachment.formattedSize))]"
+    /// Markdown-link representation of an attachment, with a stable `file://` URL when
+    /// the per-session registry has one. Format:
+    /// `[filename](file:///abs/path) mime · size · id=<UUID>`
+    /// When the file isn't reachable (no registry, no on-disk file), appends a clear
+    /// `· UNLOADABLE` marker so Brown sees that the reference exists but the bytes don't.
+    func attachmentMarkdownLine(_ attachment: Attachment) async -> String {
+        let label = attachment.filename
+        let meta = "\(attachment.mimeType) · \(attachment.formattedSize) · id=\(attachment.id.uuidString)"
+        guard let url = await attachmentRegistry?.urlFor(attachment) else {
+            return "[\(label)](#) \(meta) · UNLOADABLE"
+        }
+        let exists = FileManager.default.fileExists(atPath: url.path)
+        let urlString = url.absoluteString
+        if exists {
+            return "[\(label)](\(urlString)) \(meta)"
+        } else {
+            return "[\(label)](\(urlString)) \(meta) · UNLOADABLE: file missing on disk"
+        }
     }
 
     /// Returns the union of all attachments referenced by a task — its description, the
@@ -464,9 +496,12 @@ public actor OrchestrationRuntime {
     /// files Brown produces.
     public func setAttachmentPersistence(
         loader: @escaping @Sendable (UUID, String) async -> Data?,
-        saver: @escaping @Sendable (Attachment) async throws -> Void
+        saver: @escaping @Sendable (Attachment) async throws -> Void,
+        urlProvider: (@Sendable (UUID, String) async -> URL?)? = nil,
+        syncURLProvider: (@Sendable (UUID, String) -> URL?)? = nil
     ) {
-        attachmentRegistry = AttachmentRegistry(loader: loader, saver: saver)
+        attachmentRegistry = AttachmentRegistry(loader: loader, saver: saver, urlProvider: urlProvider)
+        attachmentURLProviderClosure = syncURLProvider
     }
 
     /// Pre-registers a list of attachments in the per-session registry. Used during
@@ -852,7 +887,7 @@ public actor OrchestrationRuntime {
                     // context — all already in the task store; Brown is the only consumer
                     // (Jones reads task.description directly). Direct seeding keeps the
                     // data flow clean and stays symmetric with `rebuildContextFromTask`.
-                    let briefing = Self.composeBrownTaskBriefing(for: resumingTask)
+                    let briefing = await composeBrownTaskBriefing(for: resumingTask)
                     let attachmentsForBrown = await collectTaskAttachments(resumingTask)
                     if let brownAgent = agents[brownID] {
                         // Synthetic ack runs BEFORE any LLM call on Brown's first run-loop
@@ -948,7 +983,7 @@ public actor OrchestrationRuntime {
                     await taskStore.updateStatus(id: task.id, status: .running)
                     await taskStore.assignAgent(taskID: task.id, agentID: brownID)
 
-                    let briefing = Self.composeBrownTaskBriefing(for: task)
+                    let briefing = await composeBrownTaskBriefing(for: task)
                     let attachmentsForBrown = await collectTaskAttachments(task)
                     if let brownAgent = agents[brownID] {
                         await brownAgent.setSyntheticFirstToolCall("task_acknowledged")
@@ -1681,6 +1716,19 @@ public actor OrchestrationRuntime {
                 case .failure(let err):
                     return (nil, err.description)
                 }
+            },
+            attachmentURLProvider: attachmentURLProviderClosure ?? { _, _ in nil },
+            stageAttachmentsForNextTurn: { [weak self] attachments, detailString in
+                guard let self else { return }
+                guard let agent = await self.agents[agentID] else { return }
+                let detail: AgentActor.AttachmentDetail
+                switch detailString.lowercased() {
+                case "thumbnail": detail = .thumbnail
+                case "full": detail = .full
+                default: detail = .standard
+                }
+                let entries = attachments.map { (attachment: $0, detail: detail) }
+                await agent.stageAttachments(entries)
             }
         )
     }

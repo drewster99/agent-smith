@@ -1,7 +1,7 @@
 import Foundation
 
 /// Defines Smith's tool set and enhanced system prompt.
-public enum SmithBehavior {
+enum SmithBehavior {
     /// Tools available to the Smith agent.
     public static func tools() -> [any AgentTool] {
         [
@@ -24,12 +24,13 @@ public enum SmithBehavior {
             SaveMemoryTool(),
             SearchMemoryTool(),
             FileReadTool(),
+            ViewAttachmentTool(),
             CurrentTimeTool()
         ]
     }
 
     /// Tool names for configuration.
-    public static var toolNames: [String] {
+    static var toolNames: [String] {
         tools().map(\.name)
     }
 

@@ -27,6 +27,11 @@ actor AttachmentRegistry {
     private let loader: @Sendable (UUID, String) async -> Data?
     /// Closure that persists attachment bytes to the per-session disk store. Same rationale.
     private let saver: @Sendable (Attachment) async throws -> Void
+    /// Closure that returns the canonical on-disk URL for an attachment (whether or not
+    /// the file exists). Used by `urlFor(_:)` to build `file://` references for LLM-facing
+    /// markdown links. Optional — when nil, `urlFor(_:)` returns nil and callers should
+    /// degrade gracefully.
+    private let urlProvider: (@Sendable (UUID, String) async -> URL?)?
     /// Maximum byte count for a file ingested via `ingestFile(path:)`. Anything larger is
     /// rejected before the bytes are loaded into memory. Matches the soft cap used on the
     /// user-side attachment picker.
@@ -36,10 +41,19 @@ actor AttachmentRegistry {
 
     init(
         loader: @escaping @Sendable (UUID, String) async -> Data?,
-        saver: @escaping @Sendable (Attachment) async throws -> Void
+        saver: @escaping @Sendable (Attachment) async throws -> Void,
+        urlProvider: (@Sendable (UUID, String) async -> URL?)? = nil
     ) {
         self.loader = loader
         self.saver = saver
+        self.urlProvider = urlProvider
+    }
+
+    /// Returns the canonical on-disk URL for an attachment, if a URL provider was
+    /// configured at registry construction. Used by the briefing builder to surface
+    /// `file://` references. Nil if no provider is wired (tests, in-memory contexts).
+    func urlFor(_ attachment: Attachment) async -> URL? {
+        await urlProvider?(attachment.id, attachment.filename)
     }
 
     /// Registers an attachment so subsequent lookups by `id` return it. Idempotent — if

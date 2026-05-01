@@ -496,7 +496,9 @@ final class AppViewModel {
         let pm = persistenceManager
         await newRuntime.setAttachmentPersistence(
             loader: { id, filename in await pm.loadAttachmentData(id: id, filename: filename) },
-            saver: { attachment in try await pm.saveAttachment(attachment) }
+            saver: { attachment in try await pm.saveAttachment(attachment) },
+            urlProvider: { id, filename in pm.attachmentURL(id: id, filename: filename) },
+            syncURLProvider: { id, filename in pm.attachmentURL(id: id, filename: filename) }
         )
         runtime = newRuntime
         isRunning = true

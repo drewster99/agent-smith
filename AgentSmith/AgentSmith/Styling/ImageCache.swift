@@ -89,8 +89,6 @@ final class ImageCache {
             ? diskCacheURL(attachmentID: attachment.id, tier: tier)
             : nil
         let attachmentData = attachment.data
-        let attachmentID = attachment.id
-        let attachmentFilename = attachment.filename
         let isFull = tier == .full
 
         let result: NSImage? = await Task.detached(priority: .userInitiated) {
@@ -101,10 +99,12 @@ final class ImageCache {
                 return diskImage
             }
 
-            // Load source data
-            guard let sourceData = attachmentData
-                    ?? Attachment.loadPersistedData(id: attachmentID, filename: attachmentFilename)
-            else {
+            // Load source data. Per-session attachments live under
+            // <session>/attachments/, so callers must hand us an Attachment whose
+            // `data` is already populated (the runtime's AttachmentRegistry is the
+            // canonical loader). The legacy global-path fallback was removed when the
+            // per-session layout retired the global attachments dir.
+            guard let sourceData = attachmentData else {
                 return nil
             }
 
