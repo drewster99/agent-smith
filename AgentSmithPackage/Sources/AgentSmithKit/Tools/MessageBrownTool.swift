@@ -6,7 +6,8 @@ struct MessageBrownTool: AgentTool {
     let name = "message_brown"
     let toolDescription = """
         Send a message to Agent Brown. Use for task instructions, corrections, and follow-ups. \
-        Be specific and unambiguous — Brown is literal and may misinterpret vague instructions.
+        Be specific and unambiguous — Brown is literal and may misinterpret vague instructions. \
+        Optionally forward attachments via `attachment_ids` (UUID strings from `[filename](file://…) … id=<UUID>` markdown links).
         """
 
     let parameters: [String: AnyCodable] = [
@@ -15,6 +16,11 @@ struct MessageBrownTool: AgentTool {
             "message": .dictionary([
                 "type": .string("string"),
                 "description": .string("The message to send to Brown.")
+            ]),
+            "attachment_ids": .dictionary([
+                "type": .string("array"),
+                "items": .dictionary(["type": .string("string")]),
+                "description": .string("Optional UUID strings of existing attachments to forward to Brown with this message. Use the EXACT id values from the `[filename](file://…) … id=<UUID>` markdown links in your context.")
             ])
         ]),
         "required": .array([.string("message")])
@@ -38,6 +44,12 @@ struct MessageBrownTool: AgentTool {
             throw ToolCallError.missingRequiredArgument("message")
         }
 
+        let resolution = await TaskUpdateTool.resolveAttachments(arguments: arguments, context: context)
+        if let failureMessage = resolution.failure {
+            return .failure(failureMessage)
+        }
+        let attachments = resolution.attachments
+
         guard let brownID = await context.agentIDForRole(.brown) else {
             return .failure("No active Brown agent found. Use `run_task` to start a task — it will spawn Brown automatically.")
         }
@@ -46,9 +58,14 @@ struct MessageBrownTool: AgentTool {
             sender: .agent(context.agentRole),
             recipientID: brownID,
             recipient: .agent(.brown),
-            content: message
+            content: message,
+            attachments: attachments
         ))
 
-        return .success("Message sent to Brown.")
+        if attachments.isEmpty {
+            return .success("Message sent to Brown.")
+        }
+        let names = attachments.map { $0.filename }.joined(separator: ", ")
+        return .success("Message sent to Brown with \(attachments.count) attachment(s): \(names)")
     }
 }
