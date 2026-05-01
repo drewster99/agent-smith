@@ -1,11 +1,11 @@
 import Foundation
 
 /// Allows Jones to inspect running processes for safety monitoring.
-public struct ListProcessesTool: AgentTool {
-    public let name = "list_processes"
-    public let toolDescription = "Lists running processes on the system. Use to check for runaway or suspicious processes spawned by other agents."
+private struct ListProcessesTool: AgentTool {
+    let name = "list_processes"
+    let toolDescription = "Lists running processes on the system. Use to check for runaway or suspicious processes spawned by other agents."
 
-    public let parameters: [String: AnyCodable] = [
+    let parameters: [String: AnyCodable] = [
         "type": .string("object"),
         "properties": .dictionary([
             "filter": .dictionary([

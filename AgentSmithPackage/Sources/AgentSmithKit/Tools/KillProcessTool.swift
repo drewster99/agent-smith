@@ -1,11 +1,11 @@
 import Foundation
 
 /// Allows Jones to terminate specific processes for safety.
-public struct KillProcessTool: AgentTool {
-    public let name = "kill_process"
-    public let toolDescription = "Terminates a specific process by PID. Use to stop runaway or dangerous processes spawned by agents."
+private struct KillProcessTool: AgentTool {
+    let name = "kill_process"
+    let toolDescription = "Terminates a specific process by PID. Use to stop runaway or dangerous processes spawned by agents."
 
-    public let parameters: [String: AnyCodable] = [
+    let parameters: [String: AnyCodable] = [
         "type": .string("object"),
         "properties": .dictionary([
             "pid": .dictionary([

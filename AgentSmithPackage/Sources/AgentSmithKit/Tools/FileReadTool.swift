@@ -7,9 +7,9 @@ import UniformTypeIdentifiers
 /// Text files are returned with `cat -n` style line numbering.
 /// PDF files are read via PDFKit with optional page ranges.
 /// Image and binary files return metadata only.
-public struct FileReadTool: AgentTool {
-    public let name = "file_read"
-    public let toolDescription = "Read the contents of a file. Text files are returned with line numbers in `cat -n` format, which means each line of text starts with a line number, padded on the left to 6 characters, followed by two spaces, and then the line's content. Supports PDF files via a pages parameter. Returns metadata ONLY for images and binary files. Before invoking `file_read`, consider if there are other files you will wish to read as well. If so, read them all in parallel by issuing multiple `file_read` calls in a single response."
+struct FileReadTool: AgentTool {
+    let name = "file_read"
+    let toolDescription = "Read the contents of a file. Text files are returned with line numbers in `cat -n` format, which means each line of text starts with a line number, padded on the left to 6 characters, followed by two spaces, and then the line's content. Supports PDF files via a pages parameter. Returns metadata ONLY for images and binary files. Before invoking `file_read`, consider if there are other files you will wish to read as well. If so, read them all in parallel by issuing multiple `file_read` calls in a single response."
 
     public func description(for role: AgentRole) -> String {
         switch role {
@@ -21,7 +21,7 @@ public struct FileReadTool: AgentTool {
         }
     }
 
-    public let parameters: [String: AnyCodable] = [
+    let parameters: [String: AnyCodable] = [
         "type": .string("object"),
         "properties": .dictionary([
             "path": .dictionary([

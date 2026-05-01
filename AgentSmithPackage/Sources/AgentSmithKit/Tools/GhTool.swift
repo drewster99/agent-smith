@@ -5,8 +5,8 @@ import Foundation
 /// shell. The tool's description includes the captured `gh auth status` output from Brown's
 /// spawn so the model has direct evidence that authentication is in place — without this,
 /// gpt-style models routinely refuse GitHub work claiming "I don't have access."
-public struct GhTool: AgentTool {
-    public let name = "gh"
+struct GhTool: AgentTool {
+    let name = "gh"
     private let authStatusSnapshot: String
 
     /// Substrings rejected before the args reach bash. Naive (not quote-aware) — false
@@ -71,7 +71,7 @@ public struct GhTool: AgentTool {
         self.authStatusSnapshot = authStatusSnapshot
     }
 
-    public var toolDescription: String {
+    var toolDescription: String {
         """
         Run a GitHub CLI command. THIS is the tool to use for `gh` — do NOT shell out to `gh` \
         via the `bash` tool, even though that would also work. Routing `gh` through this tool \
@@ -116,7 +116,7 @@ public struct GhTool: AgentTool {
         }
     }
 
-    public let parameters: [String: AnyCodable] = [
+    let parameters: [String: AnyCodable] = [
         "type": .string("object"),
         "properties": .dictionary([
             "args": .dictionary([

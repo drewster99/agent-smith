@@ -2,14 +2,14 @@ import Foundation
 
 /// Smith tool: sends a private message to Agent Brown.
 /// Replaces send_message(recipient_id: "brown") for Smith's tool set.
-public struct MessageBrownTool: AgentTool {
-    public let name = "message_brown"
-    public let toolDescription = """
+struct MessageBrownTool: AgentTool {
+    let name = "message_brown"
+    let toolDescription = """
         Send a message to Agent Brown. Use for task instructions, corrections, and follow-ups. \
         Be specific and unambiguous — Brown is literal and may misinterpret vague instructions.
         """
 
-    public let parameters: [String: AnyCodable] = [
+    let parameters: [String: AnyCodable] = [
         "type": .string("object"),
         "properties": .dictionary([
             "message": .dictionary([

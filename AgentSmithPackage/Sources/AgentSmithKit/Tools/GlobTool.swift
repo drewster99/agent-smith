@@ -4,9 +4,9 @@ import Foundation
 ///
 /// Supports glob patterns like `**/*.swift` or `src/**/*.ts`.
 /// Returns matching file paths sorted by modification time (most recent first).
-public struct GlobTool: AgentTool {
-    public let name = "glob"
-    public let toolDescription = "Find files matching a glob pattern. Supports *, **, ?, and {a,b} patterns. Returns matching file paths sorted by modification time (most recent first). Hidden files (dotfiles) are skipped by default. Use instead of find or ls for file discovery."
+struct GlobTool: AgentTool {
+    let name = "glob"
+    let toolDescription = "Find files matching a glob pattern. Supports *, **, ?, and {a,b} patterns. Returns matching file paths sorted by modification time (most recent first). Hidden files (dotfiles) are skipped by default. Use instead of find or ls for file discovery."
 
     public func description(for role: AgentRole) -> String {
         switch role {
@@ -18,7 +18,7 @@ public struct GlobTool: AgentTool {
         }
     }
 
-    public let parameters: [String: AnyCodable] = [
+    let parameters: [String: AnyCodable] = [
         "type": .string("object"),
         "properties": .dictionary([
             "pattern": .dictionary([

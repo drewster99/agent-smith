@@ -5,11 +5,11 @@ import Foundation
 /// Amendments are appended to the task description with a clear label, so both
 /// Brown (via `message_brown`) and Jones (who reads `taskDescription` on every
 /// tool-approval request) see the updated intent.
-public struct AmendTaskTool: AgentTool {
-    public let name = "amend_task"
-    public let toolDescription = "Add a clarification or updated instruction to a task's description. Use this when the user provides new context, corrections, or additional requirements for an in-progress task. The amendment is visible to Jones (security) and should also be relayed to Brown via `message_brown`."
+struct AmendTaskTool: AgentTool {
+    let name = "amend_task"
+    let toolDescription = "Add a clarification or updated instruction to a task's description. Use this when the user provides new context, corrections, or additional requirements for an in-progress task. The amendment is visible to Jones (security) and should also be relayed to Brown via `message_brown`."
 
-    public let parameters: [String: AnyCodable] = [
+    let parameters: [String: AnyCodable] = [
         "type": .string("object"),
         "properties": .dictionary([
             "task_id": .dictionary([
