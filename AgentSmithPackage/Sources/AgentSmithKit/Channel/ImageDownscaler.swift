@@ -37,6 +37,24 @@ enum ImageDownscaler {
         "image/x-bmp"
     ]
 
+    /// MIME types every major vision-capable provider accepts in image content blocks.
+    /// Used by `isProviderInjectable` so callers know whether the bytes/mime returned by
+    /// `downscale(...)` are safe to put into an `image` content block. Anything outside
+    /// this set should fall back to a markdown-link reference rather than risking a
+    /// tool/API rejection.
+    static let providerInjectableMimeTypes: Set<String> = [
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "image/webp"
+    ]
+
+    /// Returns true when the given mime type is in `providerInjectableMimeTypes`. The
+    /// canonical check before injecting bytes into an LLM image content block.
+    static func isProviderInjectable(mimeType: String) -> Bool {
+        providerInjectableMimeTypes.contains(mimeType.lowercased())
+    }
+
     /// Returns the (possibly resized) image bytes plus the resulting MIME type.
     ///
     /// - Parameters:

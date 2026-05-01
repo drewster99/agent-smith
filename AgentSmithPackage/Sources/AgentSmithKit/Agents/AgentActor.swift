@@ -328,6 +328,7 @@ public actor AgentActor {
             // image cost, so doing it at full resolution by default would compound badly
             // across long-running tasks.
             let resized = ImageDownscaler.downscale(data, sourceMimeType: attachment.mimeType)
+            guard ImageDownscaler.isProviderInjectable(mimeType: resized.mimeType) else { continue }
             images.append(LLMImageContent(data: resized.data, mimeType: resized.mimeType))
         }
         let llmImages: [LLMImageContent]? = images.isEmpty ? nil : images
@@ -2160,6 +2161,12 @@ public actor AgentActor {
                 // downscaler returns the original bytes when the image is already smaller
                 // and in a provider-friendly format, so cheap inputs stay cheap.
                 let resized = ImageDownscaler.downscale(data, sourceMimeType: attachment.mimeType)
+                // Skip injection for formats no provider accepts (e.g. image/svg+xml,
+                // unrecognized formats where decode failed and the fallback returned
+                // source bytes). The agent still sees the file path and id via the
+                // markdown reference line below; for SVG specifically Brown can call
+                // file_read which returns the SVG XML content as text.
+                guard ImageDownscaler.isProviderInjectable(mimeType: resized.mimeType) else { continue }
                 allImages.append(LLMImageContent(data: resized.data, mimeType: resized.mimeType))
             }
 
@@ -2200,7 +2207,9 @@ public actor AgentActor {
                         maxLongEdge: entry.detail.maxLongEdge,
                         sourceMimeType: attachment.mimeType
                     )
-                    allImages.append(LLMImageContent(data: resized.data, mimeType: resized.mimeType))
+                    if ImageDownscaler.isProviderInjectable(mimeType: resized.mimeType) {
+                        allImages.append(LLMImageContent(data: resized.data, mimeType: resized.mimeType))
+                    }
                 }
                 let url = toolContext.attachmentURLProvider(attachment.id, attachment.filename)
                 let urlString = url?.absoluteString ?? "#"
