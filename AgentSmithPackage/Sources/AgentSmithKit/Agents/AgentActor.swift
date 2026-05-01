@@ -300,9 +300,9 @@ public actor AgentActor {
 
     /// Same as `appendUserMessage(_:)` but also injects image attachments as inline
     /// image content for the LLM. Non-image attachments should already be referenced in
-    /// the text body via `[Attached: id=... filename=...]` lines so the agent can refer
-    /// to them by ID downstream. Used by the seed-Brown briefing path so a task created
-    /// with attached files reaches Brown's first LLM turn with the bytes intact.
+    /// the text body via `[filename](file://…) … id=<UUID>` markdown lines so the agent
+    /// can quote the id forward downstream. Used by the seed-Brown briefing path so a
+    /// task created with attached files reaches Brown's first LLM turn with the bytes intact.
     /// Stages attachments for injection into the next user turn. Called by the
     /// `view_attachment` tool so Brown can pull a previously-known attachment into his
     /// visual context on demand. Multiple calls before a single LLM turn accumulate;

@@ -104,7 +104,7 @@ public struct TaskUpdateTool: AgentTool {
             if !idStrings.isEmpty {
                 let outcome = await context.resolveAttachments(idStrings)
                 if !outcome.rejected.isEmpty {
-                    return (collected, "Unknown attachment_ids: \(outcome.rejected.joined(separator: ", ")). The IDs must come from a `[Attached: id=...]` reference Smith or Brown previously saw — do not invent them.")
+                    return (collected, "Unknown attachment_ids: \(outcome.rejected.joined(separator: ", ")). The IDs must come from a `[filename](file://…) … id=<UUID>` markdown link Smith or Brown previously saw — do not invent them.")
                 }
                 collected.append(contentsOf: outcome.resolved)
             }

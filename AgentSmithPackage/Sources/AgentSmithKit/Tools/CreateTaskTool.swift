@@ -41,7 +41,7 @@ public struct CreateTaskTool: AgentTool {
             "attachment_ids": .dictionary([
                 "type": .string("array"),
                 "items": .dictionary(["type": .string("string")]),
-                "description": .string("Optional UUID strings of attachments to include with this task. Use when the user attached an image, PDF, or file the worker will need. The IDs are surfaced in the user's incoming message as `[Attached: id=<UUID> filename=...]`. Forward the EXACT id values verbatim. Brown will see image attachments as image content and any non-image attachments as text references.")
+                "description": .string("Optional UUID strings of attachments to include with this task. Use when the user attached an image, PDF, or file the worker will need. The IDs are surfaced in the user's incoming message as `[filename](file://…) … id=<UUID>` markdown links. Forward the EXACT id values verbatim. Brown will see image attachments as image content and any non-image attachments as text references with file paths.")
             ])
         ]),
         "required": .array([.string("title"), .string("description")])
@@ -80,7 +80,7 @@ public struct CreateTaskTool: AgentTool {
             if !idStrings.isEmpty {
                 let outcome = await context.resolveAttachments(idStrings)
                 if !outcome.rejected.isEmpty {
-                    return .failure("create_task: unknown attachment_ids: \(outcome.rejected.joined(separator: ", ")). Use the EXACT id strings from the `[Attached: id=...]` lines in the user's message.")
+                    return .failure("create_task: unknown attachment_ids: \(outcome.rejected.joined(separator: ", ")). Use the EXACT id values from the `[filename](file://…) … id=<UUID>` markdown links in the user's message.")
                 }
                 resolvedAttachments = outcome.resolved
             }
