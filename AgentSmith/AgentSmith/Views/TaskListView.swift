@@ -351,10 +351,34 @@ private struct TaskRow: View {
             titleText()
                 .frame(maxWidth: .infinity, alignment: .leading)
 
+            if attachmentCount > 0 {
+                attachmentPip()
+            }
+
             if style == .active && task.status == .running {
                 runningInlineControls()
             }
         }
+    }
+
+    /// Total attachments referenced anywhere on the task — description, every update,
+    /// and the result. Used by the sidebar pip to indicate "this task carries files."
+    private var attachmentCount: Int {
+        task.descriptionAttachments.count
+            + task.updates.reduce(0) { $0 + $1.attachments.count }
+            + task.resultAttachments.count
+    }
+
+    @ViewBuilder
+    private func attachmentPip() -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: "paperclip")
+                .imageScale(.small)
+            Text("\(attachmentCount)")
+                .font(.caption2.monospacedDigit())
+        }
+        .foregroundStyle(.secondary)
+        .help("\(attachmentCount) attachment\(attachmentCount == 1 ? "" : "s")")
     }
 
     @ViewBuilder

@@ -23,6 +23,13 @@ struct TaskDetailWindow: View {
         return task.status.isDescriptionEditable
     }
 
+    /// Resolves an attachment's on-disk URL through this window's session-scoped
+    /// `PersistenceManager`. Captured by `TaskAttachmentList` rows so they can build a
+    /// Reveal-in-Finder action.
+    private func attachmentURLResolver(_ attachment: Attachment) -> URL? {
+        viewModel.persistenceManager.attachmentURL(id: attachment.id, filename: attachment.filename)
+    }
+
     var body: some View {
         if let task {
             taskContent(task)
@@ -110,6 +117,16 @@ struct TaskDetailWindow: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
+                // MARK: Description Attachments
+                if !task.descriptionAttachments.isEmpty {
+                    Divider()
+                    sectionHeader("Attachments", copyText: Self.formattedAttachments(task.descriptionAttachments))
+                    TaskAttachmentList(
+                        attachments: task.descriptionAttachments,
+                        urlResolver: attachmentURLResolver
+                    )
+                }
+
                 // MARK: Commentary
                 if let commentary = task.commentary, !commentary.isEmpty {
                     Divider()
@@ -124,7 +141,7 @@ struct TaskDetailWindow: View {
                     sectionHeader("Updates", copyText: Self.formattedUpdates(task.updates))
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(Array(task.updates.enumerated()), id: \.offset) { _, update in
-                            TaskUpdateRow(update: update)
+                            TaskUpdateRow(update: update, attachmentURLResolver: attachmentURLResolver)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -136,6 +153,16 @@ struct TaskDetailWindow: View {
                     sectionHeader("Result", copyText: result)
                     MarkdownText(content: result, baseFont: .body)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                // MARK: Result Attachments
+                if !task.resultAttachments.isEmpty {
+                    Divider()
+                    sectionHeader("Result Attachments", copyText: Self.formattedAttachments(task.resultAttachments))
+                    TaskAttachmentList(
+                        attachments: task.resultAttachments,
+                        urlResolver: attachmentURLResolver
+                    )
                 }
 
                 // MARK: Summary
@@ -288,7 +315,20 @@ struct TaskDetailWindow: View {
 
     private static func formattedUpdates(_ updates: [AgentTask.TaskUpdate]) -> String {
         updates.map { update in
-            "[\(update.date.formatted(date: .omitted, time: .standard))] \(update.message)"
+            var line = "[\(update.date.formatted(date: .omitted, time: .standard))] \(update.message)"
+            if !update.attachments.isEmpty {
+                let names = update.attachments.map { $0.filename }.joined(separator: ", ")
+                line += " (attachments: \(names))"
+            }
+            return line
+        }.joined(separator: "\n")
+    }
+
+    /// Builds a copy-friendly text rendering of an attachment list for the section's
+    /// copy button. Each line: `filename (mime, size) — id=<UUID>`.
+    private static func formattedAttachments(_ attachments: [Attachment]) -> String {
+        attachments.map { a in
+            "\(a.filename) (\(a.mimeType), \(a.formattedSize)) — id=\(a.id.uuidString)"
         }.joined(separator: "\n")
     }
 
