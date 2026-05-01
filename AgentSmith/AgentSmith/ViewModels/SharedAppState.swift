@@ -108,7 +108,7 @@ final class SharedAppState {
     private(set) var semanticSearchEngine: SemanticSearchEngine?
 
     /// Most recent progress event from `SemanticSearchEngine.prepare()`.
-    var embeddingPrepareProgress: PrepareProgress?
+    private var embeddingPrepareProgress: PrepareProgress?
 
     /// Shared memory store — all session runtimes write to and read from the same corpus.
     /// Created lazily in `ensureMemoryStore()` once the semantic engine is prepared.

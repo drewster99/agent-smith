@@ -120,7 +120,7 @@ struct ChannelTimestamp: View {
 /// ladder. Adding a new banner kind now means adding a case here AND a switch arm in
 /// `bannerView(for:in:)` — both fail at compile time if forgotten, instead of silently
 /// falling through to a generic `MessageRow`.
-enum ChannelBannerKind: String {
+private enum ChannelBannerKind: String {
     /// Internal coordination row — not rendered.
     case agentOnline = "agent_online"
     /// Lifecycle chrome — gated by the user's "Show agent restart chrome" preference.

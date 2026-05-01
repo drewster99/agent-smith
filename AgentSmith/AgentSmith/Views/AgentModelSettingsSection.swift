@@ -552,7 +552,7 @@ struct AgentModelSettingsSection: View {
 /// Horizontal stack that wraps to additional rows when its proposed width is too
 /// narrow for the next subview. Drop-in replacement for a single-row `HStack` in
 /// places like the model-info chips bar where truncation is worse than wrapping.
-struct WrappingHStack: Layout {
+private struct WrappingHStack: Layout {
     let spacing: CGFloat
     let lineSpacing: CGFloat
 

@@ -245,7 +245,7 @@ struct FileWritePathView: View {
 
 /// A lightweight tooltip that appears immediately on hover, positioned above the anchor view.
 /// Avoids the long delay of the system `.help()` modifier.
-struct HoverTooltip: ViewModifier {
+private struct HoverTooltip: ViewModifier {
     let text: String
 
     @State private var isHovering = false
