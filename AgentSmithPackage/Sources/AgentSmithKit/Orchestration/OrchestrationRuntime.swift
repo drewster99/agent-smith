@@ -385,6 +385,16 @@ public actor OrchestrationRuntime {
     /// `[filename](file:///abs/path) mime · size · id=<UUID>`
     /// When the file isn't reachable (no registry, no on-disk file), appends a clear
     /// `· UNLOADABLE` marker so Brown sees that the reference exists but the bytes don't.
+    ///
+    /// The URL is built via `Self.fileURLString(_:)` which uses `URL.path(percentEncoded:
+    /// false)` — `URL.absoluteString` percent-encodes spaces (`Foo Bar.png` → `Foo%20Bar.png`)
+    /// and the LLM consuming the link tends to either (a) pass the percent-encoded string
+    /// to `file_read` which fails because the on-disk filename has literal spaces, or (b)
+    /// shell-escape the spaces to `Foo\ Bar.png` because Brown reflexively shell-escapes
+    /// paths it sees as filesystem-y, which also fails. Emitting raw-space `file://` URLs
+    /// matches what macOS Finder produces when copying a path and what Brown can paste
+    /// verbatim into `file_read` (which now also normalizes file:// + percent-encoding +
+    /// shell-escapes for resilience).
     func attachmentMarkdownLine(_ attachment: Attachment) async -> String {
         let label = attachment.filename
         let meta = "\(attachment.mimeType) · \(attachment.formattedSize) · id=\(attachment.id.uuidString)"
@@ -392,12 +402,25 @@ public actor OrchestrationRuntime {
             return "[\(label)](#) \(meta) · UNLOADABLE"
         }
         let exists = FileManager.default.fileExists(atPath: url.path)
-        let urlString = url.absoluteString
+        let urlString = Self.fileURLString(url)
         if exists {
             return "[\(label)](\(urlString)) \(meta)"
         } else {
             return "[\(label)](\(urlString)) \(meta) · UNLOADABLE: file missing on disk"
         }
+    }
+
+    /// Builds a `file://` URL string from a file URL using a raw (non-percent-encoded)
+    /// path component. Foundation's `URL.absoluteString` percent-encodes spaces and other
+    /// reserved characters, producing strings like `file:///foo/Foo%20Bar.png` — that's
+    /// RFC 3986-correct but trips LLMs that paste the URL into `file_read` without
+    /// decoding. `URL.path(percentEncoded: false)` returns the raw filesystem path which
+    /// we prepend `file://` to; it's the format macOS Finder produces when copying a
+    /// path and the format `file_read` accepts directly. (file_read also normalizes the
+    /// percent-encoded form for resilience, but emitting clean URLs avoids the
+    /// LLM-confusion path entirely.)
+    static func fileURLString(_ url: URL) -> String {
+        "file://" + url.path(percentEncoded: false)
     }
 
     /// Maximum number of MOST-RECENT updates whose attachments get rehydrated into Brown's

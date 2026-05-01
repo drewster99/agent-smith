@@ -53,6 +53,69 @@ struct FileReadTool: AgentTool {
 
     public init() {}
 
+    /// Normalizes a path string before filesystem lookup. Handles three shapes the LLM
+    /// is likely to hand us in addition to plain paths:
+    ///
+    /// - `file://` URLs (the briefing emits these as markdown link targets) — strip the
+    ///   scheme and percent-decode (`%20` → space).
+    /// - Shell-escaped paths (Brown reflexively escapes paths because it routinely uses
+    ///   bash) — strip backslash escapes for the common shell-special characters
+    ///   (` `, `(`, `)`, `&`, `'`, `"`, `;`, `*`, `?`, `[`, `]`).
+    /// - Tilde-prefixed paths — expand to the user's home dir.
+    ///
+    /// Order matters: percent-decode first (for the file:// case), then unescape (for
+    /// the shell case), then expand tilde. The three transformations don't overlap in
+    /// practice (no LLM passes a percent-encoded shell-escaped path).
+    static func normalizePath(_ raw: String) -> String {
+        var s = raw
+
+        // Strip leading `file://` scheme. Both `file://` and `file:///` are accepted —
+        // the former leaves a leading `/` (correct for absolute paths), the latter
+        // strips one slash too. Use a URL parse when it's a valid file URL; fall back to
+        // string trimming when it isn't.
+        if s.lowercased().hasPrefix("file://") {
+            if let url = URL(string: s), url.isFileURL {
+                s = url.path(percentEncoded: false)
+            } else {
+                // Fallback: strip the scheme manually + percent-decode.
+                s.removeFirst("file://".count)
+                if let decoded = s.removingPercentEncoding {
+                    s = decoded
+                }
+            }
+        }
+
+        // Un-escape shell-style backslash escapes.
+        s = unescapeShellPath(s)
+
+        // Tilde expansion as the last step.
+        return (s as NSString).expandingTildeInPath
+    }
+
+    /// Strips backslash escapes for shell-special characters commonly inserted by an
+    /// LLM that's been over-trained to quote paths for bash. Replaces `\X` with `X` for
+    /// X in `[ ()&'";*?[]]`. A literal backslash followed by any other character is
+    /// preserved (e.g. `\n` stays `\n` — newlines aren't valid in macOS filenames anyway).
+    private static func unescapeShellPath(_ raw: String) -> String {
+        let escapable: Set<Character> = [" ", "(", ")", "&", "'", "\"", ";", "*", "?", "[", "]"]
+        var out = ""
+        out.reserveCapacity(raw.count)
+        var iterator = raw.makeIterator()
+        while let c = iterator.next() {
+            if c == "\\", let next = iterator.next() {
+                if escapable.contains(next) {
+                    out.append(next)
+                } else {
+                    out.append(c)
+                    out.append(next)
+                }
+            } else {
+                out.append(c)
+            }
+        }
+        return out
+    }
+
     public func isAvailable(in context: ToolAvailabilityContext) -> Bool {
         context.agentRole == .brown || context.agentRole == .smith || context.agentRole == .jones
     }
@@ -61,7 +124,7 @@ struct FileReadTool: AgentTool {
         guard case .string(let rawPath) = arguments["path"] else {
             throw ToolCallError.missingRequiredArgument("path")
         }
-        let path = (rawPath as NSString).expandingTildeInPath
+        let path = Self.normalizePath(rawPath)
 
         if let rejection = Self.checkPathRestriction(path) {
             return .failure(rejection)

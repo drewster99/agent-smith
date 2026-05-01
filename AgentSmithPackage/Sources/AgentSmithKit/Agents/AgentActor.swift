@@ -2180,7 +2180,7 @@ public actor AgentActor {
             // a `#` anchor and the agent still has the `id=` substring to forward.
             for attachment in message.attachments {
                 let url = toolContext.attachmentURLProvider(attachment.id, attachment.filename)
-                let urlString = url?.absoluteString ?? "#"
+                let urlString = url.map { "file://" + $0.path(percentEncoded: false) } ?? "#"
                 textParts.append("[\(attachment.filename)](\(urlString)) \(attachment.mimeType) · \(attachment.formattedSize) · id=\(attachment.id.uuidString)")
             }
 
@@ -2212,7 +2212,7 @@ public actor AgentActor {
                     }
                 }
                 let url = toolContext.attachmentURLProvider(attachment.id, attachment.filename)
-                let urlString = url?.absoluteString ?? "#"
+                let urlString = url.map { "file://" + $0.path(percentEncoded: false) } ?? "#"
                 stagedTextParts.append("[\(attachment.filename)](\(urlString)) \(attachment.mimeType) · \(attachment.formattedSize) · id=\(attachment.id.uuidString)")
             }
             allTextParts.append(stagedTextParts.joined(separator: "\n"))
