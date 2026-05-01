@@ -50,7 +50,11 @@ enum TestToolContext {
         currentConfiguration: ModelConfiguration? = nil,
         currentProviderType: String? = nil,
         fileReadTracker: FileReadTrackerStub = FileReadTrackerStub(),
-        memoryStore: MemoryStore = MemoryStore(engine: SemanticSearchEngine())
+        memoryStore: MemoryStore = MemoryStore(engine: SemanticSearchEngine()),
+        attachmentResolver: @escaping @Sendable ([String]) async -> (resolved: [Attachment], rejected: [String]) = { ids in ([], ids) },
+        attachmentIngestor: @escaping @Sendable (String) async -> (attachment: Attachment?, error: String?) = { _ in (nil, "ingest not configured in test") },
+        stagedAttachmentRecorder: StagedAttachmentRecorder = StagedAttachmentRecorder(),
+        maxAttachmentBytesPerMessage: Int = 50 * 1024 * 1024
     ) -> ToolContext {
         ToolContext(
             agentID: agentID,
@@ -68,8 +72,30 @@ enum TestToolContext {
             hasFileBeenRead: { path in fileReadTracker.has(path) },
             setToolExecutionStatus: { _, _ in },
             hasToolSucceeded: { _ in false },
-            hasToolFailed: { _ in false }
+            hasToolFailed: { _ in false },
+            resolveAttachments: attachmentResolver,
+            ingestAttachmentFile: attachmentIngestor,
+            stageAttachmentsForNextTurn: { attachments, detail in
+                await stagedAttachmentRecorder.record(attachments: attachments, detail: detail)
+            },
+            maxAttachmentBytesPerMessage: { maxAttachmentBytesPerMessage }
         )
+    }
+
+    /// Captures `view_attachment`'s staging requests so tests can assert on them.
+    final class StagedAttachmentRecorder: Sendable {
+        private let lock = NSLock()
+        nonisolated(unsafe) private var entries: [(attachments: [Attachment], detail: String)] = []
+
+        func record(attachments: [Attachment], detail: String) {
+            lock.lock(); defer { lock.unlock() }
+            entries.append((attachments, detail))
+        }
+
+        func all() -> [(attachments: [Attachment], detail: String)] {
+            lock.lock(); defer { lock.unlock() }
+            return entries
+        }
     }
 }
 
