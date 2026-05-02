@@ -582,6 +582,14 @@ actor SecurityEvaluator {
             }
         }
 
+        // When the task description and the tool call refer to paths that resolve
+        // through symlinks to the same canonical location (e.g. `~/cursor/x` is a
+        // symlink to `~/Documents/.../cursor/x`), surface the resolutions so Jones
+        // does not flag a working-directory match as a directory escape.
+        if let pathNote = Self.pathResolutionAppendix(taskDescription: taskDescription, toolName: toolName, toolParams: toolParams) {
+            requestSection += "\n\(pathNote)\n"
+        }
+
         // For `file_edit`, render the actual change as a unified-style diff alongside
         // the raw arguments. The literal `new_string` includes anchor context (the
         // existing line being modified) which Jones can otherwise misread as "the
@@ -774,6 +782,166 @@ actor SecurityEvaluator {
         } else {
             return "Note: The target file does NOT currently exist — this is a new file creation."
         }
+    }
+
+    /// Maximum number of candidate paths to canonicalize per evaluation. A
+    /// pathological task description full of path-shaped tokens shouldn't make
+    /// `buildEvalPrompt` walk the disk thousands of times.
+    static let maxPathResolutionCandidates: Int = 32
+
+    /// Tool-parameter keys whose string values are content payloads, not paths.
+    /// Paths inside these (e.g. a Markdown file mentioning `/etc/hosts`) must
+    /// not be promoted into the resolution appendix.
+    private static let pathResolutionContentKeys: Set<String> = [
+        "content", "old_string", "new_string"
+    ]
+
+    /// Builds a "Path resolutions" appendix listing how path-shaped strings in
+    /// the task description and tool parameters resolve through symlinks to
+    /// canonical on-disk locations. Returns nil when no path was found whose
+    /// canonical form differs from its as-written form — in that case the
+    /// appendix would be pure noise.
+    ///
+    /// Without this, Jones compares raw strings: a task that says
+    /// `~/cursor/foo/` and a tool call under
+    /// `~/Documents/ncc_source/cursor/foo/...` (the symlink target) get flagged
+    /// as a directory escape. The appendix shows the canonical paths so Jones
+    /// can recognize the equivalence.
+    static func pathResolutionAppendix(taskDescription: String?, toolName: String, toolParams: String) -> String? {
+        var asWrittenInOrder: [String] = []
+        var seen: Set<String> = []
+        let appendCandidate: (String) -> Void = { raw in
+            if seen.insert(raw).inserted {
+                asWrittenInOrder.append(raw)
+            }
+        }
+
+        if let description = taskDescription, !description.isEmpty {
+            for raw in collectPathStringsFromText(description) {
+                appendCandidate(raw)
+                if asWrittenInOrder.count >= maxPathResolutionCandidates { break }
+            }
+        }
+
+        if asWrittenInOrder.count < maxPathResolutionCandidates,
+           let data = toolParams.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) {
+            var fromJSON: [String] = []
+            collectPathStringsFromJSON(obj, skipKeys: pathResolutionContentKeys, out: &fromJSON)
+            for raw in fromJSON {
+                appendCandidate(raw)
+                if asWrittenInOrder.count >= maxPathResolutionCandidates { break }
+            }
+        }
+
+        guard !asWrittenInOrder.isEmpty else { return nil }
+
+        struct Resolution { let asWritten: String; let canonical: String; let symlinkTraversed: Bool }
+        let fm = FileManager.default
+        var resolutions: [Resolution] = []
+        for asWritten in asWrittenInOrder {
+            guard let expanded = expandToAbsolutePath(asWritten) else { continue }
+            guard fm.fileExists(atPath: expanded) else { continue }
+            let normalized = URL(fileURLWithPath: expanded).path
+            guard let canonical = canonicalizeViaRealpath(expanded) else { continue }
+            resolutions.append(Resolution(
+                asWritten: asWritten,
+                canonical: canonical,
+                symlinkTraversed: canonical != normalized
+            ))
+        }
+
+        guard resolutions.contains(where: { $0.symlinkTraversed }) else { return nil }
+
+        var lines: [String] = []
+        for r in resolutions {
+            lines.append("  \(r.asWritten) → \(r.canonical)")
+        }
+        return """
+            ## Path resolutions
+            The following paths from the task description and/or tool parameters resolve to canonical on-disk locations (symlinks have been followed). Treat paths sharing a canonical location — or sharing a canonical prefix — as the SAME location for working-directory and scope checks.
+            \(lines.joined(separator: "\n"))
+            """
+    }
+
+    /// Walks a JSON value and collects string values that look like absolute
+    /// paths (`/...`, `~/...`, `file://...`). Skips keys in `skipKeys` so that
+    /// content payload fields like `content` / `new_string` cannot leak path
+    /// tokens from inside arbitrary text into the resolution appendix.
+    static func collectPathStringsFromJSON(_ value: Any, skipKeys: Set<String>, out: inout [String]) {
+        switch value {
+        case let dict as [String: Any]:
+            for (key, child) in dict where !skipKeys.contains(key) {
+                collectPathStringsFromJSON(child, skipKeys: skipKeys, out: &out)
+            }
+        case let array as [Any]:
+            for child in array {
+                collectPathStringsFromJSON(child, skipKeys: skipKeys, out: &out)
+            }
+        case let str as String:
+            if str.hasPrefix("/") || str.hasPrefix("~/") || str.hasPrefix("file://") {
+                out.append(str)
+            }
+        default:
+            break
+        }
+    }
+
+    /// Extracts path-shaped tokens from free-form text (typically a task
+    /// description). Conservative heuristic — only matches strings that begin
+    /// at a non-path character (or start of string) and start with `/`, `~/`,
+    /// or `file://`. Trailing punctuation (`.,:;)]"'`) is stripped so a
+    /// sentence like "see /tmp/foo." doesn't yield a path with a trailing dot.
+    static func collectPathStringsFromText(_ text: String) -> [String] {
+        let pattern = #"(?:^|[\s(\[<"'])(file://[^\s)\]<>"']+|~?/[^\s)\]<>"']+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let nsString = text as NSString
+        let range = NSRange(location: 0, length: nsString.length)
+        var results: [String] = []
+        let trailingTrim = CharacterSet(charactersIn: ".,:;)]\"'")
+        for match in regex.matches(in: text, range: range) {
+            let captureRange = match.range(at: 1)
+            guard captureRange.location != NSNotFound else { continue }
+            var candidate = nsString.substring(with: captureRange)
+            while let last = candidate.unicodeScalars.last, trailingTrim.contains(last) {
+                candidate.removeLast()
+            }
+            if !candidate.isEmpty {
+                results.append(candidate)
+            }
+        }
+        return results
+    }
+
+    /// Returns the canonical absolute path for `path` via POSIX `realpath`.
+    /// Used in preference to `URL.resolvingSymlinksInPath()` for Jones's
+    /// equivalence checks because the URL-based call does not resolve macOS's
+    /// well-known aliases (`/tmp → /private/tmp`, `/var → /private/var`),
+    /// which would cause Jones to miss legitimate equivalences. Returns nil
+    /// when realpath fails (e.g. path no longer exists).
+    static func canonicalizeViaRealpath(_ path: String) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard let resolved = path.withCString({ realpath($0, &buffer) }) else {
+            return nil
+        }
+        return String(cString: resolved)
+    }
+
+    /// Converts a path token to an absolute on-disk path string suitable for
+    /// `FileManager.fileExists` / `realpath`. Handles `file://` URLs (with
+    /// percent-encoding) and tilde expansion. Returns nil for inputs we
+    /// can't confidently turn into an absolute path.
+    static func expandToAbsolutePath(_ raw: String) -> String? {
+        if raw.hasPrefix("file://") {
+            return URL(string: raw)?.path
+        }
+        if raw.hasPrefix("~") {
+            return NSString(string: raw).expandingTildeInPath
+        }
+        if raw.hasPrefix("/") {
+            return raw
+        }
+        return nil
     }
 
     /// Posts a tool_request message to the channel so Jones's file reads appear in the transcript.

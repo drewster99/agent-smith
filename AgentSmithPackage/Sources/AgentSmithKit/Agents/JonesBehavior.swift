@@ -112,6 +112,12 @@ enum JonesBehavior {
 
         ---
 
+        ## PATH EQUIVALENCE
+
+        When the prompt includes a "Path resolutions" section, treat any two paths that resolve to the same canonical location — or share a canonical prefix — as the SAME location for working-directory and scope checks. A symlink crossing into a different-looking directory is NOT a directory escape if the canonical paths agree. Do not flag a tool call as scope-divergent based purely on a different-looking directory prefix when the resolutions show the canonical location matches the user's intended directory.
+
+        ---
+
         ## KEY RULES
 
         1. Always output a verdict. Never skip a request.
