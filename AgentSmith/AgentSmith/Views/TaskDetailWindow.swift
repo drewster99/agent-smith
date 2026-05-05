@@ -10,7 +10,11 @@ import AgentSmithKit
 struct TaskDetailWindow: View {
     let taskID: UUID
     var viewModel: AppViewModel
+    /// Used to resolve the owning session for a prior-task link so the new detail
+    /// window opens scoped to that task's actual session, not this window's session.
+    var sessionManager: SessionManager
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
     @State private var isEditingDescription = false
     @State private var editedDescription = ""
     @State private var recentlyCopiedSection: String?
@@ -215,24 +219,16 @@ struct TaskDetailWindow: View {
         let errorText = task.result ?? ""
         if !errorText.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                collapsibleHeader(
+                sectionTitleRow(
                     title: "Error",
                     titleColor: AppColors.errorSectionAccent,
-                    copyText: errorText,
-                    kind: .error,
-                    status: task.status,
-                    mode: mode
+                    copyText: errorText
                 )
-                if mode == .expanded {
-                    MarkdownText(content: errorText, baseFont: .body)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                        .background(AppColors.errorBackground)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                } else {
-                    MarkdownText(content: linePrefix(errorText, lines: 3), baseFont: .body)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                MarkdownText(content: errorText, baseFont: .body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(AppColors.errorBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
             }
             Divider()
         }
@@ -241,21 +237,21 @@ struct TaskDetailWindow: View {
     @ViewBuilder
     private func summarySection(_ task: AgentTask, mode: SectionMode) -> some View {
         if let summary = task.summary, !summary.isEmpty {
+            let isExpandable = (linePrefix(summary, lines: 4) != summary)
             VStack(alignment: .leading, spacing: 8) {
-                collapsibleHeader(
-                    title: "Summary",
-                    copyText: summary,
-                    kind: .summary,
-                    status: task.status,
-                    mode: mode
-                )
-                let body = (mode == .expanded) ? summary : linePrefix(summary, lines: 4)
+                sectionTitleRow(title: "Summary", copyText: summary)
+                let body = (mode == .expanded || !isExpandable) ? summary : linePrefix(summary, lines: 4)
                 MarkdownText(content: body, baseFont: .body)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
                     .background(AppColors.summarySectionBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
+                if isExpandable {
+                    disclosureLink(isExpanded: mode == .expanded) {
+                        toggleSection(.summary, for: task.status)
+                    }
+                }
             }
             Divider()
         }
@@ -273,12 +269,9 @@ struct TaskDetailWindow: View {
 
         if (hasResult && !suppressDueToError) || hasCommentary {
             VStack(alignment: .leading, spacing: 10) {
-                collapsibleHeader(
+                sectionTitleRow(
                     title: "Result",
-                    copyText: result.isEmpty ? commentary : result,
-                    kind: .result,
-                    status: task.status,
-                    mode: mode
+                    copyText: result.isEmpty ? commentary : result
                 )
 
                 if hasCommentary {
@@ -335,17 +328,18 @@ struct TaskDetailWindow: View {
     @ViewBuilder
     private func updatesSection(_ task: AgentTask, mode: SectionMode) -> some View {
         if !task.updates.isEmpty {
-            // Newest at top.
+            // Newest at top. When the total count fits in the 5-item preview the section
+            // is treated as fully expanded — no `(more)`/`(less)` link, since toggling
+            // would not change what's visible.
             let reversed = Array(task.updates.reversed())
-            let visible = (mode == .expanded) ? reversed : Array(reversed.prefix(5))
+            let isExpandable = reversed.count > 5
+            let effectiveExpanded = mode == .expanded || !isExpandable
+            let visible = effectiveExpanded ? reversed : Array(reversed.prefix(5))
             VStack(alignment: .leading, spacing: 8) {
-                collapsibleHeader(
+                sectionTitleRow(
                     title: "Updates",
-                    subtitle: mode == .expanded ? nil : (reversed.count > 5 ? "showing 5 of \(reversed.count)" : nil),
-                    copyText: Self.formattedUpdates(task.updates),
-                    kind: .updates,
-                    status: task.status,
-                    mode: mode
+                    subtitle: (!effectiveExpanded && isExpandable) ? "showing 5 of \(reversed.count)" : nil,
+                    copyText: Self.formattedUpdates(task.updates)
                 )
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(visible.enumerated()), id: \.offset) { _, update in
@@ -353,6 +347,11 @@ struct TaskDetailWindow: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                if isExpandable {
+                    disclosureLink(isExpanded: mode == .expanded) {
+                        toggleSection(.updates, for: task.status)
+                    }
+                }
             }
             Divider()
         }
@@ -360,11 +359,9 @@ struct TaskDetailWindow: View {
 
     @ViewBuilder
     private func descriptionSection(_ task: AgentTask, mode: SectionMode) -> some View {
+        let isExpandable = (linePrefix(task.description, lines: 3) != task.description)
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                chevron(for: mode) {
-                    toggleSection(.description, for: task.status)
-                }
                 Text("Description")
                     .font(.title3.bold())
                 if let editedAt = task.lastEditedAt {
@@ -412,7 +409,9 @@ struct TaskDetailWindow: View {
                     .disabled(!isDescriptionEditable || editedDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             } else {
-                let body = (mode == .expanded) ? task.description : linePrefix(task.description, lines: 3)
+                let body = (mode == .expanded || !isExpandable)
+                    ? task.description
+                    : linePrefix(task.description, lines: 3)
                 MarkdownText(content: body, baseFont: .body)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -425,6 +424,12 @@ struct TaskDetailWindow: View {
                     urlResolver: attachmentURLResolver
                 )
             }
+
+            if isExpandable && !isEditingDescription {
+                disclosureLink(isExpanded: mode == .expanded) {
+                    toggleSection(.description, for: task.status)
+                }
+            }
         }
         Divider()
     }
@@ -433,17 +438,9 @@ struct TaskDetailWindow: View {
     private func relatedContextSection(_ task: AgentTask, mode: SectionMode) -> some View {
         if Self.hasRelevantContext(task) {
             VStack(alignment: .leading, spacing: 8) {
-                collapsibleHeader(
+                sectionTitleRow(
                     title: "Related context",
-                    copyText: Self.formattedContext(task),
-                    kind: .relatedContext,
-                    status: task.status,
-                    mode: mode,
-                    onToggle: {
-                        let nextExpanded = (currentMode(.relatedContext, for: task.status) != .expanded)
-                        memoryExpansions = Array(repeating: nextExpanded, count: memoryExpansions.count)
-                        priorTaskExpansions = Array(repeating: nextExpanded, count: priorTaskExpansions.count)
-                    }
+                    copyText: Self.formattedContext(task)
                 )
 
                 if let memories = task.relevantMemories, !memories.isEmpty {
@@ -469,8 +466,8 @@ struct TaskDetailWindow: View {
                         ForEach(Array(priorTasks.enumerated()), id: \.offset) { idx, prior in
                             TaskRelevantPriorTaskRow(
                                 priorTask: prior,
-                                sessionID: viewModel.session.id,
-                                isExpanded: priorTaskExpansionBinding(at: idx)
+                                isExpanded: priorTaskExpansionBinding(at: idx),
+                                onOpenTask: openPriorTask
                             )
                         }
                     }
@@ -479,6 +476,18 @@ struct TaskDetailWindow: View {
             }
             Divider()
         }
+    }
+
+    /// Resolves the session that owns `priorTaskID` (typically a different tab), then
+    /// opens its detail window. Falls back to this window's session if no loaded session
+    /// has the task — in which case the new window will show the standard "Task Not
+    /// Found" placeholder, same as opening any deleted task.
+    private func openPriorTask(_ priorTaskID: UUID) {
+        let resolved = sessionManager.resolveSessionID(forTaskID: priorTaskID) ?? viewModel.session.id
+        AgentSmithApp.showOrOpenTaskDetail(
+            target: TaskDetailTarget(sessionID: resolved, taskID: priorTaskID),
+            openWindow: openWindow
+        )
     }
 
     private func memoryExpansionBinding(at index: Int) -> Binding<Bool> {
@@ -509,24 +518,16 @@ struct TaskDetailWindow: View {
 
     // MARK: - Headers
 
-    /// Section header with a chevron toggle on the leading edge plus the section's
-    /// copy button on the trailing edge. `onToggle` runs *in addition to* the default
-    /// mode-flip — Related Context uses it to keep its row-expansion arrays in sync.
-    private func collapsibleHeader(
+    /// Section header with the title on the leading edge plus the section's copy
+    /// button on the trailing edge. The header is no longer click-to-toggle — the
+    /// `(more)`/`(less)` disclosure link in the section body handles expansion.
+    private func sectionTitleRow(
         title: String,
         subtitle: String? = nil,
         titleColor: Color? = nil,
-        copyText: String? = nil,
-        kind: SectionKind,
-        status: AgentTask.Status,
-        mode: SectionMode,
-        onToggle: (() -> Void)? = nil
+        copyText: String? = nil
     ) -> some View {
         HStack(spacing: 8) {
-            chevron(for: mode) {
-                onToggle?()
-                toggleSection(kind, for: status)
-            }
             Text(title)
                 .font(.title3.bold())
                 .foregroundStyle(titleColor ?? .primary)
@@ -542,14 +543,24 @@ struct TaskDetailWindow: View {
         }
     }
 
-    private func chevron(for mode: SectionMode, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: mode == .expanded ? "chevron.down" : "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 14)
+    /// `(more)` / `(less)` link used in the lower-right of any expandable section or
+    /// row. Hidden when the section can't actually toggle (e.g. updates ≤ 5, text
+    /// already fits in its preview line cap), so the user is never offered a
+    /// no-op toggle.
+    private func disclosureLink(
+        isExpanded: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        HStack {
+            Spacer()
+            Button(action: action) {
+                Text(isExpanded ? "(less)" : "(more)")
+                    .font(.callout)
+                    .foregroundStyle(AppColors.disclosureToggle)
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
         }
-        .buttonStyle(.plain)
     }
 
     // MARK: - Metadata grid

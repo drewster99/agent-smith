@@ -125,7 +125,7 @@ struct AgentSmithApp: App {
 
         WindowGroup("Task Detail", for: TaskDetailTarget.self) { $target in
             if let target, let vm = sessionManager.viewModel(for: target.sessionID) {
-                TaskDetailWindow(taskID: target.taskID, viewModel: vm)
+                TaskDetailWindow(taskID: target.taskID, viewModel: vm, sessionManager: sessionManager)
                     .background(TaskDetailWindowTagger(target: target))
             } else {
                 ContentUnavailableView(
