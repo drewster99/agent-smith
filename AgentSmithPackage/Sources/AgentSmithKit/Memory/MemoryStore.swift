@@ -62,11 +62,25 @@ public struct RelevantMemory: Codable, Sendable, Equatable {
     public let content: String
     public let tags: [String]
     public let similarity: Double
+    /// When the source `MemoryEntry` was originally saved. Optional so older tasks on
+    /// disk (saved before this field existed) decode without falling over.
+    public let createdAt: Date?
+    /// When the source `MemoryEntry` was last edited, if ever. Optional for the same
+    /// legacy-decode reason. UI prefers this over `createdAt` when present.
+    public let lastUpdatedAt: Date?
 
-    public init(content: String, tags: [String], similarity: Double) {
+    public init(
+        content: String,
+        tags: [String],
+        similarity: Double,
+        createdAt: Date? = nil,
+        lastUpdatedAt: Date? = nil
+    ) {
         self.content = content
         self.tags = tags
         self.similarity = similarity
+        self.createdAt = createdAt
+        self.lastUpdatedAt = lastUpdatedAt
     }
 }
 
@@ -76,12 +90,22 @@ public struct RelevantPriorTask: Codable, Sendable, Equatable {
     public let title: String
     public let summary: String
     public let similarity: Double
+    /// Latest known timestamp on the prior task (typically the summary-generation time,
+    /// which is post-completion). Optional so legacy tasks decode without failing.
+    public let latestDate: Date?
 
-    public init(taskID: UUID, title: String, summary: String, similarity: Double) {
+    public init(
+        taskID: UUID,
+        title: String,
+        summary: String,
+        similarity: Double,
+        latestDate: Date? = nil
+    ) {
         self.taskID = taskID
         self.title = title
         self.summary = summary
         self.similarity = similarity
+        self.latestDate = latestDate
     }
 
     /// Decodes a `RelevantPriorTask`, falling back to a random UUID for `taskID`
@@ -92,6 +116,7 @@ public struct RelevantPriorTask: Codable, Sendable, Equatable {
         title = try c.decode(String.self, forKey: .title)
         summary = try c.decode(String.self, forKey: .summary)
         similarity = try c.decode(Double.self, forKey: .similarity)
+        latestDate = try c.decodeIfPresent(Date.self, forKey: .latestDate)
     }
 }
 

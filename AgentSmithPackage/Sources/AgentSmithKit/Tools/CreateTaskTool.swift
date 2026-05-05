@@ -136,10 +136,22 @@ public struct CreateTaskTool: AgentTool {
             )
             if !results.isEmpty {
                 let memories: [RelevantMemory]? = results.memories.isEmpty ? nil : results.memories.map {
-                    RelevantMemory(content: $0.memory.content, tags: $0.memory.tags, similarity: $0.similarity)
+                    RelevantMemory(
+                        content: $0.memory.content,
+                        tags: $0.memory.tags,
+                        similarity: $0.similarity,
+                        createdAt: $0.memory.createdAt,
+                        lastUpdatedAt: $0.memory.lastUpdatedAt
+                    )
                 }
                 let priorTasks: [RelevantPriorTask]? = results.taskSummaries.isEmpty ? nil : results.taskSummaries.map {
-                    RelevantPriorTask(taskID: $0.summary.id, title: $0.summary.title, summary: $0.summary.summary, similarity: $0.similarity)
+                    RelevantPriorTask(
+                        taskID: $0.summary.id,
+                        title: $0.summary.title,
+                        summary: $0.summary.summary,
+                        similarity: $0.similarity,
+                        latestDate: $0.summary.createdAt
+                    )
                 }
                 await context.taskStore.setRelevantContext(
                     id: task.id,

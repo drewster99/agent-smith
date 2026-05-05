@@ -110,6 +110,18 @@ enum AppColors {
     static let flagChipBackground = Color.blue.opacity(0.15)
     static let flagChipForeground = Color.blue
     static let summarySectionBackground = Color.purple.opacity(0.06)
+
+    // MARK: - Task detail
+    /// Tinted background for the AI Commentary inset inside the Result section.
+    static let aiCommentaryBackground = Color.purple.opacity(0.07)
+    /// Stroke around the AI Commentary inset.
+    static let aiCommentaryBorder = Color.purple.opacity(0.30)
+    /// Tint for a future scheduled run time in the metadata header.
+    static let scheduledFutureAccent = Color.green
+    /// Tint for a past-due scheduled run time in the metadata header.
+    static let scheduledPastDueAccent = Color.orange
+    /// Header tint for the Error section on a failed task.
+    static let errorSectionAccent = Color.red
     static let cyanBadgeForeground = Color.cyan
     static let cyanBadgeBackground = Color.cyan.opacity(0.15)
     static let toolChipForeground = Color.blue
@@ -180,6 +192,10 @@ enum AppFonts {
     static let welcomeIcon = Font.system(size: 40)
     /// 42pt rounded bold — spending dashboard headline cost number.
     static let dashboardHeadline = Font.system(size: 42, weight: .bold, design: .rounded)
+    /// Title font for the AI Commentary inset (smaller than `sectionHeader`).
+    static let aiCommentaryTitle = Font.subheadline.weight(.semibold)
+    /// Body font for the AI Commentary inset.
+    static let aiCommentaryBody = Font.callout
 }
 
 /// Pricing display formatting.

@@ -1,7 +1,12 @@
 import SwiftUI
 import AgentSmithKit
 
-/// Standalone window showing full task detail: metadata, description, commentary, and results.
+/// Standalone window showing full task detail. Sections are reordered and pre-expanded
+/// based on the task's `Status` so the most relevant data is at the top:
+/// - `pending` / `scheduled`: full description on top.
+/// - `running` / `paused` / `interrupted` / `awaitingReview`: latest updates first.
+/// - `completed`: summary preview, then the full result with AI Commentary inset.
+/// - `failed`: the error first, then optional summary, then result/commentary.
 struct TaskDetailWindow: View {
     let taskID: UUID
     var viewModel: AppViewModel
@@ -9,6 +14,20 @@ struct TaskDetailWindow: View {
     @State private var isEditingDescription = false
     @State private var editedDescription = ""
     @State private var recentlyCopiedSection: String?
+
+    /// Per-section toggle state. Empty on first render — `currentMode(_:for:)` falls back
+    /// to status-driven defaults until the user interacts. Resets on each window open
+    /// because @State is reinitialized when SwiftUI recreates this view per `WindowGroup`
+    /// instance.
+    @State private var modeOverrides: [SectionKind: SectionMode] = [:]
+    /// Per-row expansion state for the Related Context memories list. Sized to match
+    /// the live memory count on first appear; the Related Context header chevron
+    /// mass-sets every entry in lockstep.
+    @State private var memoryExpansions: [Bool] = []
+    /// Per-row expansion state for the Related Context prior-tasks list — same shape
+    /// and same mass-toggle behavior as `memoryExpansions`.
+    @State private var priorTaskExpansions: [Bool] = []
+    @State private var didSizeRowExpansions = false
 
     /// Live task looked up from the view model on each render, so updates are reflected.
     private var task: AgentTask? {
@@ -33,6 +52,19 @@ struct TaskDetailWindow: View {
     var body: some View {
         if let task {
             taskContent(task)
+                .onAppear {
+                    sizeRowExpansionsIfNeeded(for: task)
+                }
+                .onChange(of: task.relevantMemories?.count ?? 0) { _, newCount in
+                    if memoryExpansions.count != newCount {
+                        memoryExpansions = Array(repeating: false, count: newCount)
+                    }
+                }
+                .onChange(of: task.relevantPriorTasks?.count ?? 0) { _, newCount in
+                    if priorTaskExpansions.count != newCount {
+                        priorTaskExpansions = Array(repeating: false, count: newCount)
+                    }
+                }
         } else {
             ContentUnavailableView(
                 "Task Not Found",
@@ -43,173 +75,25 @@ struct TaskDetailWindow: View {
         }
     }
 
+    private func sizeRowExpansionsIfNeeded(for task: AgentTask) {
+        guard !didSizeRowExpansions else { return }
+        memoryExpansions = Array(repeating: false, count: task.relevantMemories?.count ?? 0)
+        priorTaskExpansions = Array(repeating: false, count: task.relevantPriorTasks?.count ?? 0)
+        didSizeRowExpansions = true
+    }
+
+    // MARK: - Body
+
     private func taskContent(_ task: AgentTask) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                // MARK: Header
-                HStack(alignment: .top) {
-                    Image(systemName: TaskStatusBadge.icon(for: task.status))
-                        .font(.title2)
-                        .foregroundStyle(TaskStatusBadge.color(for: task.status))
-                    Text(task.title)
-                        .font(.title.bold())
-                        .textSelection(.enabled)
-                    Spacer()
-                    Button("Done") { dismiss() }
-                        .keyboardShortcut(.cancelAction)
-                }
-
-                // MARK: Metadata
+                headerRow(task)
                 metadataSection(for: task)
-
                 Divider()
-
-                // MARK: Description
-                HStack {
-                    Text("Description")
-                        .font(.title3.bold())
-                    if let editedAt = task.lastEditedAt {
-                        EditedBadge(editedAt: editedAt)
-                    }
-                    Spacer()
-                    copyButton(text: task.description, id: "description")
-                    if isDescriptionEditable && !isEditingDescription {
-                        Button {
-                            editedDescription = task.description
-                            isEditingDescription = true
-                        } label: {
-                            Image(systemName: "pencil")
-                                .font(.callout)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .help("Edit description")
-                    }
+                ForEach(orderedSections(for: task.status), id: \.self) { kind in
+                    sectionView(kind, task: task)
                 }
-                if isEditingDescription {
-                    TextEditor(text: $editedDescription)
-                        .font(.body)
-                        .frame(minHeight: 80, maxHeight: 200)
-                        .scrollContentBackground(.hidden)
-                        .padding(8)
-                        .background(Color(nsColor: .controlBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                    HStack {
-                        Spacer()
-                        Button("Cancel") {
-                            isEditingDescription = false
-                        }
-                        Button("Save") {
-                            Task {
-                                await viewModel.updateTaskDescription(
-                                    id: task.id,
-                                    description: editedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-                                )
-                            }
-                            isEditingDescription = false
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!isDescriptionEditable || editedDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                } else {
-                    MarkdownText(content: task.description, baseFont: .body)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                // MARK: Description Attachments
-                if !task.descriptionAttachments.isEmpty {
-                    Divider()
-                    sectionHeader("Attachments", copyText: Self.formattedAttachments(task.descriptionAttachments))
-                    TaskAttachmentList(
-                        attachments: task.descriptionAttachments,
-                        urlResolver: attachmentURLResolver
-                    )
-                }
-
-                // MARK: Commentary
-                if let commentary = task.commentary, !commentary.isEmpty {
-                    Divider()
-                    sectionHeader("Commentary", copyText: commentary)
-                    MarkdownText(content: commentary, baseFont: .body)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                // MARK: Updates
-                if !task.updates.isEmpty {
-                    Divider()
-                    sectionHeader("Updates", copyText: Self.formattedUpdates(task.updates))
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(Array(task.updates.enumerated()), id: \.offset) { _, update in
-                            TaskUpdateRow(update: update, attachmentURLResolver: attachmentURLResolver)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                // MARK: Result
-                if let result = task.result, !result.isEmpty {
-                    Divider()
-                    sectionHeader("Result", copyText: result)
-                    MarkdownText(content: result, baseFont: .body)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                // MARK: Result Attachments
-                if !task.resultAttachments.isEmpty {
-                    Divider()
-                    sectionHeader("Result Attachments", copyText: Self.formattedAttachments(task.resultAttachments))
-                    TaskAttachmentList(
-                        attachments: task.resultAttachments,
-                        urlResolver: attachmentURLResolver
-                    )
-                }
-
-                // MARK: Summary
-                if let summary = task.summary, !summary.isEmpty {
-                    Divider()
-                    sectionHeader("Summary", copyText: summary)
-                    MarkdownText(content: summary, baseFont: .body)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                        .background(AppColors.summarySectionBackground)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-
-                // MARK: Relevant Context
-                if Self.hasRelevantContext(task) {
-                    Divider()
-                    sectionHeader("Context Retrieved at Creation", copyText: Self.formattedContext(task))
-
-                    if let memories = task.relevantMemories, !memories.isEmpty {
-                        Text("Memories")
-                            .font(.headline)
-                            .foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(Array(memories.enumerated()), id: \.offset) { _, memory in
-                                TaskRelevantMemoryRow(memory: memory)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-
-                    if let priorTasks = task.relevantPriorTasks, !priorTasks.isEmpty {
-                        Text("Prior Tasks")
-                            .font(.headline)
-                            .foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(Array(priorTasks.enumerated()), id: \.offset) { _, prior in
-                                TaskRelevantPriorTaskRow(priorTask: prior)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-
                 Divider()
-
-                // MARK: Footer
                 Text("ID: \(task.id.uuidString)")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
@@ -219,6 +103,453 @@ struct TaskDetailWindow: View {
         }
         .frame(minWidth: 600, minHeight: 400)
         .navigationTitle(task.title)
+    }
+
+    private func headerRow(_ task: AgentTask) -> some View {
+        HStack(alignment: .top) {
+            Image(systemName: TaskStatusBadge.icon(for: task.status))
+                .font(.title2)
+                .foregroundStyle(TaskStatusBadge.color(for: task.status))
+            Text(task.title)
+                .font(.title.bold())
+                .textSelection(.enabled)
+            Spacer()
+            Button("Done") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+        }
+    }
+
+    // MARK: - Section dispatch
+
+    /// All sections that could ever render in this window, in the canonical order
+    /// `orderedSections(for:)` filters from based on status.
+    private enum SectionKind: Hashable {
+        case error
+        case summary
+        case result
+        case updates
+        case description
+        case relatedContext
+    }
+
+    private enum SectionMode {
+        case hidden
+        case preview
+        case expanded
+    }
+
+    private func orderedSections(for status: AgentTask.Status) -> [SectionKind] {
+        switch status {
+        case .pending, .scheduled:
+            return [.description, .relatedContext]
+        case .running, .paused, .interrupted, .awaitingReview:
+            return [.updates, .description, .relatedContext]
+        case .completed:
+            return [.summary, .result, .updates, .description, .relatedContext]
+        case .failed:
+            return [.error, .summary, .result, .updates, .description, .relatedContext]
+        }
+    }
+
+    /// Status-driven default mode for a section. The user can override to/from `.preview`
+    /// and `.expanded` via the header chevron; `.hidden` is not user-toggleable.
+    private func defaultMode(_ kind: SectionKind, for status: AgentTask.Status) -> SectionMode {
+        switch (kind, status) {
+        case (.error, .failed):                       return .expanded
+        case (.error, _):                             return .hidden
+
+        case (.description, .pending), (.description, .scheduled):
+            return .expanded
+        case (.description, _):                       return .preview
+
+        case (.relatedContext, _):                    return .preview
+
+        case (.updates, .pending), (.updates, .scheduled):
+            return .hidden
+        case (.updates, _):                           return .preview
+
+        case (.result, .completed):                   return .expanded
+        case (.result, .failed):                      return .expanded
+        case (.result, _):                            return .hidden
+
+        case (.summary, .completed), (.summary, .failed):
+            return .preview
+        case (.summary, _):                           return .hidden
+        }
+    }
+
+    private func currentMode(_ kind: SectionKind, for status: AgentTask.Status) -> SectionMode {
+        if let overridden = modeOverrides[kind] { return overridden }
+        return defaultMode(kind, for: status)
+    }
+
+    private func toggleSection(_ kind: SectionKind, for status: AgentTask.Status) {
+        let next: SectionMode
+        switch currentMode(kind, for: status) {
+        case .preview, .hidden:  next = .expanded
+        case .expanded:          next = .preview
+        }
+        modeOverrides[kind] = next
+    }
+
+    @ViewBuilder
+    private func sectionView(_ kind: SectionKind, task: AgentTask) -> some View {
+        let mode = currentMode(kind, for: task.status)
+        if mode != .hidden {
+            switch kind {
+            case .error:           errorSection(task, mode: mode)
+            case .summary:         summarySection(task, mode: mode)
+            case .result:          resultSection(task, mode: mode)
+            case .updates:         updatesSection(task, mode: mode)
+            case .description:     descriptionSection(task, mode: mode)
+            case .relatedContext:  relatedContextSection(task, mode: mode)
+            }
+        }
+    }
+
+    // MARK: - Sections
+
+    @ViewBuilder
+    private func errorSection(_ task: AgentTask, mode: SectionMode) -> some View {
+        // Failures land in `task.result` today; surface that as the Error body.
+        let errorText = task.result ?? ""
+        if !errorText.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                collapsibleHeader(
+                    title: "Error",
+                    titleColor: AppColors.errorSectionAccent,
+                    copyText: errorText,
+                    kind: .error,
+                    status: task.status,
+                    mode: mode
+                )
+                if mode == .expanded {
+                    MarkdownText(content: errorText, baseFont: .body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(AppColors.errorBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                } else {
+                    MarkdownText(content: linePrefix(errorText, lines: 3), baseFont: .body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            Divider()
+        }
+    }
+
+    @ViewBuilder
+    private func summarySection(_ task: AgentTask, mode: SectionMode) -> some View {
+        if let summary = task.summary, !summary.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                collapsibleHeader(
+                    title: "Summary",
+                    copyText: summary,
+                    kind: .summary,
+                    status: task.status,
+                    mode: mode
+                )
+                let body = (mode == .expanded) ? summary : linePrefix(summary, lines: 4)
+                MarkdownText(content: body, baseFont: .body)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(AppColors.summarySectionBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            Divider()
+        }
+    }
+
+    @ViewBuilder
+    private func resultSection(_ task: AgentTask, mode: SectionMode) -> some View {
+        let result = task.result ?? ""
+        let commentary = task.commentary ?? ""
+        let hasResult = !result.isEmpty
+        let hasCommentary = !commentary.isEmpty
+
+        // For failed tasks the error section already surfaced `result` — skip the duplicate.
+        let suppressDueToError = (task.status == .failed)
+
+        if (hasResult && !suppressDueToError) || hasCommentary {
+            VStack(alignment: .leading, spacing: 10) {
+                collapsibleHeader(
+                    title: "Result",
+                    copyText: result.isEmpty ? commentary : result,
+                    kind: .result,
+                    status: task.status,
+                    mode: mode
+                )
+
+                if hasCommentary {
+                    aiCommentaryInset(commentary)
+                }
+
+                if hasResult && !suppressDueToError {
+                    MarkdownText(content: result, baseFont: .body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            Divider()
+        }
+
+        // Render result attachments whenever they exist on a completed/failed task,
+        // even when the Result section was suppressed (e.g. failed task with attachments
+        // but no commentary). The status check is implicit — this function is only
+        // reached for statuses that include `.result` in `orderedSections`.
+        if !task.resultAttachments.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                sectionHeader("Result Attachments", copyText: Self.formattedAttachments(task.resultAttachments))
+                TaskAttachmentList(
+                    attachments: task.resultAttachments,
+                    urlResolver: attachmentURLResolver
+                )
+            }
+            Divider()
+        }
+    }
+
+    private func aiCommentaryInset(_ commentary: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("AI commentary")
+                    .font(AppFonts.aiCommentaryTitle)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                copyButton(text: commentary, id: "ai-commentary")
+            }
+            MarkdownText(content: commentary, baseFont: AppFonts.aiCommentaryBody)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(AppColors.aiCommentaryBackground)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(AppColors.aiCommentaryBorder, lineWidth: 0.5)
+        )
+    }
+
+    @ViewBuilder
+    private func updatesSection(_ task: AgentTask, mode: SectionMode) -> some View {
+        if !task.updates.isEmpty {
+            // Newest at top.
+            let reversed = Array(task.updates.reversed())
+            let visible = (mode == .expanded) ? reversed : Array(reversed.prefix(5))
+            VStack(alignment: .leading, spacing: 8) {
+                collapsibleHeader(
+                    title: "Updates",
+                    subtitle: mode == .expanded ? nil : (reversed.count > 5 ? "showing 5 of \(reversed.count)" : nil),
+                    copyText: Self.formattedUpdates(task.updates),
+                    kind: .updates,
+                    status: task.status,
+                    mode: mode
+                )
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(visible.enumerated()), id: \.offset) { _, update in
+                        TaskUpdateRow(update: update, attachmentURLResolver: attachmentURLResolver)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+        }
+    }
+
+    @ViewBuilder
+    private func descriptionSection(_ task: AgentTask, mode: SectionMode) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                chevron(for: mode) {
+                    toggleSection(.description, for: task.status)
+                }
+                Text("Description")
+                    .font(.title3.bold())
+                if let editedAt = task.lastEditedAt {
+                    EditedBadge(editedAt: editedAt)
+                }
+                Spacer()
+                copyButton(text: task.description, id: "description")
+                if isDescriptionEditable && !isEditingDescription {
+                    Button {
+                        editedDescription = task.description
+                        isEditingDescription = true
+                    } label: {
+                        Image(systemName: "pencil")
+                            .font(.callout)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Edit description")
+                }
+            }
+
+            if isEditingDescription {
+                TextEditor(text: $editedDescription)
+                    .font(.body)
+                    .frame(minHeight: 80, maxHeight: 200)
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                HStack {
+                    Spacer()
+                    Button("Cancel") {
+                        isEditingDescription = false
+                    }
+                    Button("Save") {
+                        Task {
+                            await viewModel.updateTaskDescription(
+                                id: task.id,
+                                description: editedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                            )
+                        }
+                        isEditingDescription = false
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!isDescriptionEditable || editedDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            } else {
+                let body = (mode == .expanded) ? task.description : linePrefix(task.description, lines: 3)
+                MarkdownText(content: body, baseFont: .body)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if !task.descriptionAttachments.isEmpty && mode == .expanded {
+                sectionHeader("Attachments", copyText: Self.formattedAttachments(task.descriptionAttachments))
+                TaskAttachmentList(
+                    attachments: task.descriptionAttachments,
+                    urlResolver: attachmentURLResolver
+                )
+            }
+        }
+        Divider()
+    }
+
+    @ViewBuilder
+    private func relatedContextSection(_ task: AgentTask, mode: SectionMode) -> some View {
+        if Self.hasRelevantContext(task) {
+            VStack(alignment: .leading, spacing: 8) {
+                collapsibleHeader(
+                    title: "Related context",
+                    copyText: Self.formattedContext(task),
+                    kind: .relatedContext,
+                    status: task.status,
+                    mode: mode,
+                    onToggle: {
+                        let nextExpanded = (currentMode(.relatedContext, for: task.status) != .expanded)
+                        memoryExpansions = Array(repeating: nextExpanded, count: memoryExpansions.count)
+                        priorTaskExpansions = Array(repeating: nextExpanded, count: priorTaskExpansions.count)
+                    }
+                )
+
+                if let memories = task.relevantMemories, !memories.isEmpty {
+                    Text("Memories")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(memories.enumerated()), id: \.offset) { idx, memory in
+                            TaskRelevantMemoryRow(
+                                memory: memory,
+                                isExpanded: memoryExpansionBinding(at: idx)
+                            )
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if let priorTasks = task.relevantPriorTasks, !priorTasks.isEmpty {
+                    Text("Prior Tasks")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(priorTasks.enumerated()), id: \.offset) { idx, prior in
+                            TaskRelevantPriorTaskRow(
+                                priorTask: prior,
+                                sessionID: viewModel.session.id,
+                                isExpanded: priorTaskExpansionBinding(at: idx)
+                            )
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            Divider()
+        }
+    }
+
+    private func memoryExpansionBinding(at index: Int) -> Binding<Bool> {
+        Binding(
+            get: {
+                guard index < memoryExpansions.count else { return false }
+                return memoryExpansions[index]
+            },
+            set: { newValue in
+                guard index < memoryExpansions.count else { return }
+                memoryExpansions[index] = newValue
+            }
+        )
+    }
+
+    private func priorTaskExpansionBinding(at index: Int) -> Binding<Bool> {
+        Binding(
+            get: {
+                guard index < priorTaskExpansions.count else { return false }
+                return priorTaskExpansions[index]
+            },
+            set: { newValue in
+                guard index < priorTaskExpansions.count else { return }
+                priorTaskExpansions[index] = newValue
+            }
+        )
+    }
+
+    // MARK: - Headers
+
+    /// Section header with a chevron toggle on the leading edge plus the section's
+    /// copy button on the trailing edge. `onToggle` runs *in addition to* the default
+    /// mode-flip — Related Context uses it to keep its row-expansion arrays in sync.
+    private func collapsibleHeader(
+        title: String,
+        subtitle: String? = nil,
+        titleColor: Color? = nil,
+        copyText: String? = nil,
+        kind: SectionKind,
+        status: AgentTask.Status,
+        mode: SectionMode,
+        onToggle: (() -> Void)? = nil
+    ) -> some View {
+        HStack(spacing: 8) {
+            chevron(for: mode) {
+                onToggle?()
+                toggleSection(kind, for: status)
+            }
+            Text(title)
+                .font(.title3.bold())
+                .foregroundStyle(titleColor ?? .primary)
+            if let subtitle {
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let copyText, !copyText.isEmpty {
+                copyButton(text: copyText, id: title)
+            }
+        }
+    }
+
+    private func chevron(for mode: SectionMode, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: mode == .expanded ? "chevron.down" : "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 14)
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Metadata grid
@@ -257,8 +588,41 @@ struct TaskDetailWindow: View {
                     Text(elapsed)
                 }
             }
+
+            if let scheduled = task.scheduledRunAt {
+                GridRow {
+                    metadataLabel("Scheduled")
+                    scheduledLine(for: scheduled)
+                }
+            }
         }
         .font(.callout)
+    }
+
+    private func scheduledLine(for date: Date) -> some View {
+        let now = Date()
+        let pastDue = date < now
+        let isToday = Calendar.current.isDateInToday(date)
+        let dateString = date.formatted(.dateTime.year().month(.abbreviated).day())
+        let timeString = date.formatted(date: .omitted, time: .standard)
+
+        let dateColor: Color = pastDue
+            ? AppColors.scheduledPastDueAccent
+            : (isToday ? .primary : AppColors.scheduledFutureAccent)
+        let timeColor: Color = pastDue
+            ? AppColors.scheduledPastDueAccent
+            : AppColors.scheduledFutureAccent
+
+        return HStack(spacing: 4) {
+            Text(dateString).foregroundStyle(dateColor)
+            Text("at").foregroundStyle(.secondary)
+            Text(timeString).foregroundStyle(timeColor)
+            if pastDue {
+                Text("(past due)")
+                    .foregroundStyle(AppColors.scheduledPastDueAccent)
+                    .fontWeight(.medium)
+            }
+        }
     }
 
     private func metadataLabel(_ text: String) -> some View {
@@ -267,6 +631,8 @@ struct TaskDetailWindow: View {
             .gridColumnAlignment(.trailing)
     }
 
+    /// Plain (non-collapsible) section header used by sub-sections like Result Attachments
+    /// and Description Attachments that nest inside a parent collapsible section.
     private func sectionHeader(_ title: String, copyText: String? = nil) -> some View {
         HStack {
             Text(title)
@@ -372,6 +738,13 @@ struct TaskDetailWindow: View {
         } else {
             return "\(seconds)s"
         }
+    }
+
+    /// Returns the first `lines` newline-separated lines of `text`, joined back. Used to
+    /// build a preview for sections that wrap MarkdownText — `.lineLimit(N)` does not
+    /// clip cleanly across MarkdownText's multi-block VStack, so we trim the source instead.
+    private func linePrefix(_ text: String, lines: Int) -> String {
+        text.components(separatedBy: "\n").prefix(lines).joined(separator: "\n")
     }
 }
 
