@@ -201,12 +201,12 @@ struct TaskDetailWindow: View {
         let mode = currentMode(kind, for: task.status)
         if mode != .hidden {
             switch kind {
-            case .error:           errorSection(task, mode: mode)
+            case .error:           errorSection(task)
             case .summary:         summarySection(task, mode: mode)
-            case .result:          resultSection(task, mode: mode)
+            case .result:          resultSection(task)
             case .updates:         updatesSection(task, mode: mode)
             case .description:     descriptionSection(task, mode: mode)
-            case .relatedContext:  relatedContextSection(task, mode: mode)
+            case .relatedContext:  relatedContextSection(task)
             }
         }
     }
@@ -214,7 +214,7 @@ struct TaskDetailWindow: View {
     // MARK: - Sections
 
     @ViewBuilder
-    private func errorSection(_ task: AgentTask, mode: SectionMode) -> some View {
+    private func errorSection(_ task: AgentTask) -> some View {
         // Failures land in `task.result` today; surface that as the Error body.
         let errorText = task.result ?? ""
         if !errorText.isEmpty {
@@ -258,7 +258,7 @@ struct TaskDetailWindow: View {
     }
 
     @ViewBuilder
-    private func resultSection(_ task: AgentTask, mode: SectionMode) -> some View {
+    private func resultSection(_ task: AgentTask) -> some View {
         let result = task.result ?? ""
         let commentary = task.commentary ?? ""
         let hasResult = !result.isEmpty
@@ -435,7 +435,7 @@ struct TaskDetailWindow: View {
     }
 
     @ViewBuilder
-    private func relatedContextSection(_ task: AgentTask, mode: SectionMode) -> some View {
+    private func relatedContextSection(_ task: AgentTask) -> some View {
         if Self.hasRelevantContext(task) {
             VStack(alignment: .leading, spacing: 8) {
                 sectionTitleRow(
