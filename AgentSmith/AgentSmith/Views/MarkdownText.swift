@@ -320,7 +320,11 @@ struct MarkdownText: View, Equatable {
         var combined = AttributedString()
 
         for segment in segments {
-            if segment.isCode {
+            // A backtick-wrapped segment whose entire content is a single path or URL
+            // is more useful as a clickable link than as colored inline code. Drop the
+            // code styling and run it through the linkifier instead.
+            let treatAsCode = segment.isCode && !isStandaloneLinkable(segment.text)
+            if treatAsCode {
                 var part = AttributedString(segment.text)
                 part.foregroundColor = AppColors.inlineCode
                 combined += part
@@ -350,6 +354,35 @@ struct MarkdownText: View, Equatable {
     /// then email wrapping (emits `mailto:` markdown links).
     private func linkify(_ text: String) -> String {
         linkifyEmails(linkifyBareURLs(linkifyPaths(text)))
+    }
+
+    /// True when `text` (after trimming whitespace) is a single token that the
+    /// linkifier would turn into a real link: an existing absolute path, an
+    /// http(s)/file/mailto URL, or a bare email. Used to redirect backtick-wrapped
+    /// path/URL spans away from inline-code styling and into clickable links.
+    private func isStandaloneLinkable(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.contains(where: { $0.isWhitespace }) else { return false }
+
+        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://")
+            || trimmed.hasPrefix("file://") || trimmed.hasPrefix("mailto:") {
+            return URL(string: trimmed) != nil
+        }
+
+        if trimmed.hasPrefix("/") || trimmed.hasPrefix("~/") {
+            let expanded = (trimmed as NSString).expandingTildeInPath
+            return FileManager.default.fileExists(atPath: expanded)
+        }
+
+        if let regex = Self.emailRegex {
+            let nsRange = NSRange(location: 0, length: (trimmed as NSString).length)
+            if let match = regex.firstMatch(in: trimmed, range: nsRange),
+               match.range == nsRange {
+                return true
+            }
+        }
+        return false
     }
 
     /// Compiled once and reused across all MarkdownText instances.
