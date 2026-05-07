@@ -169,7 +169,8 @@ public actor MemoryStore {
 
     /// Updates an existing memory's content and/or tags. Records who performed the edit
     /// in the entry's `lastUpdatedAt` / `lastUpdatedBy` fields. Re-embeds when the content
-    /// changed. Returns the updated entry, or nil if the ID wasn't found.
+    /// changed. Returns the updated entry, or nil if the ID wasn't found (or was deleted
+    /// concurrently while embedding).
     @discardableResult
     public func update(
         id: UUID,
@@ -177,26 +178,32 @@ public actor MemoryStore {
         tags: [String]? = nil,
         updatedBy: MemoryEntry.UpdateSource
     ) async throws -> MemoryEntry? {
-        guard let existing = memories[id] else { return nil }
-        let newContent = content ?? existing.content
-        let newTags = tags ?? existing.tags
+        guard let preEmbed = memories[id] else { return nil }
+        let newContent = content ?? preEmbed.content
+        let newTags = tags ?? preEmbed.tags
         let newEmbedding: [Float]
-        if content != nil && content != existing.content {
+        if content != nil && content != preEmbed.content {
             newEmbedding = try await engine.embed(newContent)
             try Self.validate(embedding: newEmbedding)
         } else {
-            newEmbedding = existing.embedding
+            newEmbedding = preEmbed.embedding
         }
+        // Re-read after the (possible) embed suspension. Actor methods are reentrant,
+        // so a delete or another update or a `searchAll` retrieval-count bump could
+        // have landed while we awaited. Use the fresh entry for invariant fields
+        // (createdAt, retrievalCount, lastRetrievedAt, source) so we don't clobber
+        // them with stale snapshot values from before the suspend.
+        guard let current = memories[id] else { return nil }
         let updated = MemoryEntry(
-            id: existing.id,
+            id: current.id,
             content: newContent,
             embedding: newEmbedding,
-            source: existing.source,
+            source: current.source,
             tags: newTags,
-            sourceTaskID: existing.sourceTaskID,
-            createdAt: existing.createdAt,
-            lastRetrievedAt: existing.lastRetrievedAt,
-            retrievalCount: existing.retrievalCount,
+            sourceTaskID: current.sourceTaskID,
+            createdAt: current.createdAt,
+            lastRetrievedAt: current.lastRetrievedAt,
+            retrievalCount: current.retrievalCount,
             lastUpdatedAt: Date(),
             lastUpdatedBy: updatedBy
         )

@@ -250,10 +250,20 @@ final class SharedAppState {
         AgentRole.userNickname = nickname
 
         // Configure verbose logging for SwiftLLMKit services and providers.
+        // Release builds default OFF — verbose logging dumps full request/response
+        // bodies (user messages, file contents, tool I/O, possibly pasted secrets)
+        // to $TMPDIR. Acceptable for local Debug only until the Settings-controlled
+        // logging-levels UI lands. Tracked in RECOMMENDATIONS.md #1.
         LLMRequestLogger.logDirectoryName = "AgentSmith-LLM-Logs"
+        #if DEBUG
         llmKit.verboseLogging = true
         ModelFetchService.verboseLogging = true
         ModelMetadataService.verboseLogging = true
+        #else
+        llmKit.verboseLogging = false
+        ModelFetchService.verboseLogging = false
+        ModelMetadataService.verboseLogging = false
+        #endif
 
         // Load SwiftLLMKit state (providers, configs, cached models).
         llmKit.load()

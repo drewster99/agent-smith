@@ -78,11 +78,14 @@ struct FileEditTool: AgentTool {
         let url = URL(fileURLWithPath: filePath)
         let resolvedPath = url.resolvingSymlinksInPath().path
 
-        // Note: No "must read before edit" check here. The exact old_string matching
-        // requirement serves as an implicit guard — you can't successfully edit a file
-        // without knowing its precise content, which practically requires having read it.
-        // Explicit read gating is enforced on file_write instead, where blind overwrites
-        // are the real risk. Jones still reviews all edits for security.
+        // Require a prior file_read in the same agent session. The old defense was
+        // that exact old_string matching is an implicit guard — but content can leak
+        // into context via `bash cat`, `grep -A`, or attachments without ever
+        // tracking the path, so an "implicit guard" lets edits skip the explicit
+        // read trail Jones depends on. Match file_write's gate for consistency.
+        if !context.hasFileBeenRead(filePath) && !context.hasFileBeenRead(resolvedPath) {
+            return .failure("Error: file_edit requires a prior file_read on '\(filePath)' in this session.")
+        }
 
         // Safety check — reuse FileWriteTool's path restriction logic.
         if let rejection = FileWriteTool.checkPathRestriction(resolvedPath: resolvedPath) {
