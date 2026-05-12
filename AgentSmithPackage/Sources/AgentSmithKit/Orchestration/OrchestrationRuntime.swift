@@ -29,8 +29,9 @@ public actor OrchestrationRuntime {
     public let taskStore: TaskStore
     public let memoryStore: MemoryStore
 
-    /// Fixed UUID representing the human user for private Smith→User messages.
-    public static let userID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+    /// Fixed UUID representing the human user for private Smith→User messages
+    /// (`00000000-0000-0000-0000-000000000001`).
+    public static let userID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1))
 
     private var smith: AgentActor?
     private var smithID: UUID?
