@@ -34,17 +34,21 @@ struct CostBoardTests {
     private static let lookup: @Sendable (String?, String) -> ModelPricing? = { _, _ in cheapPricing }
 
     private func makeStore() async -> (UsageStore, URL) {
-        // Each test gets its own scratch directory so concurrent runs don't fight
-        // over `usage_records.json`. PersistenceManager() resolves Application
-        // Support; for tests we use a per-test tmp dir via a custom subclass-free
-        // path by writing directly through PersistenceManager (the simplest is to
-        // just use a fresh dir each time and ignore the on-disk artifact).
-        let pm = PersistenceManager()
+        // CRITICAL: `PersistenceManager()` resolves to `~/Library/Application Support/AgentSmith/`
+        // — the real app's data path. `UsageStore.append(...)` schedules a flush that writes
+        // the in-memory `records` array to disk 5 seconds later, with no merge against the
+        // existing file. If a test calls `append` without `load`, the in-memory array contains
+        // ONLY test records; the flush overwrites the real file with that test data. This is
+        // exactly what happened the first time these tests ran and silently wiped a month of
+        // real usage data. We now route every test through a per-test temp dir via the
+        // `init(testingRoot:)` escape hatch on `PersistenceManager`.
+        let tmpRoot = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("agent-smith-costboard-tests", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: tmpRoot, withIntermediateDirectories: true)
+        let pm = PersistenceManager(testingRoot: tmpRoot)
         let store = UsageStore(persistence: pm)
-        // Don't call load() — start clean. The persisted file may have prior data.
-        // We rely on `records: []` starting state to test bootstrap semantics.
-        // Return a placeholder URL just so the signature is uniform.
-        return (store, URL(fileURLWithPath: "/dev/null"))
+        return (store, tmpRoot)
     }
 
     private func record(at timestamp: Date, input: Int = 100, output: Int = 50) -> UsageRecord {

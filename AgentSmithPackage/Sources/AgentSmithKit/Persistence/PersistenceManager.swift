@@ -36,6 +36,20 @@ public actor PersistenceManager {
         attachmentsDirectory = sessionDirectory.appendingPathComponent("attachments", isDirectory: true)
     }
 
+    /// Test-only init that routes all reads/writes under a caller-supplied root URL,
+    /// bypassing Application Support entirely. Exists specifically because the
+    /// default `init()` resolves to `~/Library/Application Support/AgentSmith/`, and
+    /// any test that constructs a `UsageStore` against that path and calls
+    /// `append(...)` will eventually overwrite the user's real `usage_records.json`
+    /// when `scheduleFlush`'s 5-second timer fires (the in-memory `records` array
+    /// is whatever the test loaded into it, NOT what's on disk). Tests MUST use
+    /// this init to point at a per-test temp directory.
+    public init(testingRoot: URL) {
+        baseDirectory = testingRoot.appendingPathComponent("AgentSmith", isDirectory: true)
+        sessionDirectory = baseDirectory
+        attachmentsDirectory = baseDirectory.appendingPathComponent("attachments", isDirectory: true)
+    }
+
     private static func appSupportURL() -> URL {
         guard let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
