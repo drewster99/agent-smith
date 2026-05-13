@@ -311,6 +311,15 @@ struct TaskRowButton: View {
 /// duplicate the layout three times. With `AgentTask: Equatable`, SwiftUI's per-input
 /// diff at the ForEach boundary skips unchanged rows when only one task in the array
 /// mutates.
+/// Composite key for the task-cost `.task(id:)` modifier. Re-firing must happen
+/// when either the task ID changes (different row) or the task transitions into
+/// `.completed` (so a task the user watched run to completion gets its cost loaded
+/// after status flips, not just on the initial appear).
+private struct TaskCostLoaderKey: Hashable {
+    let taskID: UUID
+    let isCompleted: Bool
+}
+
 private struct TaskRow: View {
     let task: AgentTask
     let style: TaskRowStyle
@@ -341,11 +350,12 @@ private struct TaskRow: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .contentShape(Rectangle())
-        // Lazy-load the task's estimated cost once it scrolls into view. Hoisted
-        // to the row body rather than the cost chip so the loader fires whether
-        // or not the chip resolves to EmptyView (an EmptyView-resolved Group can
-        // skip its `.task` modifier in some SwiftUI builds).
-        .task(id: task.id) {
+        // Lazy-load the task's estimated cost. The id includes `task.status` so
+        // the modifier re-fires when a task we're watching transitions into
+        // `.completed` — keying on `task.id` alone would only fire once on row
+        // appear, before the task had reached completion, and the `.completed`
+        // guard inside would short-circuit the load forever.
+        .task(id: TaskCostLoaderKey(taskID: task.id, isCompleted: task.status == .completed)) {
             if task.status == .completed, viewModel.cachedTaskCost(task.id) == nil {
                 await viewModel.loadTaskCost(task.id)
             }
