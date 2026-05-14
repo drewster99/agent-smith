@@ -1022,6 +1022,7 @@ public actor AgentActor {
         // (e.g., "Great job, Brown!") not meant for the user — Smith uses
         // message_user explicitly when it wants to address the user.
         var implicitMessageSent = false
+        var smithActionClaimPhrase: String?
         if configuration.role == .smith,
            response.toolCalls.isEmpty,
            let text = response.text?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1033,31 +1034,11 @@ public actor AgentActor {
                 content: text
             ))
             implicitMessageSent = true
-
-            // Action-claim guard: when Smith's text-only response asserts an action
-            // was performed (terminated, paused, marked failed, etc.) but no tool
-            // call accompanied the response, append a [System] correction to his
-            // history so the next turn reminds him that text is not action.
-            // Observed in session BB94BA9C: user asked "terminate him", Smith
-            // replied "Done. Brown has been terminated" without ever calling
-            // `terminate_agent`. Brown kept running for two more minutes.
-            if let phrase = Self.detectActionClaimWithoutToolCall(text: text) {
-                conversationHistory.append(LLMMessage(
-                    role: .user,
-                    text: """
-                        [System] Your previous message said "\(phrase)" but you made no tool call. \
-                        The action was NOT performed — your text reaches the user as if it were \
-                        message_user, but text alone cannot terminate an agent, fail a task, or \
-                        message Brown. If you intended to act:
-                        - Terminate an agent → call `terminate_agent`
-                        - Mark a task failed / archived / completed → call `update_task` (status) or `manage_task_disposition`
-                        - Send Brown instructions → call `message_brown`
-                        - Schedule something → call `schedule_task_action`
-                        Reply now with the correct tool call. Do not just claim it again.
-                        """
-                ))
-                hasUnprocessedInput = true
-            }
+            // Capture the matched phrase here, but defer the [System] correction
+            // append until AFTER the assistant message lands in history below
+            // (otherwise the next LLM turn sees "Your previous message said X"
+            // before the assistant text containing X actually appears).
+            smithActionClaimPhrase = Self.detectActionClaimWithoutToolCall(text: text)
         }
 
         let toolCalls = response.toolCalls
@@ -1136,6 +1117,31 @@ public actor AgentActor {
 
                 if configuration.suppressesRawTextToChannel, !implicitMessageSent {
                     appendDiscardedTextWarning()
+                }
+
+                // Action-claim guard for Smith: when his text-only response asserted
+                // a completed action but he made no tool call, append a [System]
+                // correction AFTER the assistant message so the next LLM turn sees
+                // (1) Smith's text, then (2) the system correction referring to it.
+                // Observed in session BB94BA9C: user asked "terminate him", Smith
+                // replied "Done. Brown has been terminated" without ever calling
+                // `terminate_agent`. Brown kept running for two more minutes.
+                if let phrase = smithActionClaimPhrase {
+                    conversationHistory.append(LLMMessage(
+                        role: .user,
+                        text: """
+                            [System] Your previous message said "\(phrase)" but you made no tool call. \
+                            The action was NOT performed — your text reaches the user as if it were \
+                            message_user, but text alone cannot terminate an agent, fail a task, or \
+                            message Brown. If you intended to act:
+                            - Terminate an agent → call `terminate_agent`
+                            - Mark a task failed / archived / completed → call `update_task` (status) or `manage_task_disposition`
+                            - Send Brown instructions → call `message_brown`
+                            - Schedule something → call `schedule_task_action`
+                            Reply now with the correct tool call. Do not just claim it again.
+                            """
+                    ))
+                    hasUnprocessedInput = true
                 }
             } else if configuration.role != .brown {
                 // Empty response from a non-Brown agent (Brown's three-strike path returns
